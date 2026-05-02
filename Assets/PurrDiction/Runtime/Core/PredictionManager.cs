@@ -30,13 +30,14 @@ namespace PurrNet.Prediction
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
         static void Initialize() => _instances.Clear();
 
-        static readonly Dictionary<int, PredictionManager> _instances = new ();
+        static readonly Dictionary<int, PredictionManager> _instances = new();
 
         public static event Action<int, PredictionManager> OnInstanceAdded;
 
         [SerializeField] private PredictionPhysicsProvider _physicsProvider;
         [SerializeField] private UpdateViewMode _updateViewMode = UpdateViewMode.Update;
-        [SerializeField, PurrLock] private BuiltInSystems _builtInSystems =
+        [SerializeField, PurrLock]
+        private BuiltInSystems _builtInSystems =
             BuiltInSystems.Physics3D |
             BuiltInSystems.Physics2D |
             BuiltInSystems.Time |
@@ -44,7 +45,8 @@ namespace PurrNet.Prediction
             BuiltInSystems.Players |
             BuiltInSystems.Random;
         [SerializeField] private PredictedPrefabs _predictedPrefabs;
-        [SerializeField] private InputQueueSettings _inputQueueSettings = new()
+        [SerializeField]
+        private InputQueueSettings _inputQueueSettings = new()
         {
             extrapolateForMissing = true,
             minInputs = 1,
@@ -53,6 +55,7 @@ namespace PurrNet.Prediction
 
         [Header("Debugging")]
         [SerializeField] private bool _validateDeterministicData;
+        [SerializeField] private bool _logSimulationOnlyCallsOutsideSimulation;
 
         public PredictedPrefabs predictedPrefabs
         {
@@ -66,6 +69,8 @@ namespace PurrNet.Prediction
 
         public bool validateDeterministicData => _validateDeterministicData;
 
+        public bool logSimulationOnlyCallsOutsideSimulation => _logSimulationOnlyCallsOutsideSimulation;
+
         static readonly ProfilerMarker SimulateMarker = new("PredictionManager.Simulate");
         static readonly ProfilerMarker SimulateInputsMarker = new("PredictionManager.PrepareSimulationInputs");
         static readonly ProfilerMarker LateSimulateMarker = new("PredictionManager.LateSimulate");
@@ -73,8 +78,8 @@ namespace PurrNet.Prediction
         static readonly ProfilerMarker SaveHistoryMarker = new("PredictionManager.SaveHistory");
         static readonly ProfilerMarker WriteFrameOnServerMarker = new("PredictionManager.WriteFrameOnServer");
 
-        readonly List<PredictedIdentity> _queue = new ();
-        readonly List<PredictedIdentity> _systems = new ();
+        readonly List<PredictedIdentity> _queue = new();
+        readonly List<PredictedIdentity> _systems = new();
         private int _systemsCount;
 
         GameObjectPoolCollection _pools;
@@ -338,7 +343,7 @@ namespace PurrNet.Prediction
                 {
                     component.OnPreSetup();
                     if (reset)
-                         component.ResetState();
+                        component.ResetState();
                     if (triggedOnRemovedFromPool)
                         component.TriggerOnRemovedFromPool();
                     RegisterInstance(component, objectID, i, owner);
@@ -388,7 +393,7 @@ namespace PurrNet.Prediction
             ListPool<PredictedIdentity>.Destroy(components);
         }
 
-        readonly Dictionary<PredictedComponentID, PredictedIdentity> _instanceMap = new ();
+        readonly Dictionary<PredictedComponentID, PredictedIdentity> _instanceMap = new();
 
         public bool TryGetIdentity(PredictedComponentID id, out PredictedIdentity instance)
         {
@@ -549,7 +554,7 @@ namespace PurrNet.Prediction
             ReplayToLatestTick(1, true);
         }
 
-        readonly List<PlayerPacker> _clientFrames = new (16);
+        readonly List<PlayerPacker> _clientFrames = new(16);
 
         public bool cachedIsServer { get; private set; }
 
@@ -716,7 +721,7 @@ namespace PurrNet.Prediction
 
             if (frame.positionInBytes >= MTU)
                 SendInputToServerReliable(localTick, writtenCount, frame);
-            else SendInputToServer(localTick,writtenCount, frame);
+            else SendInputToServer(localTick, writtenCount, frame);
         }
 
         private void FinalizeTickOnServer(bool cachedIsClient)
@@ -857,6 +862,16 @@ namespace PurrNet.Prediction
             get; private set;
         }
 
+        internal void NotifySimulationOnlyCalledOutsideSimulation(PredictedIdentity identity, string methodName)
+        {
+            if (!_logSimulationOnlyCallsOutsideSimulation)
+                return;
+
+            PurrLogger.LogWarning(
+                $"Ignored [SimulationOnly] call to '{methodName}' on '{identity.GetType().Name}' because the prediction manager is not simulating.",
+                identity);
+        }
+
         private void DoPhysicsPass()
         {
             isInPhysicsPass = true;
@@ -896,7 +911,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        readonly Queue<FrameDelta> _deltas = new ();
+        readonly Queue<FrameDelta> _deltas = new();
 
         [TargetRpc(compressionLevel: CompressionLevel.Best)]
         private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong localTick, BitPackerWithLength delta)
@@ -1250,11 +1265,11 @@ namespace PurrNet.Prediction
         public class InputQueue
         {
             public bool waitForInput;
-            public readonly Queue<InputQueueValue> inputQueue = new ();
+            public readonly Queue<InputQueueValue> inputQueue = new();
             public int Count => inputQueue.Count;
         }
 
-        readonly Dictionary<PlayerID, InputQueue> _clientTicks = new ();
+        readonly Dictionary<PlayerID, InputQueue> _clientTicks = new();
 
         [ServerRpc(requireOwnership: false)]
         private void SendInputToServerReliable(ulong tick, PackedUInt count, BitPacker inputPacket, RPCInfo info = default)
@@ -1430,7 +1445,7 @@ namespace PurrNet.Prediction
             }
 #endif
 #if UNITY_PHYSICS_3D
-            if  (transform.TryGetComponent(out Rigidbody rb))
+            if (transform.TryGetComponent(out Rigidbody rb))
             {
                 rb.position = position;
                 rb.rotation = rotation;

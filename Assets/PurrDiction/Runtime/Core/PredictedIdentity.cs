@@ -47,9 +47,19 @@ namespace PurrNet.Prediction
             return predictionManager.isSimulating;
         }
 
-        public virtual void OnPreSetup() {  }
+        [UsedByIL]
+        public bool CanRunSimulationOnly(string methodName)
+        {
+            if (predictionManager && predictionManager.isSimulating)
+                return true;
 
-        internal virtual void OnPrepareSimulationInputs(ulong tick, float delta) {  }
+            predictionManager?.NotifySimulationOnlyCalledOutsideSimulation(this, methodName);
+            return false;
+        }
+
+        public virtual void OnPreSetup() { }
+
+        internal virtual void OnPrepareSimulationInputs(ulong tick, float delta) { }
 
         public virtual void ResetState()
         {
@@ -65,20 +75,20 @@ namespace PurrNet.Prediction
             OnRemovedFromPool();
         }
 
-        protected virtual void OnRemovedFromPool() {}
+        protected virtual void OnRemovedFromPool() { }
 
-        protected virtual void OnAddedToPool() {}
+        protected virtual void OnAddedToPool() { }
 
         /// <summary>
         /// Invoked immediately after the object is fully initialized and fresh spawned.
         /// </summary>
-        protected virtual void LateAwake() {}
+        protected virtual void LateAwake() { }
 
         /// <summary>
         /// Invoked when the object is being despawned and cleaned up.
         /// Allows for any necessary teardown or resource release to be handled.
         /// </summary>
-        protected virtual void Destroyed() {}
+        protected virtual void Destroyed() { }
 
         internal void TriggerDestroyedEvent()
         {
@@ -105,7 +115,7 @@ namespace PurrNet.Prediction
             BeginInitialModuleSetup();
             try
             {
-                ModuleSetup(manager,world,id, owner);
+                ModuleSetup(manager, world, id, owner);
                 LateAwake();
             }
             finally
@@ -169,7 +179,7 @@ namespace PurrNet.Prediction
 
         internal abstract void LateSimulateTick(float delta);
 
-        public virtual void PostSimulate() {}
+        public virtual void PostSimulate() { }
 
         internal abstract void PrepareInput(bool isServer, bool isLocal, ulong tick, bool extrapolate);
 

@@ -161,14 +161,15 @@ namespace Purrdiction.Codegen
         private static void ProcessMethod(MethodDefinition method, ModuleDefinition module)
         {
             var predictedIdentity = module.GetTypeDefinition<PredictedIdentity>();
-            var isSimulating = predictedIdentity.GetMethod("IsSimulating").Import(module);
+            var canRunSimulationOnly = predictedIdentity.GetMethod("CanRunSimulationOnly").Import(module);
 
             var instructions = method.Body.Instructions;
             var processor = method.Body.GetILProcessor();
             var first = instructions[0];
 
             processor.InsertBefore(first, processor.Create(OpCodes.Ldarg_0));
-            processor.InsertBefore(first, processor.Create(OpCodes.Call, isSimulating));
+            processor.InsertBefore(first, processor.Create(OpCodes.Ldstr, method.FullName));
+            processor.InsertBefore(first, processor.Create(OpCodes.Call, canRunSimulationOnly));
             processor.InsertBefore(first, processor.Create(OpCodes.Brtrue, first));
             processor.InsertBefore(first, processor.Create(OpCodes.Ret));
         }
