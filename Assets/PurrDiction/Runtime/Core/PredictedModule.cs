@@ -58,6 +58,17 @@ namespace PurrNet.Prediction
 
         internal virtual void OnCoreInitialize() { }
 
+        [UsedByIL]
+        public bool CanRunSimulationOnly(string methodName)
+        {
+            if (predictionManager && predictionManager.isSimulating)
+                return true;
+
+            var context = identity;
+            predictionManager?.NotifySimulationOnlyCalledOutsideSimulation(context, methodName);
+            return false;
+        }
+
         /// <summary>
         /// Called immediately after the module is constructed and registered.
         /// Use this for initialization logic that requires the identity or manager to be set.
@@ -100,7 +111,7 @@ namespace PurrNet.Prediction
         /// Saves the current state of the module into history for the specified tick.
         /// </summary>
         protected abstract void SaveState(ulong tick);
-        internal bool WriteStateInternal(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)=> WriteState(receiver, packer, deltaModule);
+        internal bool WriteStateInternal(PlayerID receiver, BitPacker packer, DeltaModule deltaModule) => WriteState(receiver, packer, deltaModule);
 
         /// <summary>
         /// Serializes the current state of the module for network transmission.
