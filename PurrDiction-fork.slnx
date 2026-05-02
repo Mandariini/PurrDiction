@@ -1,0 +1,14 @@
+﻿<Solution>
+  <Project Path="asset-store-tools-editor.csproj" />
+  <Project Path="PurrNet.Prediction.csproj" />
+  <Project Path="PurrDiction.PlayModeTests.csproj" />
+  <Project Path="PurrNet.Prediction.Tests.csproj" />
+  <Project Path="PurrDiction.Editor.csproj" />
+  <Project Path="PurrNet.Prediction.EditorTests.csproj" />
+  <Project Path="PurrDiction.Examples.csproj" />
+  <Project Path="PurrNet.Prediction.Benchmarks.Editor.csproj" />
+  <Project Path="PurrNet.Prediction.Prebuilt.csproj" />
+  <Project Path="Unity.Purrdiction.Codegen.csproj" />
+  <Project Path="Assembly-CSharp-Editor.csproj" />
+  <Project Path="Assembly-CSharp.csproj" />
+</Solution>
