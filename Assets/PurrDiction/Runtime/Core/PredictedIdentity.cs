@@ -50,11 +50,7 @@ namespace PurrNet.Prediction
         [UsedByIL]
         public bool CanRunSimulationOnly(string methodName)
         {
-            if (predictionManager && predictionManager.isSimulating)
-                return true;
-
-            predictionManager?.NotifySimulationOnlyCalledOutsideSimulation(this, methodName);
-            return false;
+            return predictionManager && predictionManager.CanRunSimulationOnly(this, methodName);
         }
 
         public virtual void OnPreSetup() { }

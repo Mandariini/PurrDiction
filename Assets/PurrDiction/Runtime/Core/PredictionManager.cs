@@ -15,6 +15,13 @@ using UnityEngine.SceneManagement;
 
 namespace PurrNet.Prediction
 {
+    public enum SimulationOnlyOutsideSimulationBehavior
+    {
+        ReturnEarly,
+        LogAndReturnEarly,
+        LogOnly
+    }
+
     [Serializable]
     public struct InputQueueSettings
     {
@@ -55,7 +62,7 @@ namespace PurrNet.Prediction
 
         [Header("Debugging")]
         [SerializeField] private bool _validateDeterministicData;
-        [SerializeField] private bool _logSimulationOnlyCallsOutsideSimulation;
+        [SerializeField] private SimulationOnlyOutsideSimulationBehavior _simulationOnlyOutsideSimulationBehavior = SimulationOnlyOutsideSimulationBehavior.LogAndReturnEarly;
 
         public PredictedPrefabs predictedPrefabs
         {
@@ -69,7 +76,7 @@ namespace PurrNet.Prediction
 
         public bool validateDeterministicData => _validateDeterministicData;
 
-        public bool logSimulationOnlyCallsOutsideSimulation => _logSimulationOnlyCallsOutsideSimulation;
+        public SimulationOnlyOutsideSimulationBehavior simulationOnlyOutsideSimulationBehavior => _simulationOnlyOutsideSimulationBehavior;
 
         static readonly ProfilerMarker SimulateMarker = new("PredictionManager.Simulate");
         static readonly ProfilerMarker SimulateInputsMarker = new("PredictionManager.PrepareSimulationInputs");
@@ -862,14 +869,28 @@ namespace PurrNet.Prediction
             get; private set;
         }
 
-        internal void NotifySimulationOnlyCalledOutsideSimulation(PredictedIdentity identity, string methodName)
+        internal bool CanRunSimulationOnly(PredictedIdentity identity, string methodName)
         {
-            if (!_logSimulationOnlyCallsOutsideSimulation)
-                return;
+            if (isSimulating)
+                return true;
 
-            PurrLogger.LogWarning(
-                $"Ignored [SimulationOnly] call to '{methodName}' on '{identity.GetType().Name}' because the prediction manager is not simulating.",
-                identity);
+            switch (_simulationOnlyOutsideSimulationBehavior)
+            {
+                case SimulationOnlyOutsideSimulationBehavior.ReturnEarly:
+                    return false;
+                case SimulationOnlyOutsideSimulationBehavior.LogAndReturnEarly:
+                    PurrLogger.LogWarning(
+                        $"Ignored [SimulationOnly] call to '{methodName}' on '{identity.GetType().Name}' because the prediction manager is not simulating.",
+                        identity);
+                    return false;
+                case SimulationOnlyOutsideSimulationBehavior.LogOnly:
+                    PurrLogger.LogWarning(
+                        $"[SimulationOnly] method '{methodName}' on '{identity.GetType().Name}' was called while the prediction manager was not simulating. Continuing because the behavior is set to LogOnly.",
+                        identity);
+                    return true;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
         }
 
         private void DoPhysicsPass()
