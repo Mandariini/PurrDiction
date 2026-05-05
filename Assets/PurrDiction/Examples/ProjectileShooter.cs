@@ -9,7 +9,6 @@ namespace PurrDiction.Examples
         [SerializeField] private float _initialForce = 10;
         [SerializeField] private float _cooldown = 0.5f;
 
-        private PredictedProjectile3D _lastProjectile;
         private OnTriggerDelegate _projectileTriggerHandler;
 
         protected override void Simulate(ShooterInput input, ref ShooterState state, float delta)
@@ -37,10 +36,8 @@ namespace PurrDiction.Examples
             projectile.AddImpulse(transform.forward * _initialForce);
             if (projectile.isTrigger)
             {
-                if (_lastProjectile == projectile && _projectileTriggerHandler != null)
-                    _lastProjectile.onTriggerEnter -= _projectileTriggerHandler;
+                projectile.onTriggerEnter -= _projectileTriggerHandler;
                 _projectileTriggerHandler = other => OnProjectileTriggerEnter(projectile, other);
-                _lastProjectile = projectile;
                 projectile.onTriggerEnter += _projectileTriggerHandler;
             }
         }
