@@ -13,12 +13,19 @@ namespace PurrNet.Prediction
         Local = 1
     }
 
+    public enum UpdateMode
+    {
+        UpdateView = 0,
+        LateUpdateView = 1
+    }
+
     [AddComponentMenu("PurrDiction/Predicted Transform")]
     public class PredictedTransform : PredictedIdentity<PredictedTransformState>
     {
         [SerializeField, PurrLock] private Transform _graphics;
         [SerializeField, PurrLock] private FloatAccuracy _floatAccuracy = FloatAccuracy.Medium;
         [SerializeField] private TransformNetworkSpace _networkSpace = TransformNetworkSpace.World;
+        [SerializeField] private UpdateMode _updateMode = UpdateMode.UpdateView;
         [SerializeField] private TransformInterpolationSettings _interpolationSettings;
         [Tooltip("You might want graphics to be unparented due to this gameobject being actively disabled/enabled during reconciles.")]
         [SerializeField] private bool _unparentGraphics;
@@ -69,6 +76,48 @@ namespace PurrNet.Prediction
 
             position = state.unityPosition;
             rotation = state.unityRotation;
+        }
+
+        private void ResolveViewStatePositionAndRotation(PredictedTransformState state, out Vector3 position, out Quaternion rotation)
+        {
+            var parentTransform = transform.parent;
+            if (usesLocalNetworkSpace && parentTransform)
+            {
+                if (TryResolveViewTransform(parentTransform, out var parentPosition, out var parentRotation))
+                {
+                    position = parentPosition + parentRotation * state.unityPosition;
+                    rotation = parentRotation * state.unityRotation;
+                    return;
+                }
+
+                position = parentTransform.TransformPoint(state.unityPosition);
+                rotation = parentTransform.rotation * state.unityRotation;
+                return;
+            }
+
+            position = state.unityPosition;
+            rotation = state.unityRotation;
+        }
+
+        private bool TryResolveViewTransform(Transform target, out Vector3 position, out Quaternion rotation)
+        {
+            if (target.TryGetComponent(out PredictedTransform predicted))
+            {
+                predicted.ResolveViewStatePositionAndRotation(predicted.viewState, out position, out rotation);
+                return true;
+            }
+
+            var parentTransform = target.parent;
+            if (!parentTransform || !TryResolveViewTransform(parentTransform, out position, out rotation))
+            {
+                position = default;
+                rotation = Quaternion.identity;
+                return false;
+            }
+
+            position += rotation * target.localPosition;
+            rotation *= target.localRotation;
+            return true;
         }
 
         public override void ResetState()
@@ -379,12 +428,28 @@ namespace PurrNet.Prediction
 
         protected override void UpdateView(PredictedTransformState viewState, PredictedTransformState? verified)
         {
+            if (_updateMode != UpdateMode.UpdateView)
+                return;
+
+            UpdateViewInternal(viewState, verified);
+        }
+
+        protected override void LateUpdateView(PredictedTransformState viewState, PredictedTransformState? verified)
+        {
+            if (_updateMode != UpdateMode.LateUpdateView)
+                return;
+
+            UpdateViewInternal(viewState, verified);
+        }
+
+        private void UpdateViewInternal(PredictedTransformState viewState, PredictedTransformState? verified)
+        {
             if (!_hasView)
                 return;
 
             if (updateGraphics)
             {
-                ResolveStatePositionAndRotation(viewState, out var worldPosition, out var worldRotation);
+                ResolveViewStatePositionAndRotation(viewState, out var worldPosition, out var worldRotation);
                 _graphics.SetPositionAndRotation(worldPosition, worldRotation);
             }
         }
