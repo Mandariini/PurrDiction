@@ -7,11 +7,18 @@ using UnityEngine;
 
 namespace PurrNet.Prediction
 {
+    public enum TransformNetworkSpace
+    {
+        World = 0,
+        Local = 1
+    }
+
     [AddComponentMenu("PurrDiction/Predicted Transform")]
     public class PredictedTransform : PredictedIdentity<PredictedTransformState>
     {
         [SerializeField, PurrLock] private Transform _graphics;
         [SerializeField, PurrLock] private FloatAccuracy _floatAccuracy = FloatAccuracy.Medium;
+        [SerializeField] private TransformNetworkSpace _networkSpace = TransformNetworkSpace.World;
         [SerializeField] private TransformInterpolationSettings _interpolationSettings;
         [Tooltip("You might want graphics to be unparented due to this gameobject being actively disabled/enabled during reconciles.")]
         [SerializeField] private bool _unparentGraphics;
@@ -36,6 +43,33 @@ namespace PurrNet.Prediction
 
         [NonSerialized, UsedImplicitly]
         public bool updateGraphics = true;
+
+        private bool usesLocalNetworkSpace => _networkSpace == TransformNetworkSpace.Local;
+
+        private void SetStatePositionAndRotation(ref PredictedTransformState state, Vector3 position, Quaternion rotation)
+        {
+            if (usesLocalNetworkSpace && transform.parent)
+            {
+                state.unityPosition = transform.parent.InverseTransformPoint(position);
+                state.unityRotation = Quaternion.Inverse(transform.parent.rotation) * rotation;
+                return;
+            }
+
+            state.SetPositionAndRotation(position, rotation);
+        }
+
+        private void ResolveStatePositionAndRotation(PredictedTransformState state, out Vector3 position, out Quaternion rotation)
+        {
+            if (usesLocalNetworkSpace && transform.parent)
+            {
+                position = transform.parent.TransformPoint(state.unityPosition);
+                rotation = transform.parent.rotation * state.unityRotation;
+                return;
+            }
+
+            position = state.unityPosition;
+            rotation = state.unityRotation;
+        }
 
         public override void ResetState()
         {
@@ -67,15 +101,15 @@ namespace PurrNet.Prediction
                 case FloatAccuracy.Purrfect:
                     return base.WriteDeltaState(target, packer, deltaModule);
                 case FloatAccuracy.Medium:
-                {
-                    var key = new DeltaKey<PredictedTransformCompressedState>(sceneId, id);
-                    return deltaModule.WriteReliable(packer, target, key, new PredictedTransformCompressedState(currentState));
-                }
+                    {
+                        var key = new DeltaKey<PredictedTransformCompressedState>(sceneId, id);
+                        return deltaModule.WriteReliable(packer, target, key, new PredictedTransformCompressedState(currentState));
+                    }
                 case FloatAccuracy.Low:
-                {
-                    var key = new DeltaKey<PredictedTransformHalfState>(sceneId, id);
-                    return deltaModule.WriteReliable(packer, target, key, new PredictedTransformHalfState(currentState));
-                }
+                    {
+                        var key = new DeltaKey<PredictedTransformHalfState>(sceneId, id);
+                        return deltaModule.WriteReliable(packer, target, key, new PredictedTransformHalfState(currentState));
+                    }
                 default: throw new ArgumentOutOfRangeException();
             }
 
@@ -89,25 +123,25 @@ namespace PurrNet.Prediction
                     base.ReadDeltaState(packer, deltaModule, ref state);
                     break;
                 case FloatAccuracy.Medium:
-                {
-                    var key = new DeltaKey<PredictedTransformCompressedState>(sceneId, id);
-                    PredictedTransformCompressedState compressedState = default;
-                    deltaModule.ReadReliable(packer, key, ref compressedState);
+                    {
+                        var key = new DeltaKey<PredictedTransformCompressedState>(sceneId, id);
+                        PredictedTransformCompressedState compressedState = default;
+                        deltaModule.ReadReliable(packer, key, ref compressedState);
 
-                    state.unityPosition = compressedState.unityPosition;
-                    state.unityRotation = ((Quaternion)compressedState.unityRotation).normalized;
-                    break;
-                }
+                        state.unityPosition = compressedState.unityPosition;
+                        state.unityRotation = ((Quaternion)compressedState.unityRotation).normalized;
+                        break;
+                    }
                 case FloatAccuracy.Low:
-                {
-                    var key = new DeltaKey<PredictedTransformHalfState>(sceneId, id);
-                    PredictedTransformHalfState compressedState = default;
-                    deltaModule.ReadReliable(packer, key, ref compressedState);
+                    {
+                        var key = new DeltaKey<PredictedTransformHalfState>(sceneId, id);
+                        PredictedTransformHalfState compressedState = default;
+                        deltaModule.ReadReliable(packer, key, ref compressedState);
 
-                    state.unityPosition = compressedState.unityPosition;
-                    state.unityRotation = ((Quaternion)compressedState.unityRotation).normalized;
-                    break;
-                }
+                        state.unityPosition = compressedState.unityPosition;
+                        state.unityRotation = ((Quaternion)compressedState.unityRotation).normalized;
+                        break;
+                    }
                 default: throw new ArgumentOutOfRangeException();
             }
         }
@@ -115,12 +149,9 @@ namespace PurrNet.Prediction
         protected override PredictedTransformState GetInitialState()
         {
             var trs = transform;
-            trs.GetPositionAndRotation(out var pos, out var rot);
-            return new PredictedTransformState
-            {
-                unityPosition = pos,
-                unityRotation = rot
-            };
+            PredictedTransformState state = default;
+            state.SetPositionAndRotation(trs, usesLocalNetworkSpace);
+            return state;
         }
 
         protected override void GetUnityState(ref PredictedTransformState state)
@@ -129,48 +160,62 @@ namespace PurrNet.Prediction
             if (_hasRigidbody2d)
             {
                 var rot = Quaternion.Euler(0, 0, _unity2dRigidbody.rotation);
-                state.SetPositionAndRotation(_unity2dRigidbody.position, rot);
+                SetStatePositionAndRotation(ref state, _unity2dRigidbody.position, rot);
                 return;
             }
 #endif
 #if UNITY_PHYSICS_3D
             if (_hasRigidbody)
             {
-                state.SetPositionAndRotation(_unityRigidbody.position, _unityRigidbody.rotation);
+                SetStatePositionAndRotation(ref state, _unityRigidbody.position, _unityRigidbody.rotation);
                 return;
             }
 #endif
-            state.SetPositionAndRotation(transform);
+            state.SetPositionAndRotation(transform, usesLocalNetworkSpace);
         }
 
         protected override void SetUnityState(PredictedTransformState state)
         {
+            ResolveStatePositionAndRotation(state, out var worldPosition, out var worldRotation);
+
 #if UNITY_PHYSICS_2D
             if (_hasRigidbody2d)
             {
-                _unity2dRigidbody.position = state.unityPosition;
-                _unity2dRigidbody.rotation = state.unityRotation.eulerAngles.z;
-                transform.SetPositionAndRotation(state.unityPosition, state.unityRotation);
+                _unity2dRigidbody.position = worldPosition;
+                _unity2dRigidbody.rotation = worldRotation.eulerAngles.z;
+                transform.SetPositionAndRotation(worldPosition, worldRotation);
                 return;
             }
 #endif
 #if UNITY_PHYSICS_3D
             if (_hasRigidbody)
             {
-                _unityRigidbody.position = state.unityPosition;
-                _unityRigidbody.rotation = state.unityRotation;
-                transform.SetPositionAndRotation(state.unityPosition, state.unityRotation);
+                _unityRigidbody.position = worldPosition;
+                _unityRigidbody.rotation = worldRotation;
+                transform.SetPositionAndRotation(worldPosition, worldRotation);
                 return;
             }
             else if (_characterControllerPatch && _hasController)
             {
                 _unityCtrler.enabled = false;
-                transform.SetPositionAndRotation(state.unityPosition, state.unityRotation);
+                if (usesLocalNetworkSpace)
+                {
+                    transform.localPosition = state.unityPosition;
+                    transform.localRotation = state.unityRotation;
+                }
+                else transform.SetPositionAndRotation(worldPosition, worldRotation);
                 _unityCtrler.enabled = true;
                 return;
             }
 #endif
-            transform.SetPositionAndRotation(state.unityPosition, state.unityRotation);
+            if (usesLocalNetworkSpace)
+            {
+                transform.localPosition = state.unityPosition;
+                transform.localRotation = state.unityRotation;
+                return;
+            }
+
+            transform.SetPositionAndRotation(worldPosition, worldRotation);
         }
 
         private PredictedTransformState? _viewState;
@@ -338,7 +383,10 @@ namespace PurrNet.Prediction
                 return;
 
             if (updateGraphics)
-                _graphics.SetPositionAndRotation(viewState.unityPosition, viewState.unityRotation);
+            {
+                ResolveStatePositionAndRotation(viewState, out var worldPosition, out var worldRotation);
+                _graphics.SetPositionAndRotation(worldPosition, worldRotation);
+            }
         }
     }
 }
