@@ -329,10 +329,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1a1392aa1bc3d3b4a9ef31b6e6d8d4b5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _predictionPolicy: 0
   _playerPrefab: {fileID: 4749107768339329758, guid: c197bf28b4ea8354e90e3e33ffe4e713, type: 3}
   _destroyOnDisconnect: 1
   spawnPoints:
   - {fileID: 457991333}
+  _waitForSpawnCall: 0
 --- !u!4 &457991333
 Transform:
   m_ObjectHideFlags: 0
@@ -572,6 +574,7 @@ MonoBehaviour:
   _visibilityRules: {fileID: 11400000, guid: 8f014a5bd8dc68646a2a3c0b18c5bbd8, type: 2}
   _authenticator: {fileID: 0}
   _tickRate: 60
+  _mtuExceededBehaviour: 1
   _patchLingeringProcessBug: 0
 --- !u!114 &1793795281
 MonoBehaviour:
@@ -617,6 +620,13 @@ MonoBehaviour:
   _address: 127.0.0.1
   _timeoutInSeconds: 5
   _pollEventsInUpdate: 0
+  _networkSimulation:
+    includeInBuild: 0
+    simulateLatency: 0
+    minLatency: 30
+    maxLatency: 100
+    simulatePacketLoss: 0
+    packetLossChance: 10
 --- !u!114 &1793795284
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -635,6 +645,14 @@ MonoBehaviour:
   _displayTarget: 6
   fontSize: 13
   textColor: {r: 1, g: 1, b: 1, a: 1}
+  _highPingThreshold: 250
+  _highPingRecoveryThreshold: 180
+  _highJitterThreshold: 80
+  _highJitterRecoveryThreshold: 50
+  _highPacketLossThreshold: 10
+  _highPacketLossRecoveryThreshold: 5
+  _qualityChangeDuration: 2
+  _connectionStallThreshold: 2
 --- !u!1 &1838445716
 GameObject:
   m_ObjectHideFlags: 0
@@ -845,6 +863,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ec17ccfce8678b442b2b0375b706562e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction.Tests::PurrNet.Prediction.Tests.TestFallingSand
+  _predictionPolicy: 1
   _gridSize: 256
   _seed: 65645
   _display: {fileID: 1211090609}

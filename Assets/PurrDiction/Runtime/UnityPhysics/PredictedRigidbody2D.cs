@@ -11,6 +11,9 @@ namespace PurrNet.Prediction
     [AddComponentMenu("PurrDiction/Unity Rigidbody/Predicted Rigidbody 2D")]
     public class PredictedRigidbody2D : PredictedIdentity<UnityRigidbody2DState>
     {
+        [Tooltip("Fraction of the remaining velocity error corrected per second when using SoftCorrection.")]
+        [SerializeField] private float _softVelocityCorrectionRate = 8f;
+
 #if UNITY_PHYSICS_2D
         public delegate void OnCollisionDelegate(GameObject other, DisposableList<Physics2DContactPoint> evContacts);
         public delegate void OnTriggerDelegate(GameObject other);
@@ -31,10 +34,266 @@ namespace PurrNet.Prediction
             _rigidbody = GetComponent<Rigidbody2D>();
         }
 
+        private RigidbodyType2D _defaultBodyType;
+        private PredictionPolicy _appliedKinematicPolicy = PredictionPolicy.FullPrediction;
+        private bool _replayFrozen;
+        private RigidbodyType2D _frozenBodyType;
+        private bool _constraintsFrozen;
+        private RigidbodyConstraints2D _frozenConstraints;
+        private Vector2 _frozenLinearVelocity;
+        private float _frozenAngularVelocity;
+        private Vector2 _softLinearVelocityError;
+        private float _softAngularVelocityError;
+        private bool _hasSoftVelocityError;
+
+        private struct AppliedVelocityTotals
+        {
+            public Vector2 linear;
+            public float angular;
+        }
+
+        private AppliedCorrectionRing<AppliedVelocityTotals> _appliedRing;
+        private Vector2 _appliedLinearTotal;
+        private float _appliedAngularTotal;
+
+        public override bool controlsTransformPolicy => true;
+
+        private void Awake()
+        {
+            if (!_rigidbody)
+                _rigidbody = GetComponent<Rigidbody2D>();
+            _defaultBodyType = _rigidbody.bodyType;
+        }
+
         public override void OnPreSetup()
         {
             linearVelocity = default;
             angularVelocity = default;
+        }
+
+        internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
+        {
+            base.Setup(manager, world, id, owner);
+
+            if (!_rigidbody)
+                return;
+
+            if (_replayFrozen)
+            {
+                if (predictionManager && predictionManager.isReplaying)
+                    return;
+
+                ClearStaleFreeze();
+            }
+
+            RestoreDefaultPhysicsMode();
+            _appliedKinematicPolicy = PredictionPolicy.FullPrediction;
+            ApplyEffectiveKinematic();
+        }
+
+        private void ApplyEffectiveKinematic()
+        {
+            if (isServer || !_rigidbody || _replayFrozen)
+                return;
+
+            var effective = EffectivePolicy();
+            if (effective == _appliedKinematicPolicy)
+                return;
+            _appliedKinematicPolicy = effective;
+
+            if (effective == PredictionPolicy.ServerRelay)
+                ForceRelayKinematic();
+            else
+                RestoreDefaultPhysicsMode();
+        }
+
+        internal override void SyncEffectivePolicySideEffects()
+        {
+            if (TracksEffectivePolicyChanges())
+                ApplyEffectiveKinematic();
+        }
+
+        private void ForceRelayKinematic()
+        {
+            _rigidbody.bodyType = RigidbodyType2D.Kinematic;
+            linearVelocity = default;
+            angularVelocity = 0f;
+        }
+
+        private void ClearStaleFreeze()
+        {
+            _replayFrozen = false;
+            if (_constraintsFrozen)
+            {
+                _rigidbody.constraints = _frozenConstraints;
+                _constraintsFrozen = false;
+            }
+            RestoreDefaultPhysicsMode();
+        }
+
+        private void RestoreDefaultPhysicsMode()
+        {
+            _rigidbody.bodyType = _defaultBodyType;
+        }
+
+        protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
+        {
+            ClearSoftVelocityCorrection();
+
+            SyncControlledTransformPolicy(newPolicy);
+
+            ApplyEffectiveKinematic();
+        }
+
+        private void ClearSoftVelocityCorrection()
+        {
+            _softLinearVelocityError = default;
+            _softAngularVelocityError = 0f;
+            _hasSoftVelocityError = false;
+            _appliedRing?.Clear();
+            _appliedLinearTotal = default;
+            _appliedAngularTotal = 0f;
+        }
+
+        internal override void OnReplayStart()
+        {
+            if (_replayFrozen)
+                return;
+
+            _replayFrozen = true;
+            _frozenBodyType = _rigidbody.bodyType;
+            _frozenLinearVelocity = linearVelocity;
+            _frozenAngularVelocity = angularVelocity;
+            _constraintsFrozen = _frozenBodyType == RigidbodyType2D.Dynamic;
+
+            if (_constraintsFrozen)
+            {
+                _frozenConstraints = _rigidbody.constraints;
+                _rigidbody.constraints = RigidbodyConstraints2D.FreezeAll;
+            }
+
+            if (_frozenBodyType != RigidbodyType2D.Static)
+            {
+                linearVelocity = default;
+                angularVelocity = 0f;
+            }
+        }
+
+        internal override void OnReplayEnd()
+        {
+            if (!_replayFrozen)
+                return;
+
+            _replayFrozen = false;
+
+            if (_constraintsFrozen)
+            {
+                _rigidbody.constraints = _frozenConstraints;
+                _constraintsFrozen = false;
+            }
+
+            if (!isServer && UsesServerRelayTimeline())
+            {
+                ForceRelayKinematic();
+                return;
+            }
+
+            _rigidbody.bodyType = _frozenBodyType;
+            if (_frozenBodyType != RigidbodyType2D.Static)
+            {
+                linearVelocity = _frozenLinearVelocity;
+                angularVelocity = _frozenAngularVelocity;
+            }
+        }
+
+        internal override void SaveStateInHistory(ulong tick)
+        {
+            base.SaveStateInHistory(tick);
+
+            if (isServer || !UsesSoftCorrectionTimeline())
+                return;
+
+            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>();
+            _appliedRing.Record(tick, new AppliedVelocityTotals
+            {
+                linear = _appliedLinearTotal,
+                angular = _appliedAngularTotal
+            });
+        }
+
+        protected override void OnVerifiedStateReceived(ulong tick, in UnityRigidbody2DState predicted, in UnityRigidbody2DState verified)
+        {
+            var verifiedBodyType = (RigidbodyType2D) verified.bodyType;
+            if (_replayFrozen)
+                _frozenBodyType = verifiedBodyType;
+            else if (_rigidbody.bodyType != verifiedBodyType)
+                _rigidbody.bodyType = verifiedBodyType;
+#if UNITY_6000
+            _rigidbody.linearDamping = verified.linearDamping;
+#endif
+
+            var pendingLinear = verified.linearVelocity - predicted.linearVelocity;
+            var pendingAngular = verified.angularVelocity - predicted.angularVelocity;
+
+            if (_appliedRing != null && _appliedRing.TryGetBaseline(tick, out var baseline))
+            {
+                pendingLinear -= _appliedLinearTotal - baseline.linear;
+                pendingAngular -= _appliedAngularTotal - baseline.angular;
+            }
+
+            _softLinearVelocityError = pendingLinear;
+            _softAngularVelocityError = pendingAngular;
+            _hasSoftVelocityError = pendingLinear.sqrMagnitude > 1e-6f ||
+                                    pendingAngular * pendingAngular > 1e-6f;
+        }
+
+        protected override void Simulate(ref UnityRigidbody2DState state, float delta)
+        {
+            if (!_hasSoftVelocityError || _rigidbody.bodyType != RigidbodyType2D.Dynamic)
+                return;
+
+            float blend = 1f - Mathf.Exp(-_softVelocityCorrectionRate * delta);
+            var linearStep = _softLinearVelocityError * blend;
+            var angularStep = _softAngularVelocityError * blend;
+
+            _softLinearVelocityError -= linearStep;
+            _softAngularVelocityError -= angularStep;
+            _appliedLinearTotal += linearStep;
+            _appliedAngularTotal += angularStep;
+
+            if (_softLinearVelocityError.sqrMagnitude < 1e-6f &&
+                _softAngularVelocityError * _softAngularVelocityError < 1e-6f)
+            {
+                _softLinearVelocityError = default;
+                _softAngularVelocityError = 0f;
+                _hasSoftVelocityError = false;
+            }
+
+            linearVelocity += linearStep;
+            angularVelocity += angularStep;
+            state.linearVelocity = linearVelocity;
+            state.angularVelocity = angularVelocity;
+        }
+
+        public override void ResetState()
+        {
+            base.ResetState();
+            _replayFrozen = false;
+            if (_rigidbody)
+            {
+                if (_constraintsFrozen)
+                {
+                    _rigidbody.constraints = _frozenConstraints;
+                    _constraintsFrozen = false;
+                }
+                RestoreDefaultPhysicsMode();
+            }
+        }
+
+        public override void ResetInterpolation()
+        {
+            base.ResetInterpolation();
+            ClearSoftVelocityCorrection();
         }
 
         public void MovePosition(Vector2 position)
@@ -94,6 +353,9 @@ namespace PurrNet.Prediction
 
         protected override void GetUnityState(ref UnityRigidbody2DState state)
         {
+            if (!isServer && UsesServerRelayTimeline())
+                return;
+
             state.linearVelocity = linearVelocity;
             state.angularVelocity = angularVelocity;
             state.bodyType = (int) _rigidbody.bodyType;
@@ -105,6 +367,17 @@ namespace PurrNet.Prediction
 
         protected override void SetUnityState(UnityRigidbody2DState state)
         {
+            if (_replayFrozen)
+            {
+                _frozenBodyType = (RigidbodyType2D) state.bodyType;
+                _frozenLinearVelocity = state.linearVelocity;
+                _frozenAngularVelocity = state.angularVelocity;
+                return;
+            }
+
+            if (!isServer && UsesServerRelayTimeline())
+                return;
+
             _rigidbody.bodyType = (RigidbodyType2D) state.bodyType;
 
             if( _rigidbody.bodyType != RigidbodyType2D.Static)
@@ -316,7 +589,6 @@ namespace PurrNet.Prediction
         /// <param name="mode">Type of torque to apply.</param>
         public void AddRelativeTorque(float torque, ForceMode2D mode = ForceMode2D.Force)
         {
-            // In 2D, torque is always around the Z axis, so relative torque is the same as world torque
             AddTorque(torque, mode);
         }
 
@@ -328,10 +600,8 @@ namespace PurrNet.Prediction
         /// <param name="mode">Type of force to apply.</param>
         public void AddForceAtPosition(Vector2 force, Vector2 position, ForceMode2D mode = ForceMode2D.Force)
         {
-            // Apply linear force
             AddForce(force, mode);
 
-            // Calculate and apply torque
             Vector2 relativePosition = position - _rigidbody.worldCenterOfMass;
             float torque = Vector2.SignedAngle(Vector2.right, relativePosition) * force.magnitude;
             AddTorque(torque, mode);
@@ -349,13 +619,10 @@ namespace PurrNet.Prediction
             Vector2 explosionToObject = _rigidbody.position - explosionPosition;
             float distance = explosionToObject.magnitude;
 
-            // Normalize without division by zero
             Vector2 direction = distance > 0.01f ? explosionToObject / distance : Vector2.up;
 
-            // Calculate force based on distance
             float force = explosionForce * (1.0f - Mathf.Clamp01(distance / explosionRadius));
 
-            // Apply force
             AddForceAtPosition(direction * force, _rigidbody.position, mode);
         }
 #endif

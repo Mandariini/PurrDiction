@@ -46,11 +46,16 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 98dbb08343eac044895b9b52872bcb49, type: 3}
   m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction::PurrNet.Prediction.PredictedTransform
+  _predictionPolicy: 0
   _graphics: {fileID: 8532523129443650751}
   _floatAccuracy: 1
   _interpolationSettings: {fileID: 11400000, guid: 4a8aa8e44e23cfd4a8d4387ef3f36173, type: 2}
   _unparentGraphics: 0
   _characterControllerPatch: 1
+  _softCorrection:
+    correctionRate: 8
+    snapPositionThreshold: 3
+    snapRotationThreshold: 75
 --- !u!114 &2199472247355753092
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -63,6 +68,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d1b7f3622b44191429cfd342f84dc5d6, type: 3}
   m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction::PurrNet.Prediction.PredictedProjectile3D
+  _predictionPolicy: 2
+  _softVelocityCorrectionRate: 8
   _gravity: -8
   _physicsMaterial: {fileID: 13400000, guid: 0a376240ba3853748b8e2a021fe54eac, type: 2}
   _radius: 0.3
@@ -159,4 +166,5 @@ MeshRenderer:
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
+  m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}

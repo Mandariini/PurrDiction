@@ -91,6 +91,11 @@ namespace PurrNet.Prediction
 
         protected void ModuleSetup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
+            ModuleSetup(world);
+        }
+
+        private void ModuleSetup(PredictionManager world)
+        {
             if (_moduleHistory == null)
                 _moduleHistory = new History<DisposableList<uint>>(world.tickRate * 10);
 
@@ -214,7 +219,11 @@ namespace PurrNet.Prediction
             deltaModule.ReadReliable(packer, DynamicKey, ref incoming);
 
             if (_moduleHistory == null)
+            {
+                if (incoming.list != null)
+                    incoming.Dispose();
                 return;
+            }
 
             var owned = incoming.list != null ? incoming.Duplicate() : DisposableList<uint>.Create(0);
             _moduleHistory.Write(tick, owned);
@@ -308,10 +317,10 @@ namespace PurrNet.Prediction
             _moduleHistory?.ClearFuture(tick);
         }
 
-        private void ResetModulesForReuse(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
+        private void ResetModulesForReuse(PredictionManager world)
         {
             ResetModulesForPool();
-            ModuleSetup(manager, world, id, owner);
+            ModuleSetup(world);
         }
 
         private void ResetModulesForPool()

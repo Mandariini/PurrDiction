@@ -45,10 +45,148 @@ namespace PurrNet.Prediction
         public PredictedComponentID id;
 
         internal bool isFreshSpawn = true;
+        internal bool preservesStateOnSetup { get; private set; }
+        private bool _simulateSoftCorrectionDuringReplay;
+        private bool _skipReplaySpawnInitialization;
 
         public virtual bool hasInput => false;
 
         internal virtual bool isEventHandler => false;
+
+        public virtual bool controlsTransformPolicy => false;
+
+        [Header("Predicted Identity")]
+        [SerializeField, Tooltip("How this identity participates in client-side prediction. ServerRelay executes only verified ticks on clients; SoftCorrection simulates locally and blends divergence back instead of resimulating.")]
+        private PredictionPolicy _predictionPolicy = PredictionPolicy.FullPrediction;
+
+        /// <summary>
+        /// How this identity participates in client-side prediction and reconciliation.
+        /// See <see cref="PredictionPolicy"/> for the semantics of each mode.
+        /// </summary>
+        public PredictionPolicy predictionPolicy { get; private set; }
+
+        /// <summary>
+        /// The configured (serialized) policy, re-applied on every registration including pooled reuse.
+        /// Setting this on a spawned identity applies the change immediately via <see cref="SetPredictionPolicy"/>.
+        /// </summary>
+        public PredictionPolicy configuredPredictionPolicy
+        {
+            get => _predictionPolicy;
+            set
+            {
+                _predictionPolicy = NormalizePredictionPolicy(value, predictionManager);
+                if (predictionManager)
+                    SetPredictionPolicy(_predictionPolicy);
+            }
+        }
+
+        protected virtual PredictionPolicy ResolvePredictionPolicy()
+            => NormalizePredictionPolicy(_predictionPolicy, false);
+
+        internal PredictionPolicy ResolveDelegatedPredictionPolicy()
+            => predictionManager && !isFreshSpawn ? predictionPolicy : ResolvePredictionPolicy();
+
+        /// <summary>
+        /// Changes the prediction policy at runtime. Deterministic identities support
+        /// <see cref="PredictionPolicy.FullPrediction"/>, <see cref="PredictionPolicy.ServerRelay"/>,
+        /// and <see cref="PredictionPolicy.PredictedIfOwned"/>. Switching mid-game is safest at
+        /// ownership changes; the next reconcile realigns the identity with its new timeline.
+        /// </summary>
+        public void SetPredictionPolicy(PredictionPolicy policy)
+        {
+            policy = NormalizePredictionPolicy(policy, true);
+
+            if (predictionPolicy == policy)
+                return;
+
+            var oldPolicy = predictionPolicy;
+            predictionPolicy = policy;
+            OnPredictionPolicyChanged(oldPolicy, policy);
+        }
+
+        private PredictionPolicy NormalizePredictionPolicy(PredictionPolicy policy, bool log)
+        {
+            if (!isDeterministic || policy != PredictionPolicy.SoftCorrection)
+                return policy;
+
+            if (log)
+            {
+                Logging.PurrLogger.LogError(
+                    $"Deterministic identities do not support {nameof(PredictionPolicy.SoftCorrection)} because they do not receive authoritative state deltas to correct against.",
+                    this);
+            }
+
+            return PredictionPolicy.FullPrediction;
+        }
+
+        protected virtual void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy) { }
+
+        protected void SyncControlledTransformPolicy(PredictionPolicy policy)
+        {
+            if (!controlsTransformPolicy)
+                return;
+
+            if (TryGetComponent(out PredictedTransform predictedTransform) && predictedTransform != this)
+                predictedTransform.SetPredictionPolicy(policy);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal PredictionPolicy EffectivePolicy()
+        {
+            if (predictionPolicy != PredictionPolicy.PredictedIfOwned)
+                return predictionPolicy;
+            return IsOwner() ? PredictionPolicy.FullPrediction : PredictionPolicy.ServerRelay;
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool UsesSoftCorrectionTimeline()
+            => predictionPolicy == PredictionPolicy.SoftCorrection;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool UsesServerRelayTimeline()
+            => EffectivePolicy() == PredictionPolicy.ServerRelay;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool UsesFullPredictionTimeline()
+            => EffectivePolicy() == PredictionPolicy.FullPrediction;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool TracksEffectivePolicyChanges()
+            => predictionPolicy == PredictionPolicy.PredictedIfOwned;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool AccumulatesRollbackInterpolationError()
+            => UsesFullPredictionTimeline();
+
+        internal bool IsSoftCorrectionReplaySimulating()
+            => _simulateSoftCorrectionDuringReplay;
+
+        internal bool SkipsReplaySpawnInitialization()
+            => _skipReplaySpawnInitialization;
+
+        public bool shouldSkipReplaySpawnInitialization => _skipReplaySpawnInitialization;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool SkipsCurrentSimulationPhase()
+        {
+            var manager = predictionManager;
+            if (manager.cachedIsServer)
+                return false;
+
+            if (UsesFullPredictionTimeline())
+                return false;
+
+            if (UsesSoftCorrectionTimeline())
+                return manager.isReplaying && !_simulateSoftCorrectionDuringReplay;
+
+            return !(manager.isReplaying && manager.isVerified);
+        }
+
+        internal virtual void OnReplayStart() { }
+
+        internal virtual void OnReplayEnd() { }
+
+        internal virtual void SyncEffectivePolicySideEffects() { }
 
         [UsedByIL]
         public bool IsSimulating()
@@ -64,11 +202,40 @@ namespace PurrNet.Prediction
         {
             isServer = false;
             isFreshSpawn = true;
+            preservesStateOnSetup = false;
+            _simulateSoftCorrectionDuringReplay = false;
+            _skipReplaySpawnInitialization = false;
             owner = null;
             id = default;
             ResetModulesForPool();
             OnRemovedFromPool();
         }
+
+        internal void SetPreserveStateOnSetup(bool preserve)
+        {
+            preservesStateOnSetup = preserve;
+        }
+
+        internal void SetSoftCorrectionReplaySimulation(bool simulate)
+        {
+            _simulateSoftCorrectionDuringReplay = simulate;
+        }
+
+        internal void SetSkipReplaySpawnInitialization(bool skip)
+        {
+            _skipReplaySpawnInitialization = skip;
+        }
+
+        internal void SetOwner(PlayerID? player, bool syncPolicySideEffects = true)
+        {
+            owner = player;
+            OnOwnerAssigned(player);
+
+            if (syncPolicySideEffects)
+                SyncEffectivePolicySideEffects();
+        }
+
+        protected virtual void OnOwnerAssigned(PlayerID? player) { }
 
         internal void TriggerOnRemovedFromPool()
         {
@@ -79,15 +246,8 @@ namespace PurrNet.Prediction
 
         protected virtual void OnAddedToPool() {}
 
-        /// <summary>
-        /// Invoked immediately after the object is fully initialized and fresh spawned.
-        /// </summary>
         protected virtual void LateAwake() {}
 
-        /// <summary>
-        /// Invoked when the object is being despawned and cleaned up.
-        /// Allows for any necessary teardown or resource release to be handled.
-        /// </summary>
         protected virtual void Destroyed() {}
 
         private bool _destroyedFired;
@@ -109,15 +269,18 @@ namespace PurrNet.Prediction
         internal virtual void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
             isServer = manager.isServer;
-            this.owner = owner;
             this.id = id;
             _destroyedFired = false;
             predictionManager = world;
             sceneId = world.sceneId;
+            SetOwner(owner, false);
+            SetPredictionPolicy(ResolvePredictionPolicy());
 
             if (!isFreshSpawn)
             {
-                ResetModulesForReuse(manager, world, id, owner);
+                if (preservesStateOnSetup)
+                    ModuleSetup(world);
+                else ResetModulesForReuse(world);
                 return;
             }
 
@@ -126,7 +289,7 @@ namespace PurrNet.Prediction
             BeginInitialModuleSetup();
             try
             {
-                ModuleSetup(manager,world,id, owner);
+                ModuleSetup(world);
                 LateAwake();
             }
             finally
@@ -241,7 +404,6 @@ namespace PurrNet.Prediction
 
         public GameObject GetRoot()
         {
-            // get the farthest root with a predicted identity
             var current = transform;
 
             while (current.parent != null)

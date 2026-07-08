@@ -1,5 +1,6 @@
 using PurrNet.Modules;
 using PurrNet.Packing;
+using PurrNet.Prediction.Profiler;
 
 namespace PurrNet.Prediction
 {
@@ -7,14 +8,44 @@ namespace PurrNet.Prediction
     {
         internal void RunSimulateTick(ulong tick, float delta)
         {
+            if (SkipsCurrentSimulationPhase())
+                return;
+
             SimulateModules(tick, delta);
             SimulateTick(tick, delta);
         }
 
         internal void RunLateSimulateTick(float delta)
         {
+            if (SkipsCurrentSimulationPhase())
+                return;
+
             LateSimulateModules(delta);
             LateSimulateTick(delta);
+        }
+
+        internal void RunPrepareSimulationInputs(ulong tick, float delta)
+        {
+            if (SkipsCurrentSimulationPhase())
+                return;
+
+            OnPrepareSimulationInputs(tick, delta);
+        }
+
+        internal void RunPostSimulate()
+        {
+            if (SkipsCurrentSimulationPhase())
+                return;
+
+            PostSimulate();
+        }
+
+        internal void RunGetLatestUnityState()
+        {
+            if (SkipsCurrentSimulationPhase())
+                return;
+
+            GetLatestUnityState();
         }
 
         internal void RunUpdateView(float deltaTime)
@@ -38,6 +69,10 @@ namespace PurrNet.Prediction
 
         internal void RunSaveState(ulong tick)
         {
+            if (SkipsCurrentSimulationPhase())
+                return;
+
+            PredictionHistoryTelemetry.RecordSave(isEventHandler);
             SaveModulesState(tick);
             SaveStateInHistory(tick);
             SaveDynamicModuleSnapshot(tick);
@@ -45,8 +80,9 @@ namespace PurrNet.Prediction
 
         internal void RunUpdateRollbackInterpolation(float delta, bool accumulateError)
         {
-            UpdateModulesInterpolation(delta, accumulateError);
-            UpdateRollbackInterpolationState(delta, accumulateError);
+            bool shouldAccumulateError = accumulateError && AccumulatesRollbackInterpolationError();
+            UpdateModulesInterpolation(delta, shouldAccumulateError);
+            UpdateRollbackInterpolationState(delta, shouldAccumulateError);
         }
 
         internal void RunResetInterpolation()

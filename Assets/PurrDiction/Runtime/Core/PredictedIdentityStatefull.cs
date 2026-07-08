@@ -115,6 +115,11 @@ namespace PurrNet.Prediction
             fullPredictedState.state = GetInitialState();
         }
 
+        protected override void OnOwnerAssigned(PlayerID? player)
+        {
+            fullPredictedState.prediction.owner = player;
+        }
+
         internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
             myType = GetType();
@@ -127,10 +132,17 @@ namespace PurrNet.Prediction
             if (tickModule == null)
                 return;
 
+            bool preserveInterpolation = preservesStateOnSetup && _interpolatedState != null && _stateHistory != null;
+
+            if (preserveInterpolation && UsesSoftCorrectionTimeline())
+            {
+                fullPredictedState.prediction.owner = owner;
+                return;
+            }
+
             ResetStateToInitialState();
             GetLatestUnityState();
 
-            // if TickRate is 30, then this should be 2
             var interpolationBuffer = (int)Mathf.Max(world.tickRate / (float)10, 2);
 
             if (_interpolatedState == null)
@@ -138,7 +150,11 @@ namespace PurrNet.Prediction
                 _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(
                     FULLInterpolate, 1f / world.tickRate, fullPredictedState.DeepCopy(), interpolationBuffer);
             }
-            else _interpolatedState.Teleport(fullPredictedState.DeepCopy());
+            else if (!preserveInterpolation)
+                _interpolatedState.Teleport(fullPredictedState.DeepCopy());
+
+            _viewState?.Dispose();
+            _viewState = null;
 
             if (_stateHistory == null)
                  _stateHistory = new History<FULL_STATE<STATE>>(world.tickRate * 10);
@@ -147,23 +163,14 @@ namespace PurrNet.Prediction
             _stateHistory.Write(0, fullPredictedState.DeepCopy());
         }
 
-        /// <summary>
-        /// Called when the object is first created.
-        /// Future updates will come only through Simulate.
-        /// </summary>
-        /// <returns>The initial state of the object.</returns>
         protected virtual void GetUnityState(ref STATE state) {}
 
         internal override void GetLatestUnityState()
         {
             fullPredictedState.prediction.owner = owner;
-            // fullPredictedState.prediction.predictedID = id;
             GetUnityState(ref fullPredictedState.state);
         }
 
-        /// <summary>
-        /// Called before the first Simulate is executed
-        /// </summary>
         protected virtual void SimulationStart() {}
 
         internal override void SimulateTick(ulong tick, float delta)
@@ -215,11 +222,16 @@ namespace PurrNet.Prediction
             fullPredictedState.Dispose();
             fullPredictedState = state.DeepCopy();
 
-            owner = fullPredictedState.prediction.owner;
+            ApplyVerifiedPredictionMetadata(in fullPredictedState.prediction);
             SetUnityState(fullPredictedState.state);
         }
 
         protected virtual void SetUnityState(STATE state) {}
+
+        private void ApplyVerifiedPredictionMetadata(in PredictedIdentityState prediction)
+        {
+            SetOwner(prediction.owner);
+        }
 
         protected DeltaKey<STATE> stateKey => new (sceneId, id);
 
@@ -293,9 +305,28 @@ namespace PurrNet.Prediction
 
             ReadDeltaState(packer, deltaModule, ref newState.state);
 
+            if (UsesSoftCorrectionTimeline())
+            {
+                if (_stateHistory.Read(tick, out var predictedAtTick))
+                {
+                    OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
+                    ApplyVerifiedPredictionMetadata(in newState.prediction);
+                }
+                else
+                {
+                    fullPredictedState.Dispose();
+                    fullPredictedState = newState.DeepCopy();
+                    ApplyVerifiedPredictionMetadata(in fullPredictedState.prediction);
+                    SetUnityState(fullPredictedState.state);
+                    ResetInterpolation();
+                }
+            }
+
             _stateHistory.Write(tick, newState);
             TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
         }
+
+        protected virtual void OnVerifiedStateReceived(ulong tick, in STATE predicted, in STATE verified) { }
 
         protected virtual void ReadDeltaState(BitPacker packer, DeltaModule deltaModule, ref STATE state)
         {

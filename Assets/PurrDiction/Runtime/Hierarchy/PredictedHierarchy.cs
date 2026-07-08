@@ -149,14 +149,16 @@ namespace PurrNet.Prediction
             if (pool.TryTakePrecise(key, out var instance))
             {
                 go = instance;
-                go.transform.SetPositionAndRotation(position, rotation);
+                if (!PreservesSoftCorrectionInstance(instance, instanceId))
+                    go.transform.SetPositionAndRotation(position, rotation);
                 predictionManager.RegisterInstance(go, instanceId, owner, false, false);
                 go.SetActive(true);
             }
             else if (key.prefabId.value < 0 && pool.TryTakeSceneObject(key, out var sceneObj))
             {
                 go = sceneObj;
-                go.transform.SetPositionAndRotation(position, rotation);
+                if (!PreservesSoftCorrectionInstance(sceneObj, instanceId))
+                    go.transform.SetPositionAndRotation(position, rotation);
                 predictionManager.RegisterInstance(go, instanceId, owner, false, false);
                 go.SetActive(true);
             }
@@ -185,6 +187,27 @@ namespace PurrNet.Prediction
             }
 
             return instanceId;
+        }
+
+        private bool PreservesSoftCorrectionInstance(GameObject instance, PredictedObjectID instanceId)
+        {
+            if (!predictionManager.isReplaying || !instance)
+                return false;
+
+            using var identities = DisposableList<PredictedIdentity>.Create(4);
+            instance.GetComponentsInChildren(true, identities.list);
+
+            for (var i = 0; i < identities.Count; i++)
+            {
+                var identity = identities[i];
+                if (identity && identity.id.objectId.Equals(instanceId) &&
+                    identity.predictionPolicy == PredictionPolicy.SoftCorrection)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public PredictedObjectID? Create(int prefabId, Vector3 position, Quaternion rotation, PlayerID? owner = null)

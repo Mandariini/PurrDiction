@@ -7,17 +7,17 @@ namespace PurrNet.Prediction
 {
     public abstract class PredictedModule<TState> : PredictedModule where TState : struct, IPredictedData<TState>
     {
-        internal FULL_STATE<TState> fullPredictedState;
+        internal MODULE_STATE<TState> fullPredictedState;
 
         /// <summary>
         /// The current simulation relevant state
         /// </summary>
         public ref TState currentState => ref fullPredictedState.state;
 
-        private History<FULL_STATE<TState>> _history;
+        private History<MODULE_STATE<TState>> _history;
 
-        private InterpolatedWithDispose<FULL_STATE<TState>> _interpolatedState;
-        private FULL_STATE<TState>? _viewState;
+        private InterpolatedWithDispose<MODULE_STATE<TState>> _interpolatedState;
+        private MODULE_STATE<TState>? _viewState;
 
         public TState viewState;
 
@@ -29,7 +29,7 @@ namespace PurrNet.Prediction
 
         public PredictedModule(PredictedIdentity identity) : base(identity) { }
 
-        protected ModuleDeltaKey<PredictedIdentityState> predictionKey => new ModuleDeltaKey<PredictedIdentityState>(identity.id, moduleIndex);
+        private ModuleDeltaKey<ModulePredictedState> predictionKey => new ModuleDeltaKey<ModulePredictedState>(identity.id, moduleIndex);
         protected ModuleDeltaKey<TState> stateKey => new ModuleDeltaKey<TState>(identity.id, moduleIndex);
 
         public override string ToString()
@@ -49,9 +49,9 @@ namespace PurrNet.Prediction
             var tickRate = predictionManager.tickRate;
             var bufferSize = (int)Math.Max(tickRate / 10f, 2);
 
-            _history = new History<FULL_STATE<TState>>(tickRate * 10);
+            _history = new History<MODULE_STATE<TState>>(tickRate * 10);
 
-            _interpolatedState = new InterpolatedWithDispose<FULL_STATE<TState>>(
+            _interpolatedState = new InterpolatedWithDispose<MODULE_STATE<TState>>(
                 FULLInterpolate,
                 1f / tickRate,
                 fullPredictedState.DeepCopy(),
@@ -62,11 +62,19 @@ namespace PurrNet.Prediction
         protected override void Setup(PredictedIdentity parent, PredictionManager world)
         {
             base.Setup(parent, world);
+
+            bool preserveInterpolation = parent.preservesStateOnSetup && _interpolatedState != null && _history != null;
+
+            if (preserveInterpolation && parent.UsesSoftCorrectionTimeline())
+                return;
+
             ResetStateToInitialState();
             _history?.Clear();
             _viewState?.Dispose();
             _viewState = null;
-            _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
+
+            if (!preserveInterpolation)
+                _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
         }
 
         protected sealed override void UpdateView(float delta)
@@ -85,21 +93,8 @@ namespace PurrNet.Prediction
             UpdateView(viewState, verifiedState);
         }
 
-        /// <summary>
-        /// Override this to apply visual updates based on the interpolated state.
-        /// (e.g., transforming a GameObject based on viewState.position).
-        /// </summary>
-        /// <param name="viewState">The smooth, interpolated state for the current frame.</param>
-        /// <param name="verifiedState">The latest authoritative state, useful for comparisons or error correction.</param>
         protected virtual void UpdateView(TState viewState, TState? verifiedState) { }
 
-        /// <summary>
-        /// Override to handle interpolation between states manually
-        /// </summary>
-        /// <param name="from">State to interpolate from</param>
-        /// <param name="to">State to interpolate to</param>
-        /// <param name="t">Step</param>
-        /// <returns>The interpolated state at the given step</returns>
         protected virtual TState Interpolate(TState from, TState to, float t)
         {
             var offset = to.Add(to, from.Negate(from));
@@ -107,10 +102,10 @@ namespace PurrNet.Prediction
             return from.Add(from, scaled);
         }
 
-        private FULL_STATE<TState> FULLInterpolate(FULL_STATE<TState> from, FULL_STATE<TState> to, float t)
+        private MODULE_STATE<TState> FULLInterpolate(MODULE_STATE<TState> from, MODULE_STATE<TState> to, float t)
         {
             var state = Interpolate(from.state, to.state, t);
-            return new FULL_STATE<TState>
+            return new MODULE_STATE<TState>
             {
                 state = state,
                 prediction = from.prediction
@@ -131,10 +126,6 @@ namespace PurrNet.Prediction
             _viewState = copy;
         }
 
-        /// <summary>
-        /// Allows modification of the state used for rollback interpolation before it is committed.
-        /// Useful for accumulating prediction error into the visual state to smooth out corrections.
-        /// </summary>
         protected virtual void ModifyRollbackViewState(ref TState state, float delta, bool accumulateError) { }
 
         protected override void Simulate(ulong tick, float delta)
@@ -147,33 +138,17 @@ namespace PurrNet.Prediction
             Simulate(ref fullPredictedState.state, delta);
         }
 
-        /// <summary>
-        /// Called exactly once before the very first simulation tick executes.
-        /// </summary>
         protected virtual void SimulationStart() { }
 
-        /// <summary>
-        /// Provides the starting state of the module.
-        /// Called every time the module is set up, including when a pooled object is reused.
-        /// For modules created after the identity is set up, this runs during the base constructor,
-        /// before the derived constructor body executes, so avoid reading fields assigned there.
-        /// Future updates will come only through Simulate.
-        /// </summary>
-        /// <returns>The initial state of the module.</returns>
         protected virtual TState GetInitialState() => default;
 
-        /// <summary>
-        /// Executes the simulation logic for this module.
-        /// Modify the <paramref name="state"/> directly to advance the simulation. Or use the `currentState`
-        /// </summary>
-        /// <param name="state">Reference to the current simulation state.</param>
-        /// <param name="delta">Time in seconds since the last tick.</param>
         protected virtual void Simulate(ref TState state, float delta) { }
 
         protected override void Rollback(ulong tick)
         {
             if (_history.ReadOrPrevious(tick, out var result))
             {
+                fullPredictedState.Dispose();
                 fullPredictedState = result.DeepCopy();
             }
         }
@@ -202,21 +177,44 @@ namespace PurrNet.Prediction
         {
             int pos = packer.positionInBits;
             bool changed = Packer<bool>.Read(packer);
+            MODULE_STATE<TState> newState = default;
 
             if (changed)
             {
-                deltaModule.ReadReliable(packer, predictionKey, ref fullPredictedState.prediction);
+                deltaModule.ReadReliable(packer, predictionKey, ref newState.prediction);
             }
             else
             {
                 packer.SetBitPosition(pos);
-                deltaModule.ReadReliable(packer, predictionKey, ref fullPredictedState.prediction);
+                deltaModule.ReadReliable(packer, predictionKey, ref newState.prediction);
                 packer.SetBitPosition(pos);
             }
 
-            deltaModule.ReadReliable(packer, stateKey, ref fullPredictedState.state);
+            deltaModule.ReadReliable(packer, stateKey, ref newState.state);
+
+            if (identity.UsesSoftCorrectionTimeline())
+            {
+                if (_history.Read(tick, out var predictedAtTick))
+                {
+                    OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
+                }
+                else
+                {
+                    fullPredictedState.Dispose();
+                    fullPredictedState = newState.DeepCopy();
+                    ResetInterpolation();
+                }
+
+                _history.Write(tick, newState);
+                return;
+            }
+
+            fullPredictedState.Dispose();
+            fullPredictedState = newState;
             _history.Write(tick, fullPredictedState.DeepCopy());
         }
+
+        protected virtual void OnVerifiedStateReceived(ulong tick, in TState predicted, in TState verified) { }
 
         protected override void WriteFirstState(ulong tick, BitPacker packer)
         {
@@ -225,14 +223,17 @@ namespace PurrNet.Prediction
             if (tick > 0 && _history.ReadOrPrevious(tick, out var historyState))
                 savedState = historyState;
 
-            Packer<PredictedIdentityState>.Write(packer, savedState.prediction);
+            Packer<ModulePredictedState>.Write(packer, savedState.prediction);
             Packer<TState>.Write(packer, savedState.state);
         }
 
         protected override void ReadFirstState(ulong tick, BitPacker packer)
         {
-            Packer<PredictedIdentityState>.Read(packer, ref fullPredictedState.prediction);
-            Packer<TState>.Read(packer, ref fullPredictedState.state);
+            MODULE_STATE<TState> newState = default;
+            Packer<ModulePredictedState>.Read(packer, ref newState.prediction);
+            Packer<TState>.Read(packer, ref newState.state);
+            fullPredictedState.Dispose();
+            fullPredictedState = newState;
             _history.Write(tick, fullPredictedState.DeepCopy());
         }
 
