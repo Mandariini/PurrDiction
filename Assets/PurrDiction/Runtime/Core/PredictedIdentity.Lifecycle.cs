@@ -72,6 +72,11 @@ namespace PurrNet.Prediction
             if (SkipsCurrentSimulationPhase())
                 return;
 
+            RunSaveStateUnchecked(tick);
+        }
+
+        internal void RunSaveStateUnchecked(ulong tick)
+        {
             PredictionHistoryTelemetry.RecordSave(isEventHandler);
             SaveModulesState(tick);
             SaveStateInHistory(tick);

@@ -600,6 +600,8 @@ namespace PurrNet.Prediction
             if (cachedIsServer)
                 isVerified = true;
 
+            LockSpeculativeRelayStates(localTick);
+
             if (cachedIsServer)
                 PrepareInputs();
 
@@ -707,6 +709,8 @@ namespace PurrNet.Prediction
 
             for (var i = 0; i < _systemsCount; i++)
                 _systems[i].RunPostSimulate();
+
+            RestoreSpeculativeRelayStates();
 
             if (cachedIsServer)
                 FinalizeTickOnServer(cachedIsClient);
@@ -1204,8 +1208,77 @@ namespace PurrNet.Prediction
 
         readonly List<PredictedIdentity> _replayFrozenSystems = new ();
 
+        private struct SpeculativeRelayLock
+        {
+            public PredictedIdentity system;
+            public ulong tick;
+        }
+
+        readonly List<SpeculativeRelayLock> _speculativeRelayLocks = new ();
+
+        private void LockSpeculativeRelayStates(ulong tick)
+        {
+            if (cachedIsServer || isVerified)
+                return;
+
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                var system = _systems[i];
+                if (!system.UsesServerRelayTimeline() || !system.SkipsCurrentSimulationPhase())
+                    continue;
+                if (HasSpeculativeRelayLock(system))
+                    continue;
+
+                system.RunSaveStateUnchecked(tick);
+                _speculativeRelayLocks.Add(new SpeculativeRelayLock
+                {
+                    system = system,
+                    tick = tick
+                });
+            }
+        }
+
+        private bool HasSpeculativeRelayLock(PredictedIdentity system)
+        {
+            for (var i = 0; i < _speculativeRelayLocks.Count; i++)
+            {
+                if (_speculativeRelayLocks[i].system == system)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private void RestoreSpeculativeRelayStates()
+        {
+            if (_speculativeRelayLocks.Count == 0)
+                return;
+
+            for (var i = _speculativeRelayLocks.Count - 1; i >= 0; i--)
+            {
+                var locked = _speculativeRelayLocks[i];
+                var system = locked.system;
+                if (!system || !system.UsesServerRelayTimeline())
+                {
+                    _speculativeRelayLocks.RemoveAt(i);
+                    continue;
+                }
+
+                system.RunRollback(locked.tick);
+            }
+
+            SyncTransforms();
+        }
+
+        private void ClearSpeculativeRelayLocks()
+        {
+            _speculativeRelayLocks.Clear();
+        }
+
         private void NotifyReplayStart()
         {
+            ClearSpeculativeRelayLocks();
+
             for (var i = 0; i < _systemsCount; i++)
             {
                 var system = _systems[i];
@@ -1322,6 +1395,8 @@ namespace PurrNet.Prediction
             isSimulating = true;
             localTickInContext = verifiedTick;
 
+            LockSpeculativeRelayStates(verifiedTick);
+
             if (saveMode is HistorySaveMode.Full or HistorySaveMode.VerifiedFrame || isReplaying)
             {
                 using (SaveHistoryMarker.Auto())
@@ -1396,6 +1471,8 @@ namespace PurrNet.Prediction
 
             for (var j = 0; j < _systemsCount; j++)
                 _systems[j].RunGetLatestUnityState();
+
+            RestoreSpeculativeRelayStates();
 
             isSimulating = false;
             localTickInContext = localTick;

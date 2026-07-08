@@ -44,7 +44,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 27908e6ffba647d9a7194eadbff60810, type: 3}
   m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction.Tests::PurrNet.Prediction.Tests.TestFallingSandPlayer
-  _predictionPolicy: 1
+  _predictionPolicy: 0
   _repeatInputFactor: 0.8
   _extrapolateInput: 1
   _interceptInput: 0
