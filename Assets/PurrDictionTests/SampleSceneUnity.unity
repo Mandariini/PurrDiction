@@ -149,7 +149,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 6a482565f52c4fab88d674fc0d130573, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction::PurrNet.Prediction.StaticPredictedIdentity
 --- !u!65 &227476747
 BoxCollider:
@@ -278,7 +278,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 6a482565f52c4fab88d674fc0d130573, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction::PurrNet.Prediction.StaticPredictedIdentity
 --- !u!65 &238752377
 BoxCollider:
@@ -475,8 +475,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: a79441f348de89743a2939f4d699eac1, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   m_RenderShadows: 1
   m_RequiresDepthTextureOption: 2
   m_RequiresOpaqueTextureOption: 2
@@ -523,8 +523,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 939517533de889a4f948d4e2041fb798, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!114 &355645959
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -535,7 +535,7 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: f14e0e7bb0217cc418ed3e3a4678eb3d, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction.Tests::PurrNet.Prediction.Tests.SimpleRotatingPlatform
   _renderer: {fileID: 238590725}
   _predictedRigidbody: {fileID: 355645954}
@@ -678,8 +678,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 474bcb49853aa07438625e644c072ee6, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   m_UsePipelineSettings: 1
   m_AdditionalLightsShadowResolutionTier: 2
   m_CustomShadowLayers: 0
@@ -724,8 +724,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1a1392aa1bc3d3b4a9ef31b6e6d8d4b5, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   _playerPrefab: {fileID: 2990978637306053845, guid: 14ef4fb9c3d76ce4686663df0c0f2555, type: 3}
   _destroyOnDisconnect: 1
   spawnPoints:
@@ -809,8 +809,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 3731f5aa7cadc794c8b48e0e2ad8f5a0, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!4 &686675258
 Transform:
   m_ObjectHideFlags: 0
@@ -884,8 +884,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 21d13622c5da2b14384a1c1abe0ea087, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   _predictedMachine: {fileID: 1871079014}
 --- !u!4 &1179252127
 Transform:
@@ -929,14 +929,14 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 0112282cee605384cb1835dbd2b236de, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   _isSetup: 0
   _prefabId: -2147483648
   _componentIndex: -2147483648
   _shouldBePooled: 0
   _parent: {fileID: 0}
-  _invertedPathToNearestParent:
+  _invertedPathToNearestParent: 
   _directChildren: []
   _networkRules: {fileID: 0}
   _visitiblityRules: {fileID: 0}
@@ -1010,8 +1010,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: baacc2bfe126d544691d4f39fa3785f9, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   _stopPlayingOnDisconnect: 0
   _startServerFlags: 9
   _startClientFlags: 7
@@ -1036,8 +1036,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: ef882a0e84c58df4885b0e1e59320b49, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   checkInterval: 0.33
   placement: 1
   _displayType: -1
@@ -1054,20 +1054,20 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: de4778b5edf2476448bcb3ac3d9c35d5, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   _automaticCloudSetups:
     _adaptToEdgegap: 1
   _serverPort: 5001
   _maxConnections: 100
   _forceIpv4: 0
   _address: 127.0.0.1
-  _query:
-  _path:
+  _query: 
+  _path: 
   _pollEventsInUpdate: 0
   _enableSSL: 0
-  _certPath:
-  _certPassword:
+  _certPath: 
+  _certPassword: 
   _sslProtocols: 0
 --- !u!114 &1793795282
 MonoBehaviour:
@@ -1079,8 +1079,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 332e746c3c3253246aacad4d5559f1fb, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   _masterServer: https://purrtransport.purrservers.com/
   _roomName: dwdfefsfesfes
   _region: france
@@ -1104,8 +1104,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: fc64ff707d914a64e95f2ac0bf554c09, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   _automaticCloudSetups:
     _adaptToEdgegap: 1
   _serverPort: 5000
@@ -1147,8 +1147,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 3d5fadb47a9f2134db85c4ffed35eae5, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   _wrappedStates:
   - _object: {fileID: 1179252125}
   - _object: {fileID: 686675256}
