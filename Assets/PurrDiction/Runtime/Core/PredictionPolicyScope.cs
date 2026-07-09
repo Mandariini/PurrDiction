@@ -1,0 +1,130 @@
+using PurrNet.Pooling;
+using UnityEngine;
+
+namespace PurrNet.Prediction
+{
+    [DisallowMultipleComponent]
+    [AddComponentMenu("PurrDiction/Prediction Policy Scope")]
+    public sealed class PredictionPolicyScope : MonoBehaviour
+    {
+        [SerializeField] private bool _inheritFromParent;
+        [SerializeField] private PredictionPolicy _predictionPolicy = PredictionPolicy.FullPrediction;
+
+        public bool inheritFromParent
+        {
+            get => _inheritFromParent;
+            set
+            {
+                if (_inheritFromParent == value)
+                    return;
+
+                _inheritFromParent = value;
+                ApplyToIdentities();
+            }
+        }
+
+        public PredictionPolicy configuredPredictionPolicy
+        {
+            get => _predictionPolicy;
+            set => SetPredictionPolicy(value);
+        }
+
+        public void SetPredictionPolicy(PredictionPolicy policy)
+        {
+            if (_predictionPolicy == policy)
+                return;
+
+            _predictionPolicy = policy;
+            ApplyToIdentities();
+        }
+
+        public PredictionPolicy ResolvePolicy()
+        {
+            if (_inheritFromParent && TryGetParentScope(out var parent))
+                return parent.ResolvePolicy();
+
+            return _predictionPolicy;
+        }
+
+        public bool TryGetParentScope(out PredictionPolicyScope scope)
+        {
+            var current = transform.parent;
+            while (current)
+            {
+                if (current.TryGetComponent(out scope))
+                    return true;
+
+                current = current.parent;
+            }
+
+            scope = null;
+            return false;
+        }
+
+        public void ApplyToIdentities()
+        {
+            var identities = ListPool<PredictedIdentity>.Instantiate();
+            try
+            {
+                GetComponentsInChildren(true, identities);
+                for (var i = 0; i < identities.Count; i++)
+                {
+                    var identity = identities[i];
+                    if (!identity || identity.OverridesPredictionPolicyScope())
+                        continue;
+                    if (!identity.TryGetPredictionPolicyScope(out var scope) || scope != this)
+                        continue;
+
+                    identity.RefreshResolvedPredictionPolicy();
+                }
+            }
+            finally
+            {
+                ListPool<PredictedIdentity>.Destroy(identities);
+            }
+
+            var scopes = ListPool<PredictionPolicyScope>.Instantiate();
+            try
+            {
+                GetComponentsInChildren(true, scopes);
+                for (var i = 0; i < scopes.Count; i++)
+                {
+                    var scope = scopes[i];
+                    if (!scope || scope == this || !scope._inheritFromParent)
+                        continue;
+                    if (!scope.TryGetParentScope(out var parent) || parent != this)
+                        continue;
+
+                    scope.ApplyToIdentities();
+                }
+            }
+            finally
+            {
+                ListPool<PredictionPolicyScope>.Destroy(scopes);
+            }
+        }
+
+        private void OnEnable()
+        {
+            ApplyToIdentities();
+        }
+
+        private void OnTransformParentChanged()
+        {
+            ApplyToIdentities();
+        }
+
+        private void OnTransformChildrenChanged()
+        {
+            ApplyToIdentities();
+        }
+
+#if UNITY_EDITOR
+        private void OnValidate()
+        {
+            if (Application.isPlaying)
+                ApplyToIdentities();
+        }
+#endif
+    }
+}

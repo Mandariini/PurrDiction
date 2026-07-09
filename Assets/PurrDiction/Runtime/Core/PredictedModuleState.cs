@@ -95,6 +95,10 @@ namespace PurrNet.Prediction
 
         protected virtual void UpdateView(TState viewState, TState? verifiedState) { }
 
+        /// <summary>
+        /// Produces a transient, non-owning view state. Implementations must not allocate
+        /// disposable members in the returned value.
+        /// </summary>
         protected virtual TState Interpolate(TState from, TState to, float t)
         {
             var offset = to.Add(to, from.Negate(from));
@@ -155,7 +159,37 @@ namespace PurrNet.Prediction
 
         protected override void SaveState(ulong tick)
         {
+            if (LatestHistoryMatches(tick, ref fullPredictedState))
+                return;
+
             _history.Write(tick, fullPredictedState.DeepCopy());
+        }
+
+        private bool LatestHistoryMatches(ulong tick, ref MODULE_STATE<TState> state)
+        {
+            if (_history == null || _history.Count <= 0)
+                return false;
+
+            _history.PruneByTickWindow(tick);
+
+            int lastIndex = _history.Count - 1;
+            if (_history.GetEntryTick(lastIndex) > tick)
+                return false;
+
+            var last = _history[lastIndex];
+            return last.HasSameContents(ref state);
+        }
+
+        private void WriteOwnedStateIfChanged(ulong tick, ref MODULE_STATE<TState> state)
+        {
+            if (LatestHistoryMatches(tick, ref state))
+            {
+                state.Dispose();
+                state = default;
+                return;
+            }
+
+            _history.Write(tick, state);
         }
 
         protected override bool WriteState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
@@ -194,7 +228,7 @@ namespace PurrNet.Prediction
 
             if (identity.UsesSoftCorrectionTimeline())
             {
-                if (_history.Read(tick, out var predictedAtTick))
+                if (_history.ReadOrPrevious(tick, out var predictedAtTick))
                 {
                     OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
                 }
@@ -205,13 +239,14 @@ namespace PurrNet.Prediction
                     ResetInterpolation();
                 }
 
-                _history.Write(tick, newState);
+                WriteOwnedStateIfChanged(tick, ref newState);
                 return;
             }
 
             fullPredictedState.Dispose();
             fullPredictedState = newState;
-            _history.Write(tick, fullPredictedState.DeepCopy());
+            if (!LatestHistoryMatches(tick, ref fullPredictedState))
+                _history.Write(tick, fullPredictedState.DeepCopy());
         }
 
         protected virtual void OnVerifiedStateReceived(ulong tick, in TState predicted, in TState verified) { }
@@ -234,7 +269,8 @@ namespace PurrNet.Prediction
             Packer<TState>.Read(packer, ref newState.state);
             fullPredictedState.Dispose();
             fullPredictedState = newState;
-            _history.Write(tick, fullPredictedState.DeepCopy());
+            if (!LatestHistoryMatches(tick, ref fullPredictedState))
+                _history.Write(tick, fullPredictedState.DeepCopy());
         }
 
         protected override void ClearFuture(ulong tick)
@@ -242,13 +278,27 @@ namespace PurrNet.Prediction
             _history.ClearFuture(tick);
         }
 
+        protected override void ReleaseStateForPool()
+        {
+            DisposeStateStorage();
+        }
+
         protected override void OnDisposed()
         {
             base.OnDisposed();
-            _history?.Clear();
-            _interpolatedState?.Teleport(default);
+            DisposeStateStorage();
             _interpolatedState = null;
+        }
+
+        private void DisposeStateStorage()
+        {
+            _history?.Clear();
+            _viewState?.Dispose();
+            _viewState = null;
+            _interpolatedState?.Teleport(default);
             fullPredictedState.Dispose();
+            fullPredictedState = default;
+            viewState = default;
         }
     }
 }

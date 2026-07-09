@@ -35,6 +35,12 @@ namespace PurrNet.Prediction.Editor
                 return;
             }
 
+            if (identity && UsesScope(identity, property) && identity.TryGetPredictionPolicyScope(out var scope))
+            {
+                DrawDelegated(position, label, ResolveDisplayPolicy(identity, scope.ResolvePolicy()), "PredictionPolicyScope");
+                return;
+            }
+
             if (identity && identity.isDeterministic)
             {
                 DrawDeterministic(position, property, label);
@@ -51,6 +57,23 @@ namespace PurrNet.Prediction.Editor
             }
 
             EditorGUI.PropertyField(position, property, label);
+        }
+
+        private static bool UsesScope(PredictedIdentity identity, SerializedProperty property)
+        {
+            var source = property.serializedObject.FindProperty("_predictionPolicySource");
+            if (source == null)
+                return identity.predictionPolicySource != PredictionPolicySource.OverrideScope;
+
+            return source.enumValueIndex != (int)PredictionPolicySource.OverrideScope;
+        }
+
+        private static PredictionPolicy ResolveDisplayPolicy(PredictedIdentity identity, PredictionPolicy policy)
+        {
+            if (identity && identity.isDeterministic && policy == PredictionPolicy.SoftCorrection)
+                return PredictionPolicy.FullPrediction;
+
+            return policy;
         }
 
         private static void DrawDeterministic(Rect position, SerializedProperty property, GUIContent label)
@@ -80,7 +103,7 @@ namespace PurrNet.Prediction.Editor
             using (new EditorGUI.DisabledScope(true))
             {
                 EditorGUI.EnumPopup(position,
-                    new GUIContent(label.text, $"Controlled by the {owner} on this GameObject: pose and velocity of one physics body must share a policy."),
+                    new GUIContent(label.text, $"Controlled by the nearest {owner}. Set Prediction Policy Source to Override Scope to edit this identity independently."),
                     policy);
             }
         }

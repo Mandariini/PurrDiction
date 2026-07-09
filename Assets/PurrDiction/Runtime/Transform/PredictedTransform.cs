@@ -66,6 +66,9 @@ namespace PurrNet.Prediction
 
         protected override PredictionPolicy ResolvePredictionPolicy()
         {
+            if (OverridesPredictionPolicyScope() || TryGetPredictionPolicyScope(out _))
+                return base.ResolvePredictionPolicy();
+
             if (TryGetTransformPolicyOwner(out var policyOwner))
                 return policyOwner.ResolveDelegatedPredictionPolicy();
             return base.ResolvePredictionPolicy();
@@ -249,6 +252,7 @@ namespace PurrNet.Prediction
 
         protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
         {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
             ClearSoftCorrection();
         }
 

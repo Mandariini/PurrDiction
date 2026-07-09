@@ -158,6 +158,8 @@ namespace PurrNet.Prediction
             if (!HasDynamicModulesOrHistory())
                 return;
 
+            _moduleHistory.PruneByTickWindow(tick);
+
             int dynamicCount = _staticModuleCount < 0 ? 0 : _modules.Count - _staticModuleCount;
 
             if (_moduleHistory.Count > 0)
@@ -203,6 +205,8 @@ namespace PurrNet.Prediction
 
         internal void ReadDynamicModuleSnapshot(ulong tick, BitPacker packer, DeltaModule deltaModule)
         {
+            _moduleHistory?.PruneByTickWindow(tick);
+
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
@@ -287,6 +291,8 @@ namespace PurrNet.Prediction
 
         internal void ReadFirstDynamicModuleSnapshot(ulong tick, BitPacker packer)
         {
+            _moduleHistory?.PruneByTickWindow(tick);
+
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
@@ -328,6 +334,14 @@ namespace PurrNet.Prediction
             TearDownAllDynamic();
             _moduleHistory?.Clear();
             _staticModuleCount = -1;
+        }
+
+        private void ReleaseModuleStateForPool()
+        {
+            _moduleHistory?.Clear();
+
+            for (int i = 0; i < _modules.Count; i++)
+                _modules[i].ReleaseStateForPoolInternal();
         }
 
         private void TearDownAllModules()

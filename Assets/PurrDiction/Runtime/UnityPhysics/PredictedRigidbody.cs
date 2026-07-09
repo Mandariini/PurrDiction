@@ -71,28 +71,41 @@ namespace PurrNet.Prediction
         {
 #if UNITY_6000
             get => _rigidbody.linearVelocity;
-            set => _rigidbody.linearVelocity = value;
+            set
+            {
+                if (_rigidbody.isKinematic)
+                    return;
+
+                _rigidbody.linearVelocity = value;
+            }
 #else
             get => _rigidbody.velocity;
-            set => _rigidbody.velocity = value;
+            set
+            {
+                if (_rigidbody.isKinematic)
+                    return;
+
+                _rigidbody.velocity = value;
+            }
 #endif
         }
 
         public Vector3 velocity
         {
-#if UNITY_6000
-            get => _rigidbody.linearVelocity;
-            set => _rigidbody.linearVelocity = value;
-#else
-            get => _rigidbody.velocity;
-            set => _rigidbody.velocity = value;
-#endif
+            get => linearVelocity;
+            set => linearVelocity = value;
         }
 
         public Vector3 angularVelocity
         {
             get => _rigidbody.angularVelocity;
-            set => _rigidbody.angularVelocity = value;
+            set
+            {
+                if (_rigidbody.isKinematic)
+                    return;
+
+                _rigidbody.angularVelocity = value;
+            }
         }
 
         public bool isKinematic
@@ -184,6 +197,12 @@ namespace PurrNet.Prediction
 
         private void ForceRelayKinematic()
         {
+            if (!_rigidbody.isKinematic)
+            {
+                linearVelocity = default;
+                angularVelocity = default;
+            }
+
             if (_rigidbody.collisionDetectionMode is CollisionDetectionMode.Continuous or CollisionDetectionMode.ContinuousDynamic)
                 _rigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
             _rigidbody.isKinematic = true;
@@ -208,6 +227,7 @@ namespace PurrNet.Prediction
 
         protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
         {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
             ClearSoftVelocityCorrection();
 
             SyncControlledTransformPolicy(newPolicy);
@@ -435,7 +455,7 @@ namespace PurrNet.Prediction
         /// <param name="mode">Type of torque to apply.</param>
         public void AddTorque(Vector3 torque, ForceMode mode = ForceMode.Force)
         {
-            _rigidbody.angularVelocity += mode switch
+            angularVelocity += mode switch
             {
                 ForceMode.Force => torque / _rigidbody.mass * predictionManager.tickDelta,
                 ForceMode.Acceleration => torque * predictionManager.tickDelta,

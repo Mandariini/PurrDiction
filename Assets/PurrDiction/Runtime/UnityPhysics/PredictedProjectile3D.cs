@@ -83,6 +83,7 @@ namespace PurrNet.Prediction
 
         protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
         {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
             ClearSoftVelocityCorrection();
             SyncControlledTransformPolicy(newPolicy);
         }
@@ -359,7 +360,7 @@ namespace PurrNet.Prediction
                 gravity = to.gravity,
                 radius = to.radius,
                 isTrigger = to.isTrigger,
-                overlappingTriggers = DisposableList<PredictedComponentID>.Create(8),
+                overlappingTriggers = default,
                 lastSolidContact = default,
                 hasLastSolidContact = false
             };

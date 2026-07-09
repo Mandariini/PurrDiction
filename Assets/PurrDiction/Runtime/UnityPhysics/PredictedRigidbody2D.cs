@@ -138,6 +138,7 @@ namespace PurrNet.Prediction
 
         protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
         {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
             ClearSoftVelocityCorrection();
 
             SyncControlledTransformPolicy(newPolicy);

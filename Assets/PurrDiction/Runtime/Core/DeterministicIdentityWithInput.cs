@@ -69,8 +69,24 @@ namespace PurrNet.Prediction
 
             if (_inputHistory == null)
                 _inputHistory = new History<INPUT>(world.tickRate * 5);
-            else _inputHistory.Clear();
+            DisposeInputStorage();
+        }
 
+        internal override void ReleasePredictionStateForPool()
+        {
+            base.ReleasePredictionStateForPool();
+            DisposeInputStorage();
+        }
+
+        protected override void OnDestroy()
+        {
+            base.OnDestroy();
+            DisposeInputStorage();
+        }
+
+        private void DisposeInputStorage()
+        {
+            _inputHistory?.Clear();
             _currentInput.Dispose();
             _currentInput = default;
             _nextInput.Dispose();
@@ -287,6 +303,13 @@ namespace PurrNet.Prediction
 
                 var sanitizedInput = input;
                 SanitizeInput(ref sanitizedInput);
+
+                if (_queuedInput.HasValue)
+                {
+                    var queuedInput = _queuedInput.Value;
+                    queuedInput.Dispose();
+                }
+
                 _queuedInput = sanitizedInput;
             }
             TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);

@@ -56,7 +56,10 @@ namespace PurrNet.Prediction
         public virtual bool controlsTransformPolicy => false;
 
         [Header("Predicted Identity")]
-        [SerializeField, Tooltip("How this identity participates in client-side prediction. ServerRelay executes only verified ticks on clients; SoftCorrection simulates locally and blends divergence back instead of resimulating.")]
+        [SerializeField, Tooltip("Use the nearest PredictionPolicyScope by default, or explicitly override it for this identity.")]
+        private PredictionPolicySource _predictionPolicySource = PredictionPolicySource.UseScope;
+
+        [SerializeField, Tooltip("Local prediction policy used when this identity overrides its scope, or when no PredictionPolicyScope is found.")]
         private PredictionPolicy _predictionPolicy = PredictionPolicy.FullPrediction;
 
         /// <summary>
@@ -75,16 +78,66 @@ namespace PurrNet.Prediction
             set
             {
                 _predictionPolicy = NormalizePredictionPolicy(value, predictionManager);
-                if (predictionManager)
-                    SetPredictionPolicy(_predictionPolicy);
+                if (predictionManager && UsesConfiguredPredictionPolicy())
+                    SetPredictionPolicy(ResolvePredictionPolicy());
             }
         }
 
+        public PredictionPolicySource predictionPolicySource
+        {
+            get => _predictionPolicySource;
+            set
+            {
+                if (_predictionPolicySource == value)
+                    return;
+
+                _predictionPolicySource = value;
+                RefreshResolvedPredictionPolicy();
+            }
+        }
+
+        internal bool OverridesPredictionPolicyScope()
+            => _predictionPolicySource == PredictionPolicySource.OverrideScope;
+
+        private bool UsesConfiguredPredictionPolicy()
+            => OverridesPredictionPolicyScope() || !TryGetPredictionPolicyScope(out _);
+
+        public bool TryGetPredictionPolicyScope(out PredictionPolicyScope scope)
+        {
+            var current = transform;
+            while (current)
+            {
+                if (current.TryGetComponent(out scope))
+                    return true;
+
+                current = current.parent;
+            }
+
+            scope = null;
+            return false;
+        }
+
         protected virtual PredictionPolicy ResolvePredictionPolicy()
-            => NormalizePredictionPolicy(_predictionPolicy, false);
+        {
+            if (!OverridesPredictionPolicyScope() && TryGetPredictionPolicyScope(out var scope))
+                return NormalizePredictionPolicy(scope.ResolvePolicy(), false);
+
+            return NormalizePredictionPolicy(_predictionPolicy, false);
+        }
 
         internal PredictionPolicy ResolveDelegatedPredictionPolicy()
             => predictionManager && !isFreshSpawn ? predictionPolicy : ResolvePredictionPolicy();
+
+        internal void RefreshResolvedPredictionPolicy()
+        {
+            if (predictionManager)
+                SetPredictionPolicy(ResolvePredictionPolicy());
+        }
+
+        protected virtual void OnTransformParentChanged()
+        {
+            RefreshResolvedPredictionPolicy();
+        }
 
         /// <summary>
         /// Changes the prediction policy at runtime. Deterministic identities support
@@ -419,7 +472,13 @@ namespace PurrNet.Prediction
 
         internal void TriggerOnPooledEvent()
         {
+            ReleasePredictionStateForPool();
             OnAddedToPool();
+        }
+
+        internal virtual void ReleasePredictionStateForPool()
+        {
+            ReleaseModuleStateForPool();
         }
 
         public abstract void WriteFirstInput(ulong localTick, BitPacker packer);

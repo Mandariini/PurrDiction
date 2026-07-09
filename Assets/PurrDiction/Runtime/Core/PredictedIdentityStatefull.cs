@@ -82,9 +82,34 @@ namespace PurrNet.Prediction
         public override void ResetState()
         {
             base.ResetState();
+            DisposeStateStorage();
             ResetInterpolation();
-            fullPredictedState = default;
             _firstViewUpdate = true;
+        }
+
+        protected override void OnDestroy()
+        {
+            base.OnDestroy();
+            DisposeStateStorage();
+        }
+
+        internal override void ReleasePredictionStateForPool()
+        {
+            base.ReleasePredictionStateForPool();
+            DisposeStateStorage();
+        }
+
+        private void DisposeStateStorage()
+        {
+            _viewState?.Dispose();
+            _viewState = null;
+
+            _interpolatedState?.Teleport(default);
+            _stateHistory?.Clear();
+
+            fullPredictedState.Dispose();
+            fullPredictedState = default;
+            viewState = default;
         }
 
         internal override void PrepareInput(bool isServer, bool isLocal, ulong tick, bool extrapolate) { }
@@ -192,7 +217,37 @@ namespace PurrNet.Prediction
 
         internal override void SaveStateInHistory(ulong tick)
         {
+            if (LatestHistoryMatches(tick, ref fullPredictedState))
+                return;
+
             _stateHistory.Write(tick, fullPredictedState.DeepCopy());
+        }
+
+        private bool LatestHistoryMatches(ulong tick, ref FULL_STATE<STATE> state)
+        {
+            if (_stateHistory == null || _stateHistory.Count <= 0)
+                return false;
+
+            _stateHistory.PruneByTickWindow(tick);
+
+            int lastIndex = _stateHistory.Count - 1;
+            if (_stateHistory.GetEntryTick(lastIndex) > tick)
+                return false;
+
+            var last = _stateHistory[lastIndex];
+            return last.HasSameContents(ref state);
+        }
+
+        private void WriteOwnedStateIfChanged(ulong tick, ref FULL_STATE<STATE> state)
+        {
+            if (LatestHistoryMatches(tick, ref state))
+            {
+                state.Dispose();
+                state = default;
+                return;
+            }
+
+            _stateHistory.Write(tick, state);
         }
 
         FULL_STATE<STATE>? _viewState;
@@ -256,11 +311,12 @@ namespace PurrNet.Prediction
             Packer<PredictedIdentityState>.Read(packer, ref prediction);
             Packer<STATE>.Read(packer, ref state);
 
-            _stateHistory.Write(tick, new FULL_STATE<STATE>
+            FULL_STATE<STATE> newState = new FULL_STATE<STATE>
             {
                 state = state,
                 prediction = prediction
-            });
+            };
+            WriteOwnedStateIfChanged(tick, ref newState);
         }
 
         internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
@@ -307,7 +363,7 @@ namespace PurrNet.Prediction
 
             if (UsesSoftCorrectionTimeline())
             {
-                if (_stateHistory.Read(tick, out var predictedAtTick))
+                if (_stateHistory.ReadOrPrevious(tick, out var predictedAtTick))
                 {
                     OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
                     ApplyVerifiedPredictionMetadata(in newState.prediction);
@@ -322,7 +378,7 @@ namespace PurrNet.Prediction
                 }
             }
 
-            _stateHistory.Write(tick, newState);
+            WriteOwnedStateIfChanged(tick, ref newState);
             TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
         }
 
@@ -386,6 +442,10 @@ namespace PurrNet.Prediction
 
         protected virtual void UpdateView(STATE viewState, STATE? verified) {}
 
+        /// <summary>
+        /// Produces a transient, non-owning view state. Implementations must not allocate
+        /// disposable members in the returned value.
+        /// </summary>
         protected virtual STATE Interpolate(STATE from, STATE to, float t)
         {
             var offset = to.Add(to, from.Negate(from));

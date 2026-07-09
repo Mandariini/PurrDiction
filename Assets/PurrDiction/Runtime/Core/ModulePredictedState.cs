@@ -31,6 +31,12 @@ namespace PurrNet.Prediction
             }
         }
 
+        public bool HasSameContents(ref MODULE_STATE<T> other)
+        {
+            return Packer.AreEqualRef(ref prediction, ref other.prediction) &&
+                   Packer.AreEqualRef(ref state, ref other.state);
+        }
+
         public void Dispose()
         {
             state.Dispose();

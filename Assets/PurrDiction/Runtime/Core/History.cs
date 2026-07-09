@@ -146,6 +146,32 @@ namespace PurrNet.Prediction
         }
 
         /// <summary>
+        /// Removes entries older than the configured history window while retaining the
+        /// latest entry at or before the cutoff as an anchor for sparse history reads.
+        /// </summary>
+        public void PruneByTickWindow(ulong currentTick)
+        {
+            if (m_maxCount <= 0 || m_data.Count <= 1)
+                return;
+
+            ulong window = (ulong)m_maxCount;
+            if (currentTick <= window)
+                return;
+
+            ulong cutoff = currentTick - window;
+            bool found = Find(cutoff, out int index);
+            int firstIndexToKeep = found ? index : Math.Max(0, index - 1);
+
+            if (firstIndexToKeep <= 0)
+                return;
+
+            for (int i = 0; i < firstIndexToKeep; i++)
+                m_data[i].Data.Dispose();
+
+            m_data.RemoveRange(0, firstIndexToKeep);
+        }
+
+        /// <summary>
         /// Clear all the data before 'tick'
         /// </summary>
         /// <param name="tick">Clear everything before this</param>
