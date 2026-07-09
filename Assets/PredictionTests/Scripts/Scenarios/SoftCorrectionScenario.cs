@@ -30,8 +30,12 @@ public class SoftCorrectionScenario : Scenario
         ball.AddComponent<SoftProbe>();
         PredictionTestUtils.RegisterPrefab(ctx, ball);
         _rig.ballPrefab = ball;
-        _rig.requiredPlayers = ctx.expectedConnections;
         SoftProbe.ResetCounters();
+    }
+
+    public override void PrepareRun(ScenarioContext ctx, ulong startTick)
+    {
+        _rig.ScheduleStart(startTick);
     }
 
     public override async UniTask<ScenarioResult> RunScenario(ScenarioContext ctx)

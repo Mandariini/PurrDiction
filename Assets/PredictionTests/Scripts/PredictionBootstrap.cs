@@ -16,6 +16,7 @@ public class PredictionBootstrap : Scenario
 {
     private const int MaxUnexpectedLogsPerScenario = 8;
     private const int MaxUnexpectedLogLength = 700;
+    private const float ScenarioStartLeadSeconds = 2f;
 
     [SerializeField] private NetworkManager _networkManager;
     [SerializeField] private PredictionManager _predictionManager;
@@ -48,6 +49,8 @@ public class PredictionBootstrap : Scenario
 
     private void Awake()
     {
+        ScenarioSequencer.Reset();
+
         var prefabs = ScriptableObject.CreateInstance<PredictedPrefabs>();
         prefabs.autoGenerate = false;
         prefabs.searchAllIfNoFolder = false;
@@ -343,9 +346,10 @@ public class PredictionBootstrap : Scenario
             {
                 for (var i = 1; i < _scenarios.Length; i++)
                 {
-                    ScenarioSequencer.IssueStart(i);
+                    var startTick = GetScenarioStartTick();
+                    ScenarioSequencer.IssueStart(i, startTick);
 
-                    if (await RunOne(i, ctx))
+                    if (await RunOne(i, ctx, startTick))
                         anyFailed = true;
 
                     await ScenarioSequencer.WaitForAllAcks(ctx, i);
@@ -363,12 +367,12 @@ public class PredictionBootstrap : Scenario
             {
                 for (var i = 1; i < _scenarios.Length; i++)
                 {
-                    await ScenarioSequencer.WaitForStart(ctx, i);
+                    var startTick = await ScenarioSequencer.WaitForStart(ctx, i);
 
                     if (ScenarioSequencer.SequenceComplete)
                         break;
 
-                    if (await RunOne(i, ctx))
+                    if (await RunOne(i, ctx, startTick))
                         anyFailed = true;
 
                     ScenarioSequencer.AckLocalDone(ctx, i);
@@ -429,7 +433,13 @@ public class PredictionBootstrap : Scenario
         _activePerformanceSampler?.SampleFrame(_predictionManager);
     }
 
-    private async UniTask<bool> RunOne(int i, ScenarioContext ctx)
+    private ulong GetScenarioStartTick()
+    {
+        var leadTicks = (ulong)Mathf.Max(1, Mathf.CeilToInt(_predictionManager.tickRate * ScenarioStartLeadSeconds));
+        return _predictionManager.time.tick + leadTicks;
+    }
+
+    private async UniTask<bool> RunOne(int i, ScenarioContext ctx, ulong scheduledStartTick = 0)
     {
         _dataSent = 0;
         _dataReceived = 0;
@@ -437,6 +447,7 @@ public class PredictionBootstrap : Scenario
         _activeScenarioIndex = i;
 
         var scenario = _scenarios[i];
+        scenario.PrepareRun(ctx, scheduledStartTick);
         Debug.Log($"[PredictionTests] {_role} starting scenario {i}: {scenario.GetType().Name}");
 
         long startTick = DateTime.Now.Ticks;

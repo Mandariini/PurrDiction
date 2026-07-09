@@ -9,6 +9,7 @@ public static class ScenarioSequencer
     private const float END_OF_RUN_HANDSHAKE_TIMEOUT_SECONDS = 10f;
 
     private static readonly Dictionary<int, HashSet<PlayerID>> _acksByIndex = new();
+    private static readonly Dictionary<int, ulong> _startTicksByIndex = new();
     private static readonly HashSet<PlayerID> _endOfRunAcks = new();
 
     private static int _latestStartedIndex = -1;
@@ -16,17 +17,26 @@ public static class ScenarioSequencer
 
     public static bool SequenceComplete => _sequenceComplete;
 
-    public static void IssueStart(int index)
+    public static void Reset()
     {
-        BroadcastStart(index);
+        _acksByIndex.Clear();
+        _startTicksByIndex.Clear();
+        _endOfRunAcks.Clear();
+        _latestStartedIndex = -1;
+        _sequenceComplete = false;
     }
 
-    public static async UniTask WaitForStart(ScenarioContext ctx, int index)
+    public static void IssueStart(int index, ulong startTick)
+    {
+        BroadcastStart(index, startTick);
+    }
+
+    public static async UniTask<ulong> WaitForStart(ScenarioContext ctx, int index)
     {
         try
         {
             await UniTaskUtils.WaitWithTimeout(
-                () => _latestStartedIndex >= index || _sequenceComplete,
+                () => _startTicksByIndex.ContainsKey(index) || _sequenceComplete,
                 SCENARIO_TIMEOUT_SECONDS,
                 ctx.cancellationToken);
         }
@@ -37,6 +47,8 @@ public static class ScenarioSequencer
                 $"(latestStarted={_latestStartedIndex}, sequenceComplete={_sequenceComplete})",
                 e);
         }
+
+        return _startTicksByIndex.TryGetValue(index, out var startTick) ? startTick : 0;
     }
 
     public static async UniTask WaitForAllAcks(ScenarioContext ctx, int index)
@@ -143,8 +155,9 @@ public static class ScenarioSequencer
     }
 
     [ObserversRpc(runLocally: true)]
-    private static void BroadcastStart(int index)
+    private static void BroadcastStart(int index, ulong startTick)
     {
+        _startTicksByIndex[index] = startTick;
         if (index > _latestStartedIndex)
             _latestStartedIndex = index;
     }

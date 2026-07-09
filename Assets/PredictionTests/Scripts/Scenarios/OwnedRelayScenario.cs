@@ -33,8 +33,12 @@ public class OwnedRelayScenario : Scenario
         _prefabId = ctx.predictionManager.predictedPrefabs.prefabs.Count;
         PredictionTestUtils.RegisterPrefab(ctx, ball);
         _rig.ballPrefab = ball;
-        _rig.requiredPlayers = ctx.expectedConnections;
         OwnedRelayProbe.ResetCounters();
+    }
+
+    public override void PrepareRun(ScenarioContext ctx, ulong startTick)
+    {
+        _rig.ScheduleStart(startTick);
     }
 
     public override async UniTask<ScenarioResult> RunScenario(ScenarioContext ctx)

@@ -10,11 +10,16 @@ public class PolicyBallRig : DeterministicIdentity<PolicyBallRig.RigState>
 
     public GameObject ballPrefab { get; set; }
 
-    public int requiredPlayers { get; set; }
-
     public bool hasSpawned => currentState.spawned;
 
     public Vector3 spawnPosition => _spawnPosition;
+
+    private ulong _startTick = ulong.MaxValue;
+
+    public void ScheduleStart(ulong startTick)
+    {
+        _startTick = startTick;
+    }
 
     public struct RigState : IPredictedData<RigState>
     {
@@ -38,7 +43,7 @@ public class PolicyBallRig : DeterministicIdentity<PolicyBallRig.RigState>
         if (state.spawned || !ballPrefab)
             return;
 
-        if (predictionManager.players.players.Count < requiredPlayers)
+        if (_startTick == ulong.MaxValue || predictionManager.time.tick < _startTick)
             return;
 
         state.timer -= delta;

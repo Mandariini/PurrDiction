@@ -8,6 +8,7 @@ public class ServerRelayScenario : Scenario
 {
     [SerializeField] private PolicyBallRig _rig;
     [SerializeField] private float _restSeconds = 3f;
+    [SerializeField] private int _minVerifiedTicks = 100;
     [SerializeField] private float _timeout = 90f;
 
     private const int DigestChannel = 1000;
@@ -33,8 +34,12 @@ public class ServerRelayScenario : Scenario
         _prefabId = ctx.predictionManager.predictedPrefabs.prefabs.Count;
         PredictionTestUtils.RegisterPrefab(ctx, ball);
         _rig.ballPrefab = ball;
-        _rig.requiredPlayers = ctx.expectedConnections;
         RelayProbe.ResetCounters();
+    }
+
+    public override void PrepareRun(ScenarioContext ctx, ulong startTick)
+    {
+        _rig.ScheduleStart(startTick);
     }
 
     public override async UniTask<ScenarioResult> RunScenario(ScenarioContext ctx)
@@ -67,7 +72,9 @@ public class ServerRelayScenario : Scenario
                         lastPosition = position;
                         lastMove = now;
                     }
-                    return now - lastMove >= _restSeconds;
+                    bool hasVerifiedTickEvidence = ctx.role != NetworkRole.Client ||
+                                                   RelayProbe.verifiedSimulations >= _minVerifiedTicks;
+                    return now - lastMove >= _restSeconds && hasVerifiedTickEvidence;
                 },
                 _timeout,
                 ctx.cancellationToken);
@@ -88,7 +95,7 @@ public class ServerRelayScenario : Scenario
             if (RelayProbe.monotonicityViolations > 0)
                 return ScenarioResult.Fail($"relay identity simulated verified ticks out of order ({RelayProbe.monotonicityViolations} violations)");
 
-            if (RelayProbe.verifiedSimulations < 100)
+            if (RelayProbe.verifiedSimulations < _minVerifiedTicks)
                 return ScenarioResult.Fail($"relay identity barely simulated ({RelayProbe.verifiedSimulations} verified ticks)");
         }
 

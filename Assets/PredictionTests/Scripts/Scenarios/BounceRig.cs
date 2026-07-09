@@ -7,9 +7,14 @@ public class BounceRig : DeterministicIdentity<BounceRig.RigState>
 
     public GameObject ballPrefab { get; set; }
 
-    public int requiredPlayers { get; set; }
-
     public bool hasSpawned => currentState.spawned;
+
+    private ulong _startTick = ulong.MaxValue;
+
+    public void ScheduleStart(ulong startTick)
+    {
+        _startTick = startTick;
+    }
 
     public struct RigState : IPredictedData<RigState>
     {
@@ -33,7 +38,7 @@ public class BounceRig : DeterministicIdentity<BounceRig.RigState>
         if (state.spawned || !ballPrefab)
             return;
 
-        if (predictionManager.players.players.Count < requiredPlayers)
+        if (_startTick == ulong.MaxValue || predictionManager.time.tick < _startTick)
             return;
 
         state.timer -= delta;
