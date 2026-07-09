@@ -137,6 +137,7 @@ jobs:
             echo "::group::Launching $MODE process ($PROFILE)"
             "${RUN[@]}" "$BIN" -batchmode -nographics \
               -role "$MODE" -count "$TOTAL_COUNT" -port "$PORT" \
+              -connectTimeout 90 \
               "${LATENCY_ARGS[@]}" \
               -results "$RESULTS_DIR/$MODE.json" \
               -logFile "$LOGS_DIR/$MODE.log" &
@@ -157,7 +158,8 @@ jobs:
             for i in $(seq 1 "$EXTERNAL_CLIENTS"); do
               echo "::group::Launching client $i ($PROFILE)"
               "${RUN[@]}" "$BIN" -batchmode -nographics \
-                -role client -port "$PORT" \
+                -role client -count "$TOTAL_COUNT" -port "$PORT" \
+                -connectTimeout 90 \
                 "${LATENCY_ARGS[@]}" \
                 -results "$RESULTS_DIR/client-$i.json" \
                 -logFile "$LOGS_DIR/client-$i.log" &

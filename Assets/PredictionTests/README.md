@@ -34,8 +34,8 @@ Build `StandaloneLinux64`/`StandaloneWindows64` with this scene first, then:
 
 ```
 PurrDictionTests -batchmode -nographics -role host -count 3 -results host.json -logFile host.log
-PurrDictionTests -batchmode -nographics -role client -results client-1.json -logFile client-1.log
-PurrDictionTests -batchmode -nographics -role client -results client-2.json -logFile client-2.log
+PurrDictionTests -batchmode -nographics -role client -count 3 -results client-1.json -logFile client-1.log
+PurrDictionTests -batchmode -nographics -role client -count 3 -results client-2.json -logFile client-2.log
 ```
 
 Optional args: `-port`, `-serverHost`, `-connectTimeout`. Exit code is non-zero if any scenario fails. CI runs this via `.github/workflows/prediction-tests.yml` (server and host matrix, IL2CPP).

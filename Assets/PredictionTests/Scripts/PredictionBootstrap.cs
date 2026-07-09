@@ -143,27 +143,24 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
-        if (_role != NetworkRole.Client)
+        if (CommandLineUtils.TryGetArgument("-count", out var countString))
         {
-            if (CommandLineUtils.TryGetArgument("-count", out var countString))
+            if (!int.TryParse(countString, out _expectedConnections) || _expectedConnections < 1)
             {
-                if (!int.TryParse(countString, out _expectedConnections))
-                {
-                    Debug.LogError($"Could not parse -count value '{countString}'");
-                    Application.Quit(-1);
-                    return;
-                }
-            }
-            else
-            {
-#if UNITY_EDITOR
-                _expectedConnections = _editorExpectedConnections;
-#else
-                Debug.LogError("Expected -count argument");
+                Debug.LogError($"Could not parse positive -count value '{countString}'");
                 Application.Quit(-1);
                 return;
-#endif
             }
+        }
+        else
+        {
+#if UNITY_EDITOR
+            _expectedConnections = _editorExpectedConnections;
+#else
+            Debug.LogError("Expected -count argument");
+            Application.Quit(-1);
+            return;
+#endif
         }
 
         CommandLineUtils.TryGetArgument("-results", out _resultsPath);
@@ -334,7 +331,12 @@ public class PredictionBootstrap : Scenario
             if (_scenarios.Length > 0)
             {
                 if (await RunOne(0, ctx))
+                {
                     anyFailed = true;
+                    if (ctx.isServer)
+                        ScenarioSequencer.IssueSequenceComplete();
+                    return;
+                }
             }
 
             if (ctx.isServer)
