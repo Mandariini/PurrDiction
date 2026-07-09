@@ -17,11 +17,11 @@ namespace PurrNet.Prediction
         public T state;
         public ModulePredictedState prediction;
 
-        static readonly ProfilerMarker SimulateMarker = new("DeepCopy.Module." + typeof(T).FullName);
+        private static readonly ProfilerMarker _deepCopyMarker = new("DeepCopy.Module." + typeof(T).FullName);
 
         public MODULE_STATE<T> DeepCopy()
         {
-            using (SimulateMarker.Auto())
+            using (_deepCopyMarker.Auto())
             {
                 return new MODULE_STATE<T>
                 {

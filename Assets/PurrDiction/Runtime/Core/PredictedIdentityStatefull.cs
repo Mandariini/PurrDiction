@@ -83,7 +83,6 @@ namespace PurrNet.Prediction
         {
             base.ResetState();
             DisposeStateStorage();
-            ResetInterpolation();
             _firstViewUpdate = true;
         }
 
@@ -157,9 +156,12 @@ namespace PurrNet.Prediction
             if (tickModule == null)
                 return;
 
-            bool preserveInterpolation = preservesStateOnSetup && _interpolatedState != null && _stateHistory != null;
+            bool preserveSoftCorrection = preservesStateOnSetup &&
+                                          UsesSoftCorrectionTimeline() &&
+                                          _interpolatedState != null &&
+                                          _stateHistory != null;
 
-            if (preserveInterpolation && UsesSoftCorrectionTimeline())
+            if (preserveSoftCorrection)
             {
                 fullPredictedState.prediction.owner = owner;
                 return;
@@ -175,7 +177,7 @@ namespace PurrNet.Prediction
                 _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(
                     FULLInterpolate, 1f / world.tickRate, fullPredictedState.DeepCopy(), interpolationBuffer);
             }
-            else if (!preserveInterpolation)
+            else
                 _interpolatedState.Teleport(fullPredictedState.DeepCopy());
 
             _viewState?.Dispose();

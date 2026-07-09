@@ -315,6 +315,7 @@ namespace PurrNet.Prediction
             _queue.Clear();
             _systems.Clear();
             _replayFrozenSystems.Clear();
+            _speculativeRelayLocks.Clear();
             _systemsCount = 0;
             _nextSystemId = 0;
             _clientTicks.Clear();
@@ -359,7 +360,7 @@ namespace PurrNet.Prediction
                          component.ResetState();
                     if (triggedOnRemovedFromPool)
                         component.TriggerOnRemovedFromPool();
-                    RegisterInstance(component, objectID, i, owner, preserveState);
+                    RegisterInstance(component, objectID, i, owner, preserveSoftState);
                 }
             }
 
@@ -469,6 +470,7 @@ namespace PurrNet.Prediction
 
         public void UnregisterInstance(PredictedIdentity predictedIdentity)
         {
+            RemoveSpeculativeRelayLock(predictedIdentity);
             _instanceMap.Remove(predictedIdentity.id);
             if (_systems.Remove(predictedIdentity))
                 --_systemsCount;
@@ -1249,6 +1251,15 @@ namespace PurrNet.Prediction
             return false;
         }
 
+        private void RemoveSpeculativeRelayLock(PredictedIdentity system)
+        {
+            for (var i = _speculativeRelayLocks.Count - 1; i >= 0; i--)
+            {
+                if (_speculativeRelayLocks[i].system == system)
+                    _speculativeRelayLocks.RemoveAt(i);
+            }
+        }
+
         private void RestoreSpeculativeRelayStates()
         {
             if (_speculativeRelayLocks.Count == 0)
@@ -1267,6 +1278,7 @@ namespace PurrNet.Prediction
                 system.RunRollback(locked.tick);
             }
 
+            _speculativeRelayLocks.Clear();
             SyncTransforms();
         }
 

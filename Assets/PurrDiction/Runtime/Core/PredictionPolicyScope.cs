@@ -51,7 +51,7 @@ namespace PurrNet.Prediction
             var current = transform.parent;
             while (current)
             {
-                if (current.TryGetComponent(out scope))
+                if (current.TryGetComponent(out scope) && scope.isActiveAndEnabled)
                     return true;
 
                 current = current.parent;
@@ -63,6 +63,9 @@ namespace PurrNet.Prediction
 
         public void ApplyToIdentities()
         {
+            if (!isActiveAndEnabled)
+                return;
+
             var identities = ListPool<PredictedIdentity>.Instantiate();
             try
             {
@@ -104,9 +107,33 @@ namespace PurrNet.Prediction
             }
         }
 
+        private void RefreshDescendantIdentities()
+        {
+            var identities = ListPool<PredictedIdentity>.Instantiate();
+            try
+            {
+                GetComponentsInChildren(true, identities);
+                for (var i = 0; i < identities.Count; i++)
+                {
+                    var identity = identities[i];
+                    if (identity && !identity.OverridesPredictionPolicyScope())
+                        identity.RefreshResolvedPredictionPolicy();
+                }
+            }
+            finally
+            {
+                ListPool<PredictedIdentity>.Destroy(identities);
+            }
+        }
+
         private void OnEnable()
         {
             ApplyToIdentities();
+        }
+
+        private void OnDisable()
+        {
+            RefreshDescendantIdentities();
         }
 
         private void OnTransformParentChanged()

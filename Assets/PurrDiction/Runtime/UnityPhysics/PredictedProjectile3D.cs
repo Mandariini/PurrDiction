@@ -11,7 +11,7 @@ namespace PurrNet.Prediction
     public class PredictedProjectile3D : PredictedIdentity<ProjectileState3D>, IPredictedPhysicsCallbacks
     {
         [Tooltip("Fraction of the remaining velocity error corrected per second when using SoftCorrection.")]
-        [SerializeField] private float _softVelocityCorrectionRate = 8f;
+        [SerializeField, Min(0f)] private float _softVelocityCorrectionRate = 8f;
 
         [Tooltip("The gravity applied to the projectile (typically negative Y).")]
         [SerializeField, PurrLock] private float _gravity = 0;
@@ -143,7 +143,7 @@ namespace PurrNet.Prediction
             if (!_hasSoftVelocityError)
                 return;
 
-            float blend = 1f - Mathf.Exp(-_softVelocityCorrectionRate * delta);
+            float blend = 1f - Mathf.Exp(-Mathf.Max(0f, _softVelocityCorrectionRate) * delta);
             var velocityStep = _softVelocityError * blend;
 
             _softVelocityError -= velocityStep;

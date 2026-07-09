@@ -63,9 +63,12 @@ namespace PurrNet.Prediction
         {
             base.Setup(parent, world);
 
-            bool preserveInterpolation = parent.preservesStateOnSetup && _interpolatedState != null && _history != null;
+            bool preserveSoftCorrection = parent.preservesStateOnSetup &&
+                                          parent.UsesSoftCorrectionTimeline() &&
+                                          _interpolatedState != null &&
+                                          _history != null;
 
-            if (preserveInterpolation && parent.UsesSoftCorrectionTimeline())
+            if (preserveSoftCorrection)
                 return;
 
             ResetStateToInitialState();
@@ -73,8 +76,7 @@ namespace PurrNet.Prediction
             _viewState?.Dispose();
             _viewState = null;
 
-            if (!preserveInterpolation)
-                _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
+            _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
         }
 
         protected sealed override void UpdateView(float delta)

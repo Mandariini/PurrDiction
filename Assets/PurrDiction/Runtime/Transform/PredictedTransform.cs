@@ -66,11 +66,9 @@ namespace PurrNet.Prediction
 
         protected override PredictionPolicy ResolvePredictionPolicy()
         {
-            if (OverridesPredictionPolicyScope() || TryGetPredictionPolicyScope(out _))
-                return base.ResolvePredictionPolicy();
-
             if (TryGetTransformPolicyOwner(out var policyOwner))
                 return policyOwner.ResolveDelegatedPredictionPolicy();
+
             return base.ResolvePredictionPolicy();
         }
 
@@ -311,8 +309,8 @@ namespace PurrNet.Prediction
             Vector3 positionStep;
             Quaternion rotationStep;
 
-            bool snap = positionError > _softCorrection.snapPositionThreshold ||
-                        rotationError > _softCorrection.snapRotationThreshold;
+            bool snap = positionError > Mathf.Max(0f, _softCorrection.snapPositionThreshold) ||
+                        rotationError > Mathf.Max(0f, _softCorrection.snapRotationThreshold);
 
             if (snap)
             {
@@ -321,7 +319,7 @@ namespace PurrNet.Prediction
             }
             else
             {
-                float blend = 1f - Mathf.Exp(-_softCorrection.correctionRate * delta);
+                float blend = 1f - Mathf.Exp(-Mathf.Max(0f, _softCorrection.correctionRate) * delta);
                 positionStep = _softPositionError * blend;
                 rotationStep = Quaternion.Slerp(Quaternion.identity, _softRotationError, blend);
             }
@@ -450,7 +448,7 @@ namespace PurrNet.Prediction
                 float minThreshold = posThreshold.x * posThreshold.x;
                 float corrMag = correction.sqrMagnitude;
 
-                if (corrMag < minThreshold && positionError > minThreshold)
+                if (corrMag < minThreshold && positionError > posThreshold.x)
                     correction = correction.normalized * posThreshold.x;
                 else if (corrMag > positionError * positionError)
                     correction = _accumulatedPositionError;

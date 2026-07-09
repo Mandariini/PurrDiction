@@ -1,6 +1,8 @@
 using System;
+using System.Collections;
 using System.Reflection;
 using NUnit.Framework;
+using PurrNet.Pooling;
 using UnityEngine;
 
 namespace PurrNet.Prediction.Tests.Editor
@@ -142,6 +144,319 @@ namespace PurrNet.Prediction.Tests.Editor
             }
         }
 
+        [Test]
+        public void RuntimePolicyApisPersistOverridesAndReturnToScope()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var scopeObject = new GameObject("Scope");
+            var identityObject = new GameObject("PolicyProbe");
+
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                var scope = scopeObject.AddComponent<PredictionPolicyScope>();
+                scope.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
+
+                identityObject.transform.SetParent(scopeObject.transform);
+                var identity = identityObject.AddComponent<PolicyProbe>();
+                identity.AttachForTest(manager);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+
+                identity.SetPredictionPolicyOverride(PredictionPolicy.ServerRelay);
+                Assert.That(identity.predictionPolicySource, Is.EqualTo(PredictionPolicySource.OverrideScope));
+                Assert.That(identity.configuredPredictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+
+                scope.SetPredictionPolicy(PredictionPolicy.FullPrediction);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+
+                identity.UsePredictionPolicyScope();
+                Assert.That(identity.predictionPolicySource, Is.EqualTo(PredictionPolicySource.UseScope));
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+
+                identity.SetPredictionPolicy(PredictionPolicy.SoftCorrection);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+                scope.ApplyToIdentities();
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+
+                identity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(scopeObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void DisablingOrRemovingScopeRefreshesDescendants()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var scopeObject = new GameObject("Scope");
+            var identityObject = new GameObject("PolicyProbe");
+
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                var scope = scopeObject.AddComponent<PredictionPolicyScope>();
+                scope.configuredPredictionPolicy = PredictionPolicy.ServerRelay;
+
+                identityObject.transform.SetParent(scopeObject.transform);
+                var identity = identityObject.AddComponent<PolicyProbe>();
+                identity.AttachForTest(manager);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+
+                scope.enabled = false;
+                InvokeLifecycle(scope, "OnDisable");
+                Assert.That(identity.TryGetPredictionPolicyScope(out _), Is.False);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+
+                scope.enabled = true;
+                scope.ApplyToIdentities();
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+
+                scope.enabled = false;
+                InvokeLifecycle(scope, "OnDisable");
+                UnityEngine.Object.DestroyImmediate(scope);
+                Assert.That(identity.TryGetPredictionPolicyScope(out _), Is.False);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+
+                identity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(scopeObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void InheritedScopeTracksParentPolicyAndCanReturnToLocalPolicy()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var parentObject = new GameObject("ParentScope");
+            var childObject = new GameObject("ChildScope");
+            var identityObject = new GameObject("PolicyProbe");
+
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                var parentScope = parentObject.AddComponent<PredictionPolicyScope>();
+                parentScope.configuredPredictionPolicy = PredictionPolicy.ServerRelay;
+
+                childObject.transform.SetParent(parentObject.transform);
+                var childScope = childObject.AddComponent<PredictionPolicyScope>();
+                childScope.configuredPredictionPolicy = PredictionPolicy.FullPrediction;
+                childScope.inheritFromParent = true;
+
+                identityObject.transform.SetParent(childObject.transform);
+                var identity = identityObject.AddComponent<PolicyProbe>();
+                identity.AttachForTest(manager);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+
+                parentScope.SetPredictionPolicy(PredictionPolicy.SoftCorrection);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+
+                childScope.inheritFromParent = false;
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+
+                identity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(childObject);
+                UnityEngine.Object.DestroyImmediate(parentObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void TransformFollowsPhysicsPolicyOwnerInsteadOfIndependentScope()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var scopeObject = new GameObject("Scope");
+            var identityObject = new GameObject("PolicyOwner");
+
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                var scope = scopeObject.AddComponent<PredictionPolicyScope>();
+                scope.configuredPredictionPolicy = PredictionPolicy.FullPrediction;
+
+                identityObject.transform.SetParent(scopeObject.transform);
+                var predictedTransform = identityObject.AddComponent<PredictedTransformPolicyProbe>();
+                var policyOwner = identityObject.AddComponent<PolicyOwnerProbe>();
+                policyOwner.AttachForTest(manager);
+                policyOwner.SetPredictionPolicyOverride(PredictionPolicy.ServerRelay);
+                predictedTransform.AttachForTest(manager);
+
+                Assert.That(policyOwner.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+                Assert.That(predictedTransform.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+
+                scope.SetPredictionPolicy(PredictionPolicy.SoftCorrection);
+                Assert.That(policyOwner.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+                Assert.That(predictedTransform.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+
+                predictedTransform.DetachForTest();
+                policyOwner.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(scopeObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void ResetStateDoesNotInterpolateDisposedState()
+        {
+            var gameObject = new GameObject(nameof(ResetStateDoesNotInterpolateDisposedState));
+            try
+            {
+                var identity = gameObject.AddComponent<PredictedPlayerSpawner>();
+                var state = new FULL_STATE<PlayerSpawnerState>
+                {
+                    state = new PlayerSpawnerState
+                    {
+                        values = DisposableList<PlayerWithObject>.Create(1)
+                    }
+                };
+                state.state.values.Add(default);
+                identity.fullPredictedState = state;
+
+                var initial = new FULL_STATE<PlayerSpawnerState>
+                {
+                    state = state.state.Duplicate()
+                };
+                var interpolation = new InterpolatedWithDispose<FULL_STATE<PlayerSpawnerState>>(
+                    (from, _, _) => from,
+                    1f,
+                    initial,
+                    2);
+                SetField(typeof(DeterministicIdentity<PlayerSpawnerState>), identity,
+                    "_interpolatedState", interpolation);
+
+                Assert.DoesNotThrow(identity.ResetState);
+                Assert.That(identity.currentState.values.isDisposed, Is.True);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
+        public void RestoringRelayLocksClearsTheSnapshotForTheNextTick()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var identityObject = new GameObject("RelayLockProbe");
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                var identity = identityObject.AddComponent<RelayLockProbe>();
+                identity.AttachForTest(manager);
+                identity.SetPredictionPolicyOverride(PredictionPolicy.ServerRelay);
+
+                var lockType = typeof(PredictionManager).GetNestedType(
+                    "SpeculativeRelayLock", BindingFlags.NonPublic);
+                Assert.That(lockType, Is.Not.Null);
+                var entry = Activator.CreateInstance(lockType);
+                lockType.GetField("system")?.SetValue(entry, identity);
+                lockType.GetField("tick")?.SetValue(entry, 42UL);
+
+                var locksField = typeof(PredictionManager).GetField(
+                    "_speculativeRelayLocks", InstanceFields);
+                Assert.That(locksField, Is.Not.Null);
+                var locks = (IList)locksField.GetValue(manager);
+                locks.Add(entry);
+
+                InvokeLifecycle(manager, "RestoreSpeculativeRelayStates");
+
+                Assert.That(identity.rollbackCount, Is.EqualTo(1));
+                Assert.That(identity.lastRollbackTick, Is.EqualTo(42UL));
+                Assert.That(locks.Count, Is.Zero);
+                identity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void RepeatedEmptyDynamicModuleSnapshotsReuseSparseHistory()
+        {
+            var gameObject = new GameObject(nameof(RepeatedEmptyDynamicModuleSnapshotsReuseSparseHistory));
+            try
+            {
+                var identity = gameObject.AddComponent<PolicyProbe>();
+                var history = new History<DisposableList<uint>>(8);
+                SetField(typeof(PredictedIdentity), identity, "_moduleHistory", history);
+                SetField(typeof(PredictedIdentity), identity, "_staticModuleCount", 0);
+
+                ApplyEmptyDynamicSnapshot(identity, 10);
+                ApplyEmptyDynamicSnapshot(identity, 11);
+
+                Assert.That(history.Count, Is.EqualTo(1));
+                Assert.That(history.OldestTick, Is.EqualTo(10));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
+#if UNITY_PHYSICS_3D
+        [Test]
+        public void LeavingServerRelayRestoresAuthoritativeRigidbodyState()
+        {
+            var gameObject = new GameObject(nameof(LeavingServerRelayRestoresAuthoritativeRigidbodyState));
+            try
+            {
+                gameObject.AddComponent<PredictedTransform>();
+                var rigidbody = gameObject.AddComponent<Rigidbody>();
+                rigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+                var predicted = gameObject.AddComponent<PredictedRigidbody>();
+                SetField(typeof(PredictedRigidbody), predicted,
+                    "_defaultCollisionMode", CollisionDetectionMode.ContinuousDynamic);
+
+                predicted.currentState.isKinematic = false;
+                predicted.currentState.useGravity = false;
+                predicted.currentState.linearVelocity = new Vector3(3f, 4f, 5f);
+                predicted.currentState.angularVelocity = new Vector3(1f, 2f, 3f);
+
+                predicted.SetPredictionPolicy(PredictionPolicy.ServerRelay);
+                Assert.That(rigidbody.isKinematic, Is.True);
+
+                predicted.SetPredictionPolicy(PredictionPolicy.FullPrediction);
+
+                Assert.That(rigidbody.isKinematic, Is.False);
+                Assert.That(rigidbody.useGravity, Is.False);
+                Assert.That(rigidbody.linearVelocity, Is.EqualTo(new Vector3(3f, 4f, 5f)));
+                Assert.That(rigidbody.angularVelocity, Is.EqualTo(new Vector3(1f, 2f, 3f)));
+                Assert.That(rigidbody.collisionDetectionMode,
+                    Is.EqualTo(CollisionDetectionMode.ContinuousDynamic));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+#endif
+
+        private static void ApplyEmptyDynamicSnapshot(PredictedIdentity identity, ulong tick)
+        {
+            var method = typeof(PredictedIdentity).GetMethod(
+                "ApplyEmptyDynamicModuleSnapshot", InstanceFields);
+            Assert.That(method, Is.Not.Null);
+            method.Invoke(identity, new object[] { tick });
+        }
+
         private static History<TrackedInput> SeedInputStorage(Component identity, Type identityBaseType)
         {
             var history = new History<TrackedInput>(8);
@@ -161,6 +476,13 @@ namespace PurrNet.Prediction.Tests.Editor
             var field = declaringType.GetField(fieldName, InstanceFields);
             Assert.That(field, Is.Not.Null, $"Missing field {declaringType.FullName}.{fieldName}");
             field.SetValue(target, value);
+        }
+
+        private static void InvokeLifecycle(object target, string methodName)
+        {
+            var method = target.GetType().GetMethod(methodName, InstanceFields);
+            Assert.That(method, Is.Not.Null, $"Missing lifecycle method {target.GetType().FullName}.{methodName}");
+            method.Invoke(target, null);
         }
 
         private readonly struct TrackedDisposable : IDisposable
@@ -243,6 +565,64 @@ namespace PurrNet.Prediction.Tests.Editor
         public void RefreshParentScopeForTest()
         {
             base.OnTransformParentChanged();
+        }
+    }
+
+    public sealed class PolicyOwnerProbe : PredictedIdentity<EmptyState>
+    {
+        public override bool controlsTransformPolicy => true;
+
+        public void AttachForTest(PredictionManager manager)
+        {
+            predictionManager = manager;
+            RefreshResolvedPredictionPolicy();
+        }
+
+        public void DetachForTest()
+        {
+            predictionManager = null;
+        }
+
+        protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
+        {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
+            SyncControlledTransformPolicy(newPolicy);
+        }
+    }
+
+    public sealed class RelayLockProbe : PredictedIdentity<EmptyState>
+    {
+        public int rollbackCount { get; private set; }
+        public ulong lastRollbackTick { get; private set; }
+
+        public void AttachForTest(PredictionManager manager)
+        {
+            predictionManager = manager;
+        }
+
+        public void DetachForTest()
+        {
+            predictionManager = null;
+        }
+
+        internal override void Rollback(ulong tick)
+        {
+            rollbackCount++;
+            lastRollbackTick = tick;
+        }
+    }
+
+    public sealed class PredictedTransformPolicyProbe : PredictedTransform
+    {
+        public void AttachForTest(PredictionManager manager)
+        {
+            predictionManager = manager;
+            RefreshResolvedPredictionPolicy();
+        }
+
+        public void DetachForTest()
+        {
+            predictionManager = null;
         }
     }
 }

@@ -30,8 +30,6 @@ public class OwnedRelayScenario : Scenario
         var predictedRb = ball.AddComponent<PredictedRigidbody>();
         predictedRb.configuredPredictionPolicy = PredictionPolicy.PredictedIfOwned;
         ball.AddComponent<OwnedRelayProbe>();
-        DontDestroyOnLoad(ball);
-
         _prefabId = ctx.predictionManager.predictedPrefabs.prefabs.Count;
         PredictionTestUtils.RegisterPrefab(ctx, ball);
         _rig.ballPrefab = ball;

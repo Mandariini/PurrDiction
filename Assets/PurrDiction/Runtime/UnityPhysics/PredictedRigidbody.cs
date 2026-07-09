@@ -36,7 +36,7 @@ namespace PurrNet.Prediction
     public class PredictedRigidbody : PredictedIdentity<UnityRigidbodyState>, IPredictedPhysicsCallbacks
     {
         [Tooltip("Fraction of the remaining velocity error corrected per second when using SoftCorrection.")]
-        [SerializeField] private float _softVelocityCorrectionRate = 8f;
+        [SerializeField, Min(0f)] private float _softVelocityCorrectionRate = 8f;
 
 #if UNITY_PHYSICS_3D
         [SerializeField, PurrLock] private Rigidbody _rigidbody;
@@ -181,10 +181,13 @@ namespace PurrNet.Prediction
             var effective = EffectivePolicy();
             if (effective == _appliedKinematicPolicy)
                 return;
+            var previous = _appliedKinematicPolicy;
             _appliedKinematicPolicy = effective;
 
             if (effective == PredictionPolicy.ServerRelay)
                 ForceRelayKinematic();
+            else if (previous == PredictionPolicy.ServerRelay)
+                RestoreAuthoritativePhysicsState();
             else
                 RestoreDefaultPhysicsMode();
         }
@@ -221,8 +224,30 @@ namespace PurrNet.Prediction
 
         private void RestoreDefaultPhysicsMode()
         {
-            _rigidbody.collisionDetectionMode = _defaultCollisionMode;
             _rigidbody.isKinematic = _defaultKinematic;
+            _rigidbody.collisionDetectionMode = _defaultCollisionMode;
+        }
+
+        private void RestoreAuthoritativePhysicsState()
+        {
+            ref var state = ref currentState;
+            _rigidbody.isKinematic = state.isKinematic;
+            _rigidbody.collisionDetectionMode = state.isKinematic &&
+                                                _defaultCollisionMode is CollisionDetectionMode.Continuous or
+                                                    CollisionDetectionMode.ContinuousDynamic
+                ? CollisionDetectionMode.ContinuousSpeculative
+                : _defaultCollisionMode;
+            _rigidbody.useGravity = state.useGravity;
+
+            if (state.isKinematic)
+                return;
+
+#if UNITY_6000
+            _rigidbody.linearVelocity = state.linearVelocity;
+#else
+            _rigidbody.velocity = state.linearVelocity;
+#endif
+            _rigidbody.angularVelocity = state.angularVelocity;
         }
 
         protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
@@ -335,7 +360,7 @@ namespace PurrNet.Prediction
             if (!_hasSoftVelocityError || _rigidbody.isKinematic)
                 return;
 
-            float blend = 1f - Mathf.Exp(-_softVelocityCorrectionRate * delta);
+            float blend = 1f - Mathf.Exp(-Mathf.Max(0f, _softVelocityCorrectionRate) * delta);
             var linearStep = _softLinearVelocityError * blend;
             var angularStep = _softAngularVelocityError * blend;
 

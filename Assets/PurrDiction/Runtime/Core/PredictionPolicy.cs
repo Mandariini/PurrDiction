@@ -10,12 +10,15 @@ namespace PurrNet.Prediction
     public struct SoftCorrectionSettings
     {
         [Tooltip("Fraction of the remaining error corrected per second (exponential decay rate).")]
+        [Min(0f)]
         public float correctionRate;
 
         [Tooltip("Position error magnitude above which the remaining correction is applied instantly.")]
+        [Min(0f)]
         public float snapPositionThreshold;
 
         [Tooltip("Rotation error in degrees above which the remaining correction is applied instantly.")]
+        [Min(0f)]
         public float snapRotationThreshold;
 
         public static SoftCorrectionSettings Default => new()

@@ -20,10 +20,11 @@ public class BounceProbe : PredictedIdentity<BounceProbe.ProbeState>
         duplicateTick = 0;
     }
 
-    public static string Digest()
-    {
-        return "bounces=" + string.Join(",", _firesPerTick.Select(kv => $"{kv.Key}:{kv.Value}"));
-    }
+        public static string Digest()
+        {
+            ulong firstTick = _firesPerTick.Count > 0 ? _firesPerTick.First().Key : 0;
+            return "bounces=" + string.Join(",", _firesPerTick.Select(kv => $"{kv.Key - firstTick}:{kv.Value}"));
+        }
 
     public struct ProbeState : IPredictedData<ProbeState>
     {
@@ -51,7 +52,7 @@ public class BounceProbe : PredictedIdentity<BounceProbe.ProbeState>
         if (!predictionManager.isVerifiedView)
             return;
 
-        var tick = predictionManager.time.tick;
+        var tick = predictionManager.localTickInContext;
         _firesPerTick.TryGetValue(tick, out var count);
         count++;
         _firesPerTick[tick] = count;

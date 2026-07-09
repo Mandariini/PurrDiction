@@ -334,7 +334,6 @@ MonoBehaviour:
   _destroyOnDisconnect: 1
   spawnPoints:
   - {fileID: 457991333}
-  _waitForSpawnCall: 0
 --- !u!4 &457991333
 Transform:
   m_ObjectHideFlags: 0
@@ -574,7 +573,6 @@ MonoBehaviour:
   _visibilityRules: {fileID: 11400000, guid: 8f014a5bd8dc68646a2a3c0b18c5bbd8, type: 2}
   _authenticator: {fileID: 0}
   _tickRate: 60
-  _mtuExceededBehaviour: 1
   _patchLingeringProcessBug: 0
 --- !u!114 &1793795281
 MonoBehaviour:
@@ -620,13 +618,6 @@ MonoBehaviour:
   _address: 127.0.0.1
   _timeoutInSeconds: 5
   _pollEventsInUpdate: 0
-  _networkSimulation:
-    includeInBuild: 0
-    simulateLatency: 0
-    minLatency: 30
-    maxLatency: 100
-    simulatePacketLoss: 0
-    packetLossChance: 10
 --- !u!114 &1793795284
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -645,14 +636,6 @@ MonoBehaviour:
   _displayTarget: 6
   fontSize: 13
   textColor: {r: 1, g: 1, b: 1, a: 1}
-  _highPingThreshold: 250
-  _highPingRecoveryThreshold: 180
-  _highJitterThreshold: 80
-  _highJitterRecoveryThreshold: 50
-  _highPacketLossThreshold: 10
-  _highPacketLossRecoveryThreshold: 5
-  _qualityChangeDuration: 2
-  _connectionStallThreshold: 2
 --- !u!1 &1838445716
 GameObject:
   m_ObjectHideFlags: 0

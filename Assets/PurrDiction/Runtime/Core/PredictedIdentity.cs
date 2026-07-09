@@ -107,7 +107,7 @@ namespace PurrNet.Prediction
             var current = transform;
             while (current)
             {
-                if (current.TryGetComponent(out scope))
+                if (current.TryGetComponent(out scope) && scope.isActiveAndEnabled)
                     return true;
 
                 current = current.parent;
@@ -125,8 +125,15 @@ namespace PurrNet.Prediction
             return NormalizePredictionPolicy(_predictionPolicy, false);
         }
 
-        internal PredictionPolicy ResolveDelegatedPredictionPolicy()
+        /// <summary>
+        /// Returns the currently applied policy for a registered identity, or resolves the
+        /// configured source for an identity that has not been registered yet.
+        /// </summary>
+        public PredictionPolicy GetResolvedPredictionPolicy()
             => predictionManager && !isFreshSpawn ? predictionPolicy : ResolvePredictionPolicy();
+
+        internal PredictionPolicy ResolveDelegatedPredictionPolicy()
+            => GetResolvedPredictionPolicy();
 
         internal void RefreshResolvedPredictionPolicy()
         {
@@ -140,7 +147,30 @@ namespace PurrNet.Prediction
         }
 
         /// <summary>
-        /// Changes the prediction policy at runtime. Deterministic identities support
+        /// Configures and applies a persistent local override. Subsequent scope updates do
+        /// not replace this policy until <see cref="UsePredictionPolicyScope"/> is called.
+        /// </summary>
+        public void SetPredictionPolicyOverride(PredictionPolicy policy)
+        {
+            _predictionPolicy = NormalizePredictionPolicy(policy, predictionManager);
+            _predictionPolicySource = PredictionPolicySource.OverrideScope;
+            RefreshResolvedPredictionPolicy();
+        }
+
+        /// <summary>
+        /// Returns this identity to its nearest active scope. If no scope exists, the local
+        /// configured policy remains the fallback.
+        /// </summary>
+        public void UsePredictionPolicyScope()
+        {
+            _predictionPolicySource = PredictionPolicySource.UseScope;
+            RefreshResolvedPredictionPolicy();
+        }
+
+        /// <summary>
+        /// Changes the currently applied prediction policy at runtime without changing its
+        /// configured source. Use <see cref="SetPredictionPolicyOverride"/> for a local policy
+        /// that must survive later scope refreshes. Deterministic identities support
         /// <see cref="PredictionPolicy.FullPrediction"/>, <see cref="PredictionPolicy.ServerRelay"/>,
         /// and <see cref="PredictionPolicy.PredictedIfOwned"/>. Switching mid-game is safest at
         /// ownership changes; the next reconcile realigns the identity with its new timeline.
@@ -331,7 +361,7 @@ namespace PurrNet.Prediction
 
             if (!isFreshSpawn)
             {
-                if (preservesStateOnSetup)
+                if (preservesStateOnSetup && UsesSoftCorrectionTimeline())
                     ModuleSetup(world);
                 else ResetModulesForReuse(world);
                 return;

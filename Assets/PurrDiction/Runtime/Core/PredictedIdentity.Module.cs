@@ -210,12 +210,7 @@ namespace PurrNet.Prediction
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
-                if (HasDynamicModulesOrHistory() && _moduleHistory != null)
-                {
-                    var empty = DisposableList<uint>.Create(0);
-                    _moduleHistory.Write(tick, empty);
-                    ApplyDynamicHashList(empty);
-                }
+                ApplyEmptyDynamicModuleSnapshot(tick);
                 return;
             }
 
@@ -296,12 +291,7 @@ namespace PurrNet.Prediction
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
-                if (HasDynamicModulesOrHistory() && _moduleHistory != null)
-                {
-                    var empty = DisposableList<uint>.Create(0);
-                    _moduleHistory.Write(tick, empty);
-                    ApplyDynamicHashList(empty);
-                }
+                ApplyEmptyDynamicModuleSnapshot(tick);
                 return;
             }
 
@@ -316,6 +306,23 @@ namespace PurrNet.Prediction
 
             _moduleHistory.Write(tick, incoming);
             ApplyDynamicHashList(incoming);
+        }
+
+        private void ApplyEmptyDynamicModuleSnapshot(ulong tick)
+        {
+            if (!HasDynamicModulesOrHistory() || _moduleHistory == null)
+                return;
+
+            if (_moduleHistory.ReadOrPrevious(tick, out var previous) &&
+                !previous.isDisposed && previous.Count == 0)
+            {
+                ApplyDynamicHashList(previous);
+                return;
+            }
+
+            var empty = DisposableList<uint>.Create(0);
+            _moduleHistory.Write(tick, empty);
+            ApplyDynamicHashList(empty);
         }
 
         internal void ClearFutureDynamicModules(ulong tick)

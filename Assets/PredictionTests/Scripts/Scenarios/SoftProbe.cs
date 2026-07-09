@@ -20,9 +20,10 @@ public class SoftProbe : PredictedIdentity<SoftProbe.ProbeState>
     public static bool impulseApplied { get; private set; }
     public static float maxObservedDivergence { get; private set; }
 
-    public static void ResetCounters()
-    {
-        replayViolations = 0;
+        public static void ResetCounters()
+        {
+            instances.Clear();
+            replayViolations = 0;
         impulseApplied = false;
         maxObservedDivergence = 0f;
     }
@@ -73,7 +74,8 @@ public class SoftProbe : PredictedIdentity<SoftProbe.ProbeState>
 
         if (predictionManager.isReplaying || predictionManager.isVerified)
         {
-            replayViolations++;
+            if (_liveTicks > 0)
+                replayViolations++;
             return;
         }
 

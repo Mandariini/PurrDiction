@@ -28,8 +28,6 @@ public class SoftCorrection2DScenario : Scenario
         var predictedRb = ball.AddComponent<PredictedRigidbody2D>();
         predictedRb.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
         ball.AddComponent<SoftProbe2D>();
-        DontDestroyOnLoad(ball);
-
         PredictionTestUtils.RegisterPrefab(ctx, ball);
         _rig.ballPrefab = ball;
         _rig.requiredPlayers = ctx.expectedConnections;

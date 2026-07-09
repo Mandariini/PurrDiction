@@ -12,7 +12,7 @@ namespace PurrNet.Prediction
     public class PredictedRigidbody2D : PredictedIdentity<UnityRigidbody2DState>
     {
         [Tooltip("Fraction of the remaining velocity error corrected per second when using SoftCorrection.")]
-        [SerializeField] private float _softVelocityCorrectionRate = 8f;
+        [SerializeField, Min(0f)] private float _softVelocityCorrectionRate = 8f;
 
 #if UNITY_PHYSICS_2D
         public delegate void OnCollisionDelegate(GameObject other, DisposableList<Physics2DContactPoint> evContacts);
@@ -99,10 +99,13 @@ namespace PurrNet.Prediction
             var effective = EffectivePolicy();
             if (effective == _appliedKinematicPolicy)
                 return;
+            var previous = _appliedKinematicPolicy;
             _appliedKinematicPolicy = effective;
 
             if (effective == PredictionPolicy.ServerRelay)
                 ForceRelayKinematic();
+            else if (previous == PredictionPolicy.ServerRelay)
+                RestoreAuthoritativePhysicsState();
             else
                 RestoreDefaultPhysicsMode();
         }
@@ -134,6 +137,22 @@ namespace PurrNet.Prediction
         private void RestoreDefaultPhysicsMode()
         {
             _rigidbody.bodyType = _defaultBodyType;
+        }
+
+        private void RestoreAuthoritativePhysicsState()
+        {
+            ref var state = ref currentState;
+            var bodyType = (RigidbodyType2D)state.bodyType;
+            _rigidbody.bodyType = bodyType;
+#if UNITY_6000
+            _rigidbody.linearDamping = state.linearDamping;
+#endif
+
+            if (bodyType == RigidbodyType2D.Static)
+                return;
+
+            _rigidbody.linearVelocity = state.linearVelocity;
+            _rigidbody.angularVelocity = state.angularVelocity;
         }
 
         protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
@@ -253,7 +272,7 @@ namespace PurrNet.Prediction
             if (!_hasSoftVelocityError || _rigidbody.bodyType != RigidbodyType2D.Dynamic)
                 return;
 
-            float blend = 1f - Mathf.Exp(-_softVelocityCorrectionRate * delta);
+            float blend = 1f - Mathf.Exp(-Mathf.Max(0f, _softVelocityCorrectionRate) * delta);
             var linearStep = _softLinearVelocityError * blend;
             var angularStep = _softAngularVelocityError * blend;
 

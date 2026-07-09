@@ -30,8 +30,6 @@ public class ServerRelayScenario : Scenario
         var predictedRb = ball.AddComponent<PredictedRigidbody>();
         predictedRb.configuredPredictionPolicy = PredictionPolicy.ServerRelay;
         ball.AddComponent<RelayProbe>();
-        DontDestroyOnLoad(ball);
-
         _prefabId = ctx.predictionManager.predictedPrefabs.prefabs.Count;
         PredictionTestUtils.RegisterPrefab(ctx, ball);
         _rig.ballPrefab = ball;

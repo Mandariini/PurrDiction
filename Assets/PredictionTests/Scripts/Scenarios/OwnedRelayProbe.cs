@@ -20,9 +20,10 @@ public class OwnedRelayProbe : PredictedIdentity<OwnedRelayProbe.ProbeState>
     public static int livePredictedTicks { get; private set; }
     public static int unverifiedRelayTicks { get; private set; }
 
-    public static void ResetCounters()
-    {
-        livePredictedTicks = 0;
+        public static void ResetCounters()
+        {
+            instances.Clear();
+            livePredictedTicks = 0;
         unverifiedRelayTicks = 0;
     }
 

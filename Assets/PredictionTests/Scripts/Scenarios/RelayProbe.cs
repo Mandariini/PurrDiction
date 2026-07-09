@@ -23,9 +23,10 @@ public class RelayProbe : PredictedIdentity<RelayProbe.ProbeState>
 
     private static ulong _lastVerifiedSimTick;
 
-    public static void ResetCounters()
-    {
-        unverifiedSimulations = 0;
+        public static void ResetCounters()
+        {
+            instances.Clear();
+            unverifiedSimulations = 0;
         monotonicityViolations = 0;
         verifiedSimulations = 0;
         _lastVerifiedSimTick = 0;
