@@ -104,7 +104,7 @@ public class OwnedRelayScenario : Scenario
         var digest = $"count={PredictionTestUtils.CountInstances(ctx.predictionManager, _prefabId)};" +
                      $"pos={Quantize(rest.x):F1},{Quantize(rest.y):F1},{Quantize(rest.z):F1}";
 
-        return await DigestExchange.Compare(ctx, DigestChannel, digest, 30f);
+        return await DigestExchange.Compare(ctx, DigestChannel, digest, _timeout);
     }
 
     private static float Quantize(float value)

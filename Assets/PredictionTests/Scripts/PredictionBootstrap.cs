@@ -20,7 +20,7 @@ public class PredictionBootstrap : Scenario
 
     [SerializeField] private NetworkManager _networkManager;
     [SerializeField] private PredictionManager _predictionManager;
-    [SerializeField] private float _connectionTimeout = 30f;
+    [SerializeField] private float _connectionTimeout = 180f;
     [SerializeField] private float _timeBetweenScenarios = 0.1f;
 
     [Header("Editor overrides (used when -role / -count are absent)")]
@@ -346,6 +346,9 @@ public class PredictionBootstrap : Scenario
             {
                 for (var i = 1; i < _scenarios.Length; i++)
                 {
+                    ScenarioSequencer.IssuePrepare(i);
+                    await ScenarioSequencer.WaitForAllReady(ctx, i);
+
                     var startTick = GetScenarioStartTick();
                     ScenarioSequencer.IssueStart(i, startTick);
 
@@ -367,6 +370,12 @@ public class PredictionBootstrap : Scenario
             {
                 for (var i = 1; i < _scenarios.Length; i++)
                 {
+                    await ScenarioSequencer.WaitForPrepare(ctx, i);
+
+                    if (ScenarioSequencer.SequenceComplete)
+                        break;
+
+                    ScenarioSequencer.AckLocalReady(ctx, i);
                     var startTick = await ScenarioSequencer.WaitForStart(ctx, i);
 
                     if (ScenarioSequencer.SequenceComplete)

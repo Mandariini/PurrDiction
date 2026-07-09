@@ -137,7 +137,7 @@ jobs:
             echo "::group::Launching $MODE process ($PROFILE)"
             "${RUN[@]}" "$BIN" -batchmode -nographics \
               -role "$MODE" -count "$TOTAL_COUNT" -port "$PORT" \
-              -connectTimeout 90 \
+              -connectTimeout 180 \
               "${LATENCY_ARGS[@]}" \
               -results "$RESULTS_DIR/$MODE.json" \
               -logFile "$LOGS_DIR/$MODE.log" &
@@ -159,7 +159,7 @@ jobs:
               echo "::group::Launching client $i ($PROFILE)"
               "${RUN[@]}" "$BIN" -batchmode -nographics \
                 -role client -count "$TOTAL_COUNT" -port "$PORT" \
-                -connectTimeout 90 \
+                -connectTimeout 180 \
                 "${LATENCY_ARGS[@]}" \
                 -results "$RESULTS_DIR/client-$i.json" \
                 -logFile "$LOGS_DIR/client-$i.log" &
@@ -167,6 +167,9 @@ jobs:
               CLIENT_PIDS+=("$PID")
               echo "Client $i PID: $PID"
               echo "::endgroup::"
+              if [ "$i" -lt "$EXTERNAL_CLIENTS" ]; then
+                sleep 1
+              fi
             done
 
             ALL_PIDS=("$SERVER_PID" "${CLIENT_PIDS[@]}")

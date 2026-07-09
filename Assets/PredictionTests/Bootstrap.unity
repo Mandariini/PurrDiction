@@ -486,7 +486,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _networkManager: {fileID: 100002}
   _predictionManager: {fileID: 110002}
-  _connectionTimeout: 90
+  _connectionTimeout: 180
   _timeBetweenScenarios: 0.1
   _editorRole: 2
   _editorExpectedConnections: 2
