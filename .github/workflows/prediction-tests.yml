@@ -154,6 +154,27 @@ jobs:
               return
             fi
 
+            READY=0
+            for _ in $(seq 1 60); do
+              if grep -q '\[PredictionTests\].*local connection ready' "$LOGS_DIR/$MODE.log" 2>/dev/null; then
+                READY=1
+                break
+              fi
+              if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+
+            if [ "$READY" -ne 1 ]; then
+              echo "::error::$MODE process did not become locally ready before clients started ($PROFILE)"
+              tail -n 200 "$LOGS_DIR/$MODE.log" || true
+              terminate_process_tree "$SERVER_PID"
+              wait "$SERVER_PID" 2>/dev/null || true
+              FAIL=1
+              return
+            fi
+
             CLIENT_PIDS=()
             for i in $(seq 1 "$EXTERNAL_CLIENTS"); do
               echo "::group::Launching client $i ($PROFILE)"
@@ -267,11 +288,13 @@ jobs:
 
           JQ_LIB='
             def humanBytes:
-              if . < 1024 then "\(.) B"
+              if . == null then "—"
+              elif . < 1024 then "\(.) B"
               elif . < 1048576 then "\(((. * 10) / 1024 | floor) / 10) KB"
               else "\(((. * 100) / 1048576 | floor) / 100) MB" end;
             def humanDuration:
-              if . < 1000 then "\(((. * 10) | floor) / 10)ms"
+              if . == null then "—"
+              elif . < 1000 then "\(((. * 10) | floor) / 10)ms"
               else "\(((. * 100) / 1000 | floor) / 100)s" end;
             def statusIcon:
               if . then ":white_check_mark:" else ":x:" end;
