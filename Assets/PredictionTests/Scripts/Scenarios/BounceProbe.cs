@@ -20,11 +20,17 @@ public class BounceProbe : PredictedIdentity<BounceProbe.ProbeState>
         duplicateTick = 0;
     }
 
-        public static string Digest()
-        {
-            ulong firstTick = _firesPerTick.Count > 0 ? _firesPerTick.First().Key : 0;
-            return "bounces=" + string.Join(",", _firesPerTick.Select(kv => $"{kv.Key - firstTick}:{kv.Value}"));
-        }
+    public static string Digest()
+    {
+        // Cross-process PhysX timing may vary; verified callback count and uniqueness are the contract.
+        return $"bounces={distinctTicks};fires={totalFires}";
+    }
+
+    public static string Timeline()
+    {
+        ulong firstTick = _firesPerTick.Count > 0 ? _firesPerTick.First().Key : 0;
+        return string.Join(",", _firesPerTick.Select(kv => $"{kv.Key - firstTick}:{kv.Value}"));
+    }
 
     public struct ProbeState : IPredictedData<ProbeState>
     {

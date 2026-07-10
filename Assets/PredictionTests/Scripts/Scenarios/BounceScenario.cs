@@ -78,7 +78,7 @@ public class BounceScenario : Scenario
         if (BounceProbe.hasDuplicate)
         {
             return ScenarioResult.Fail(
-                $"verified bounce fired more than once for tick {BounceProbe.duplicateTick}: {BounceProbe.Digest()}");
+                $"verified bounce fired more than once for tick {BounceProbe.duplicateTick}: {BounceProbe.Timeline()}");
         }
 
         return await DigestExchange.Compare(ctx, DigestChannel, BounceProbe.Digest(), 30f);
