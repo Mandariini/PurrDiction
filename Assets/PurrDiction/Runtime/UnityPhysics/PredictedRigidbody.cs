@@ -144,6 +144,7 @@ namespace PurrNet.Prediction
         private Vector3 _appliedAngularTotal;
 
         public override bool controlsTransformPolicy => true;
+        public override bool supportsSoftCorrection => true;
 
         private void Awake()
         {
@@ -558,6 +559,7 @@ namespace PurrNet.Prediction
         public override void ResetState()
         {
             base.ResetState();
+            ClearSoftVelocityCorrection();
             _replayFrozen = false;
             if (_constraintsFrozen)
             {

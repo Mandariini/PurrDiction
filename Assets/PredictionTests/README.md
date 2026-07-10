@@ -19,6 +19,9 @@ Multi-process end-to-end tests for the prediction pipeline, modeled after PurrNe
 | `SoftCorrectionScenario` | 3D soft-corrected bodies tolerate local divergence and converge without replay simulation |
 | `SoftCorrection2DScenario` | 2D soft-corrected bodies follow the same convergence and replay guarantees |
 | `OwnedRelayScenario` | PredictedIfOwned resolves to live prediction for the owner and server relay for non-owners |
+| `SoftCorrectionPoolReuseScenario` | A completed pooled lifetime cannot leak pose-correction accumulators into the next object |
+| `GenericSoftCorrectionScenario` | Unsupported generic state cannot silently accept SoftCorrection while ignoring authoritative state |
+| `ReplayPolicyTransitionScenario` | Entering SoftCorrection during reconcile freezes the body before the replay physics pass |
 
 All scenarios fail on unexpected Unity `Error`, `Assert`, or `Exception` logs during the active scenario. They run with simulated latency (40–80ms by default, configurable on the `Bootstrap` object or via `-latencyMin`/`-latencyMax`; `-latencyMax 0` disables) so rollback depth resembles real conditions instead of a clean localhost.
 
@@ -39,3 +42,7 @@ PurrDictionTests -batchmode -nographics -role client -count 3 -results client-2.
 ```
 
 Optional args: `-port`, `-serverHost`, `-connectTimeout`. Exit code is non-zero if any scenario fails. CI runs this via `.github/workflows/prediction-tests.yml` (server and host matrix, IL2CPP).
+
+Policy regression scenarios are opt-in while under development. Pass `-includePolicyRegressionScenarios`
+to append them to the normal suite, or `-policyRegressionScenariosOnly` to run just the bootstrap and
+the three focused policy scenarios.

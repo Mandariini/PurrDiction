@@ -47,9 +47,9 @@ public class PredictionBootstrap : Scenario
 
     private CancellationTokenSource _runCts;
 
-    private void Awake()
-    {
-        ScenarioSequencer.Reset();
+        private void Awake()
+        {
+            ScenarioSequencer.Reset();
 
         var prefabs = ScriptableObject.CreateInstance<PredictedPrefabs>();
         prefabs.autoGenerate = false;
@@ -58,12 +58,39 @@ public class PredictionBootstrap : Scenario
 
         LoadArgs();
 
-        if (CommandLineUtils.HasFlag("-includeHistoryStressScenario"))
-            gameObject.AddComponent<HistoryStressScenario>();
+            if (CommandLineUtils.HasFlag("-includeHistoryStressScenario"))
+                gameObject.AddComponent<HistoryStressScenario>();
 
-        _scenarios = GetComponentsInChildren<Scenario>();
-        _results = new ScenarioDetails?[_scenarios.Length];
-    }
+            bool policyRegressionsOnly = CommandLineUtils.HasFlag("-policyRegressionScenariosOnly");
+            bool includePolicyRegressions = policyRegressionsOnly ||
+                                            CommandLineUtils.HasFlag("-includePolicyRegressionScenarios");
+            var policyRegressionScenarios = includePolicyRegressions
+                ? AddPolicyRegressionScenarios()
+                : Array.Empty<Scenario>();
+
+            if (policyRegressionsOnly)
+            {
+                _scenarios = new Scenario[policyRegressionScenarios.Length + 1];
+                _scenarios[0] = this;
+                Array.Copy(policyRegressionScenarios, 0, _scenarios, 1, policyRegressionScenarios.Length);
+            }
+            else
+            {
+                _scenarios = GetComponentsInChildren<Scenario>();
+            }
+
+            _results = new ScenarioDetails?[_scenarios.Length];
+        }
+
+        private Scenario[] AddPolicyRegressionScenarios()
+        {
+            return new Scenario[]
+            {
+                gameObject.AddComponent<SoftCorrectionPoolReuseScenario>(),
+                gameObject.AddComponent<GenericSoftCorrectionScenario>(),
+                gameObject.AddComponent<ReplayPolicyTransitionScenario>()
+            };
+        }
 
     private void OnEnable()
     {

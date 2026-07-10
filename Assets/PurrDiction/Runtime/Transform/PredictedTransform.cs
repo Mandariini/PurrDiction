@@ -38,12 +38,15 @@ namespace PurrNet.Prediction
 
         private PredictedIdentity _transformPolicyOwner;
 
+        public override bool supportsSoftCorrection => true;
+
         [NonSerialized, UsedImplicitly]
         public bool updateGraphics = true;
 
         public override void ResetState()
         {
             base.ResetState();
+            ClearSoftCorrection();
 
             if (_graphics)
                 _graphics.SetPositionAndRotation(transform.position, transform.rotation);

@@ -1305,6 +1305,43 @@ namespace PurrNet.Prediction
             _replayFrozenSystems.Add(system);
         }
 
+        internal void HandlePredictionPolicyChanged(
+            PredictedIdentity system,
+            PredictionPolicy oldPolicy,
+            PredictionPolicy newPolicy)
+        {
+            if (!isReplaying || !_systems.Contains(system))
+                return;
+
+            bool wasSoftCorrected = oldPolicy == PredictionPolicy.SoftCorrection;
+            bool isSoftCorrected = newPolicy == PredictionPolicy.SoftCorrection;
+            if (wasSoftCorrected == isSoftCorrected)
+                return;
+
+            if (isSoftCorrected)
+            {
+                for (var i = 0; i < _replayFrozenSystems.Count; i++)
+                {
+                    if (_replayFrozenSystems[i] == system)
+                        return;
+                }
+
+                system.SetSoftCorrectionReplaySimulation(false);
+                FreezeForReplay(system);
+                return;
+            }
+
+            system.SetSoftCorrectionReplaySimulation(false);
+            for (var i = _replayFrozenSystems.Count - 1; i >= 0; i--)
+            {
+                if (_replayFrozenSystems[i] != system)
+                    continue;
+
+                _replayFrozenSystems.RemoveAt(i);
+                system.OnReplayEnd();
+            }
+        }
+
         private void NotifyReplayEnd()
         {
             for (var i = 0; i < _replayFrozenSystems.Count; i++)

@@ -33,7 +33,8 @@ namespace PurrNet.Prediction
     /// Controls how a predicted identity participates in client-side prediction and reconciliation.
     /// Policies only alter behavior on clients; the server always simulates every identity normally.
     /// Deterministic identities can use FullPrediction, ServerRelay, and PredictedIfOwned without
-    /// sending per-tick state; SoftCorrection requires authoritative state deltas and is unavailable.
+    /// sending per-tick state. SoftCorrection requires authoritative state deltas and an identity
+    /// that explicitly implements verified-state correction through supportsSoftCorrection.
     /// </summary>
     public enum PredictionPolicy : byte
     {

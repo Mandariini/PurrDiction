@@ -50,9 +50,9 @@ namespace PurrNet.Prediction.Editor
                 return;
             }
 
-            if (identity && identity.isDeterministic)
+            if (identity && !identity.supportsSoftCorrection)
             {
-                DrawDeterministic(position, property, label);
+                DrawWithoutSoftCorrection(position, property, label, identity.isDeterministic);
                 return;
             }
 
@@ -70,20 +70,26 @@ namespace PurrNet.Prediction.Editor
 
         private static PredictionPolicy ResolveDisplayPolicy(PredictedIdentity identity, PredictionPolicy policy)
         {
-            if (identity && identity.isDeterministic && policy == PredictionPolicy.SoftCorrection)
+            if (identity && !identity.supportsSoftCorrection && policy == PredictionPolicy.SoftCorrection)
                 return PredictionPolicy.FullPrediction;
 
             return policy;
         }
 
-        private static void DrawDeterministic(Rect position, SerializedProperty property, GUIContent label)
+        private static void DrawWithoutSoftCorrection(
+            Rect position,
+            SerializedProperty property,
+            GUIContent label,
+            bool deterministic)
         {
             var policy = (PredictionPolicy)property.enumValueIndex;
             int index = DeterministicIndexOf(policy);
-            var deterministicLabel = new GUIContent(label.text,
-                "Deterministic identities do not send per-tick state. FullPrediction predicts and replays locally; ServerRelay simulates only verified ticks from deterministic history; PredictedIfOwned switches between those modes by owner. SoftCorrection is unavailable because it needs authoritative state deltas.");
+            var tooltip = deterministic
+                ? "Deterministic identities do not send per-tick state. FullPrediction predicts and replays locally; ServerRelay simulates only verified ticks from deterministic history; PredictedIfOwned switches between those modes by owner. SoftCorrection is unavailable because it needs authoritative state deltas."
+                : "SoftCorrection is unavailable because this identity does not implement verified-state correction. Override supportsSoftCorrection and OnVerifiedStateReceived to opt in.";
+            var policyLabel = new GUIContent(label.text, tooltip);
 
-            int selected = EditorGUI.Popup(position, deterministicLabel, index, _deterministicPolicyLabels);
+            int selected = EditorGUI.Popup(position, policyLabel, index, _deterministicPolicyLabels);
             property.enumValueIndex = (int)_deterministicPolicies[selected];
         }
 

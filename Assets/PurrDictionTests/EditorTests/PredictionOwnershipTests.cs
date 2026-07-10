@@ -190,6 +190,53 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void UnsupportedIdentityNormalizesSoftCorrectionToFullPrediction()
+        {
+            var gameObject = new GameObject(nameof(UnsupportedIdentityNormalizesSoftCorrectionToFullPrediction));
+            try
+            {
+                var identity = gameObject.AddComponent<UnsupportedPolicyProbe>();
+
+                identity.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
+
+                Assert.That(identity.supportsSoftCorrection, Is.False);
+                Assert.That(identity.configuredPredictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+                Assert.That(identity.GetResolvedPredictionPolicy(), Is.EqualTo(PredictionPolicy.FullPrediction));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
+        public void ResetStateClearsPendingSoftTransformCorrection()
+        {
+            var gameObject = new GameObject(nameof(ResetStateClearsPendingSoftTransformCorrection));
+            try
+            {
+                var predictedTransform = gameObject.AddComponent<PredictedTransform>();
+                SetField(typeof(PredictedTransform), predictedTransform,
+                    "_softPositionError", new Vector3(2f, 0f, 0f));
+                SetField(typeof(PredictedTransform), predictedTransform,
+                    "_hasSoftError", true);
+
+                predictedTransform.ResetState();
+
+                var errorField = typeof(PredictedTransform).GetField("_softPositionError", InstanceFields);
+                var hasErrorField = typeof(PredictedTransform).GetField("_hasSoftError", InstanceFields);
+                Assert.That(errorField, Is.Not.Null);
+                Assert.That(hasErrorField, Is.Not.Null);
+                Assert.That((Vector3)errorField.GetValue(predictedTransform), Is.EqualTo(Vector3.zero));
+                Assert.That((bool)hasErrorField.GetValue(predictedTransform), Is.False);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
         public void DisablingOrRemovingScopeRefreshesDescendants()
         {
             var managerObject = new GameObject("PredictionManager");
@@ -551,6 +598,8 @@ namespace PurrNet.Prediction.Tests.Editor
 
     public sealed class PolicyProbe : PredictedIdentity<EmptyState>
     {
+        public override bool supportsSoftCorrection => true;
+
         public void AttachForTest(PredictionManager manager)
         {
             predictionManager = manager;
@@ -588,6 +637,10 @@ namespace PurrNet.Prediction.Tests.Editor
             base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
             SyncControlledTransformPolicy(newPolicy);
         }
+    }
+
+    public sealed class UnsupportedPolicyProbe : PredictedIdentity<EmptyState>
+    {
     }
 
     public sealed class RelayLockProbe : PredictedIdentity<EmptyState>

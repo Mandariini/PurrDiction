@@ -55,6 +55,13 @@ namespace PurrNet.Prediction
 
         public virtual bool controlsTransformPolicy => false;
 
+        /// <summary>
+        /// True when this identity consumes verified state as a correction target instead of
+        /// requiring rollback. Implementations must override OnVerifiedStateReceived and apply
+        /// the resulting correction during live simulation.
+        /// </summary>
+        public virtual bool supportsSoftCorrection => false;
+
         [Header("Predicted Identity")]
         [SerializeField, Tooltip("Use the nearest PredictionPolicyScope by default, or explicitly override it for this identity.")]
         private PredictionPolicySource _predictionPolicySource = PredictionPolicySource.UseScope;
@@ -185,17 +192,22 @@ namespace PurrNet.Prediction
             var oldPolicy = predictionPolicy;
             predictionPolicy = policy;
             OnPredictionPolicyChanged(oldPolicy, policy);
+            if (predictionManager)
+                predictionManager.HandlePredictionPolicyChanged(this, oldPolicy, policy);
         }
 
         private PredictionPolicy NormalizePredictionPolicy(PredictionPolicy policy, bool log)
         {
-            if (!isDeterministic || policy != PredictionPolicy.SoftCorrection)
+            if (policy != PredictionPolicy.SoftCorrection || supportsSoftCorrection)
                 return policy;
 
             if (log)
             {
+                var reason = isDeterministic
+                    ? "deterministic identities do not receive authoritative state deltas to correct against"
+                    : "the identity does not implement verified-state correction";
                 Logging.PurrLogger.LogError(
-                    $"Deterministic identities do not support {nameof(PredictionPolicy.SoftCorrection)} because they do not receive authoritative state deltas to correct against.",
+                    $"{GetType().Name} does not support {nameof(PredictionPolicy.SoftCorrection)} because {reason}.",
                     this);
             }
 

@@ -61,6 +61,13 @@ namespace PurrNet.Prediction
         private AppliedCorrectionRing<AppliedVelocityTotals> _appliedRing;
 
         public override bool controlsTransformPolicy => true;
+        public override bool supportsSoftCorrection => true;
+
+        public override void ResetState()
+        {
+            base.ResetState();
+            ClearSoftVelocityCorrection();
+        }
 
         protected override void LateAwake()
         {

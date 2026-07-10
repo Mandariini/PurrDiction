@@ -7,6 +7,13 @@ namespace PurrNet.Prediction
 {
     public abstract class PredictedModule<TState> : PredictedModule where TState : struct, IPredictedData<TState>
     {
+        /// <summary>
+        /// Override when OnVerifiedStateReceived accumulates a smooth correction for this module.
+        /// Modules that do not opt in snap their live state to the verified value when their parent
+        /// identity uses SoftCorrection, rather than silently ignoring authoritative state.
+        /// </summary>
+        public virtual bool supportsSoftCorrection => false;
+
         internal MODULE_STATE<TState> fullPredictedState;
 
         /// <summary>
@@ -230,7 +237,7 @@ namespace PurrNet.Prediction
 
             if (identity.UsesSoftCorrectionTimeline())
             {
-                if (_history.ReadOrPrevious(tick, out var predictedAtTick))
+                if (supportsSoftCorrection && _history.ReadOrPrevious(tick, out var predictedAtTick))
                 {
                     OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
                 }

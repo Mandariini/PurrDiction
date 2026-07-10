@@ -9,6 +9,8 @@ using UnityEngine;
 /// </summary>
 public class SoftProbe2D : PredictedIdentity<SoftProbe2D.ProbeState>
 {
+    public override bool supportsSoftCorrection => true;
+
     public struct ProbeState : IPredictedData<ProbeState>
     {
         public void Dispose() { }
