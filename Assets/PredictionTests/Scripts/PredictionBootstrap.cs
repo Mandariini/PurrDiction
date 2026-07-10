@@ -16,7 +16,7 @@ public class PredictionBootstrap : Scenario
 {
     private const int MaxUnexpectedLogsPerScenario = 8;
     private const int MaxUnexpectedLogLength = 700;
-    private const float ScenarioStartLeadSeconds = 2f;
+    private const float ScenarioStartLeadSeconds = 10f;
 
     [SerializeField] private NetworkManager _networkManager;
     [SerializeField] private PredictionManager _predictionManager;
