@@ -136,6 +136,7 @@ jobs:
 
             echo "::group::Launching $MODE process ($PROFILE)"
             "${RUN[@]}" "$BIN" -batchmode -nographics \
+              -diag-job-temp-memory-leak-validation \
               -role "$MODE" -count "$TOTAL_COUNT" -port "$PORT" \
               -connectTimeout 180 \
               "${LATENCY_ARGS[@]}" \
@@ -179,6 +180,7 @@ jobs:
             for i in $(seq 1 "$EXTERNAL_CLIENTS"); do
               echo "::group::Launching client $i ($PROFILE)"
               "${RUN[@]}" "$BIN" -batchmode -nographics \
+                -diag-job-temp-memory-leak-validation \
                 -role client -count "$TOTAL_COUNT" -port "$PORT" \
                 -connectTimeout 180 \
                 "${LATENCY_ARGS[@]}" \
