@@ -460,6 +460,44 @@ namespace PurrNet.Prediction.Tests.Editor
 
 #if UNITY_PHYSICS_3D
         [Test]
+        public void FullAndSoftPolicyTransitionsPreserveLiveRigidbodyMode()
+        {
+            var gameObject = new GameObject(nameof(FullAndSoftPolicyTransitionsPreserveLiveRigidbodyMode));
+            try
+            {
+                gameObject.AddComponent<PredictedTransform>();
+                var rigidbody = gameObject.AddComponent<Rigidbody>();
+                var predicted = gameObject.AddComponent<PredictedRigidbody>();
+
+                rigidbody.isKinematic = true;
+                rigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+
+                predicted.SetPredictionPolicy(PredictionPolicy.SoftCorrection);
+
+                Assert.That(rigidbody.isKinematic, Is.True,
+                    "FullPrediction -> SoftCorrection changed the live kinematic mode");
+                Assert.That(rigidbody.collisionDetectionMode,
+                    Is.EqualTo(CollisionDetectionMode.ContinuousSpeculative),
+                    "FullPrediction -> SoftCorrection changed the live collision mode");
+
+                rigidbody.isKinematic = true;
+                rigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+
+                predicted.SetPredictionPolicy(PredictionPolicy.FullPrediction);
+
+                Assert.That(rigidbody.isKinematic, Is.True,
+                    "SoftCorrection -> FullPrediction changed the live kinematic mode");
+                Assert.That(rigidbody.collisionDetectionMode,
+                    Is.EqualTo(CollisionDetectionMode.ContinuousSpeculative),
+                    "SoftCorrection -> FullPrediction changed the live collision mode");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+
+        [Test]
         public void LeavingServerRelayRestoresAuthoritativeRigidbodyState()
         {
             var gameObject = new GameObject(nameof(LeavingServerRelayRestoresAuthoritativeRigidbodyState));
@@ -488,6 +526,38 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(rigidbody.angularVelocity, Is.EqualTo(new Vector3(1f, 2f, 3f)));
                 Assert.That(rigidbody.collisionDetectionMode,
                     Is.EqualTo(CollisionDetectionMode.ContinuousDynamic));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+            }
+        }
+#endif
+
+#if UNITY_PHYSICS_2D
+        [Test]
+        public void FullAndSoftPolicyTransitionsPreserveLiveRigidbody2DMode()
+        {
+            var gameObject = new GameObject(nameof(FullAndSoftPolicyTransitionsPreserveLiveRigidbody2DMode));
+            try
+            {
+                gameObject.AddComponent<PredictedTransform>();
+                var rigidbody = gameObject.AddComponent<Rigidbody2D>();
+                var predicted = gameObject.AddComponent<PredictedRigidbody2D>();
+
+                rigidbody.bodyType = RigidbodyType2D.Static;
+
+                predicted.SetPredictionPolicy(PredictionPolicy.SoftCorrection);
+
+                Assert.That(rigidbody.bodyType, Is.EqualTo(RigidbodyType2D.Static),
+                    "FullPrediction -> SoftCorrection changed the live body type");
+
+                rigidbody.bodyType = RigidbodyType2D.Kinematic;
+
+                predicted.SetPredictionPolicy(PredictionPolicy.FullPrediction);
+
+                Assert.That(rigidbody.bodyType, Is.EqualTo(RigidbodyType2D.Kinematic),
+                    "SoftCorrection -> FullPrediction changed the live body type");
             }
             finally
             {

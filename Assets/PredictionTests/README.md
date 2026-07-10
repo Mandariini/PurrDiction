@@ -43,6 +43,5 @@ PurrDictionTests -batchmode -nographics -role client -count 3 -results client-2.
 
 Optional args: `-port`, `-serverHost`, `-connectTimeout`. Exit code is non-zero if any scenario fails. CI runs this via `.github/workflows/prediction-tests.yml` (server and host matrix, IL2CPP).
 
-Policy regression scenarios are opt-in while under development. Pass `-includePolicyRegressionScenarios`
-to append them to the normal suite, or `-policyRegressionScenariosOnly` to run just the bootstrap and
-the three focused policy scenarios.
+Policy regression scenarios are included in the normal suite. Pass `-policyRegressionScenariosOnly`
+to run just the bootstrap and the three focused policy scenarios.

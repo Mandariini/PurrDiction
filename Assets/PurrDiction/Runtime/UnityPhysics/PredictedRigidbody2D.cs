@@ -94,7 +94,7 @@ namespace PurrNet.Prediction
 
         private void ApplyEffectiveKinematic()
         {
-            if (isServer || !_rigidbody || _replayFrozen)
+            if (isServer || !_rigidbody)
                 return;
 
             var effective = EffectivePolicy();
@@ -103,12 +103,13 @@ namespace PurrNet.Prediction
             var previous = _appliedKinematicPolicy;
             _appliedKinematicPolicy = effective;
 
+            if (_replayFrozen)
+                return;
+
             if (effective == PredictionPolicy.ServerRelay)
                 ForceRelayKinematic();
             else if (previous == PredictionPolicy.ServerRelay)
                 RestoreAuthoritativePhysicsState();
-            else
-                RestoreDefaultPhysicsMode();
         }
 
         internal override void SyncEffectivePolicySideEffects()
