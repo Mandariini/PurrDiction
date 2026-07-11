@@ -352,7 +352,8 @@ namespace PurrNet.Prediction
                 {
                     var componentId = new PredictedComponentID(objectID, i);
                     bool preserveState = !reset && !component.isFreshSpawn && component.id.Equals(componentId);
-                    bool preserveSoftState = preserveState && component.UsesSoftCorrectionTimeline();
+                    bool preserveSoftState = preserveState &&
+                                             component.ResolvePredictionPolicyForSetup() == PredictionPolicy.SoftCorrection;
 
                     if (!preserveSoftState)
                         component.OnPreSetup();
@@ -435,9 +436,11 @@ namespace PurrNet.Prediction
             try
             {
                 system.Setup(networkManager, this, pid, owner);
+                system.CompletePredictionPolicySetup();
             }
             finally
             {
+                system.CancelPendingPredictionPolicySetup();
                 system.SetPreserveStateOnSetup(false);
             }
 

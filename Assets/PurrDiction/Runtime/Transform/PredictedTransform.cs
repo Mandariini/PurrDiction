@@ -75,6 +75,14 @@ namespace PurrNet.Prediction
             return base.ResolvePredictionPolicy();
         }
 
+        protected override PredictionPolicy ResolveSetupPredictionPolicy()
+        {
+            if (TryGetTransformPolicyOwner(out var policyOwner))
+                return policyOwner.ResolvePredictionPolicyForSetup();
+
+            return base.ResolveSetupPredictionPolicy();
+        }
+
         public bool TryGetTransformPolicyOwner(out PredictedIdentity policyOwner)
         {
             if (_transformPolicyOwner && _transformPolicyOwner.controlsTransformPolicy)
@@ -274,7 +282,8 @@ namespace PurrNet.Prediction
             if (isServer || !UsesSoftCorrectionTimeline())
                 return;
 
-            _appliedRing ??= new AppliedCorrectionRing<AppliedPoseTotals>();
+            _appliedRing ??= new AppliedCorrectionRing<AppliedPoseTotals>(
+                Mathf.Max(1, predictionManager.tickRate * 10));
             _appliedRing.Record(tick, new AppliedPoseTotals
             {
                 position = _appliedPositionTotal,

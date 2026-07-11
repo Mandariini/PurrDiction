@@ -252,9 +252,8 @@ public sealed class SoftCorrectionPoolProbe : PredictedTransform
 }
 
 /// <summary>
-/// Assigns SoftCorrection to a regular state identity. The client injects a one-time state
-/// error and expects normal authoritative convergence; the current base implementation stores
-/// verified snapshots but never applies them to the live state.
+/// Assigns SoftCorrection to an opted-in regular state identity. The client injects a one-time
+/// state error and expects the probe to apply verified state to its live timeline without replay.
 /// </summary>
 public sealed class GenericSoftCorrectionScenario : Scenario
 {
@@ -319,6 +318,12 @@ public sealed class GenericSoftCorrectionScenario : Scenario
         await UniTask.WaitForSeconds(SettleSeconds, cancellationToken: ctx.cancellationToken);
 
         var probe = GenericSoftCorrectionProbe.instances[0];
+        if (probe.predictionPolicy != PredictionPolicy.SoftCorrection)
+        {
+            return ScenarioResult.Fail(
+                $"generic probe did not opt into SoftCorrection: policy={probe.predictionPolicy}");
+        }
+
         var verified = probe.verifiedState;
         if (!verified.HasValue)
             return ScenarioResult.Fail("generic probe lost its verified state");
@@ -346,6 +351,8 @@ public sealed class GenericSoftCorrectionProbe : PredictedIdentity<GenericSoftCo
 
     private int _liveTicks;
     private bool _injectedThisLifetime;
+
+    public override bool supportsSoftCorrection => true;
 
     public struct ProbeState : IPredictedData<ProbeState>
     {
@@ -389,6 +396,14 @@ public sealed class GenericSoftCorrectionProbe : PredictedIdentity<GenericSoftCo
         _injectedThisLifetime = true;
         injectionApplied = true;
         maxObservedDivergence = Mathf.Max(maxObservedDivergence, ClientOnlyError);
+    }
+
+    protected override void OnVerifiedStateReceived(
+        ulong tick,
+        in ProbeState predicted,
+        in ProbeState verified)
+    {
+        currentState.value = verified.value;
     }
 }
 

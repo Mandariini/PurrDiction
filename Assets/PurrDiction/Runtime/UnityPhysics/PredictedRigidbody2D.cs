@@ -68,6 +68,15 @@ namespace PurrNet.Prediction
 
         public override void OnPreSetup()
         {
+            if (!_rigidbody)
+                _rigidbody = GetComponent<Rigidbody2D>();
+            if (!_rigidbody)
+                return;
+
+            RestoreDefaultPhysicsMode();
+            if (_rigidbody.bodyType == RigidbodyType2D.Static)
+                return;
+
             linearVelocity = default;
             angularVelocity = default;
         }
@@ -235,7 +244,8 @@ namespace PurrNet.Prediction
             if (isServer || !UsesSoftCorrectionTimeline())
                 return;
 
-            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>();
+            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>(
+                Mathf.Max(1, predictionManager.tickRate * 10));
             _appliedRing.Record(tick, new AppliedVelocityTotals
             {
                 linear = _appliedLinearTotal,

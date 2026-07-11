@@ -75,6 +75,10 @@ namespace PurrNet.Prediction
         /// </summary>
         public PredictionPolicy predictionPolicy { get; private set; }
 
+        private bool _hasPendingSetupPolicyChange;
+        private PredictionPolicy _pendingSetupOldPolicy;
+        private PredictionPolicy _pendingSetupNewPolicy;
+
         /// <summary>
         /// The configured (serialized) policy, re-applied on every registration including pooled reuse.
         /// Setting this on a spawned identity applies the change immediately via <see cref="SetPredictionPolicy"/>.
@@ -132,6 +136,12 @@ namespace PurrNet.Prediction
             return NormalizePredictionPolicy(_predictionPolicy, false);
         }
 
+        protected virtual PredictionPolicy ResolveSetupPredictionPolicy()
+            => ResolvePredictionPolicy();
+
+        internal PredictionPolicy ResolvePredictionPolicyForSetup()
+            => ResolveSetupPredictionPolicy();
+
         /// <summary>
         /// Returns the currently applied policy for a registered identity, or resolves the
         /// configured source for an identity that has not been registered yet.
@@ -186,6 +196,8 @@ namespace PurrNet.Prediction
         {
             policy = NormalizePredictionPolicy(policy, true);
 
+            CancelPendingPredictionPolicySetup();
+
             if (predictionPolicy == policy)
                 return;
 
@@ -194,6 +206,47 @@ namespace PurrNet.Prediction
             OnPredictionPolicyChanged(oldPolicy, policy);
             if (predictionManager)
                 predictionManager.HandlePredictionPolicyChanged(this, oldPolicy, policy);
+        }
+
+        private void PreparePredictionPolicyForSetup(PredictionPolicy policy)
+        {
+            CancelPendingPredictionPolicySetup();
+            policy = NormalizePredictionPolicy(policy, true);
+
+            if (predictionPolicy == policy)
+                return;
+
+            _pendingSetupOldPolicy = predictionPolicy;
+            _pendingSetupNewPolicy = policy;
+            predictionPolicy = policy;
+            _hasPendingSetupPolicyChange = true;
+        }
+
+        internal void CompletePredictionPolicySetup()
+        {
+            if (!_hasPendingSetupPolicyChange)
+                return;
+
+            var oldPolicy = _pendingSetupOldPolicy;
+            var newPolicy = _pendingSetupNewPolicy;
+            _hasPendingSetupPolicyChange = false;
+            _pendingSetupOldPolicy = default;
+            _pendingSetupNewPolicy = default;
+
+            OnPredictionPolicyChanged(oldPolicy, newPolicy);
+            if (predictionManager)
+                predictionManager.HandlePredictionPolicyChanged(this, oldPolicy, newPolicy);
+        }
+
+        internal void CancelPendingPredictionPolicySetup()
+        {
+            if (!_hasPendingSetupPolicyChange)
+                return;
+
+            predictionPolicy = _pendingSetupOldPolicy;
+            _hasPendingSetupPolicyChange = false;
+            _pendingSetupOldPolicy = default;
+            _pendingSetupNewPolicy = default;
         }
 
         private PredictionPolicy NormalizePredictionPolicy(PredictionPolicy policy, bool log)
@@ -295,6 +348,7 @@ namespace PurrNet.Prediction
 
         public virtual void ResetState()
         {
+            CancelPendingPredictionPolicySetup();
             isServer = false;
             isFreshSpawn = true;
             preservesStateOnSetup = false;
@@ -369,7 +423,7 @@ namespace PurrNet.Prediction
             predictionManager = world;
             sceneId = world.sceneId;
             SetOwner(owner, false);
-            SetPredictionPolicy(ResolvePredictionPolicy());
+            PreparePredictionPolicyForSetup(ResolvePredictionPolicyForSetup());
 
             if (!isFreshSpawn)
             {

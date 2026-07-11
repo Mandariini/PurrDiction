@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Reflection;
 using NUnit.Framework;
+using PurrNet.Modules;
 using PurrNet.Pooling;
 using UnityEngine;
 
@@ -187,6 +188,80 @@ namespace PurrNet.Prediction.Tests.Editor
                 UnityEngine.Object.DestroyImmediate(scopeObject);
                 UnityEngine.Object.DestroyImmediate(managerObject);
             }
+        }
+
+        [Test]
+        public void SetupAppliesPolicySideEffectsAfterUnityStateCapture()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var identityObject = new GameObject(nameof(SetupAppliesPolicySideEffectsAfterUnityStateCapture));
+
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                var identity = identityObject.AddComponent<PolicySetupOrderProbe>();
+                identity.SetPredictionPolicyOverride(PredictionPolicy.SoftCorrection);
+
+                manager.RegisterInstance(identityObject, new PredictedObjectID(1), null, false, false);
+
+                Assert.That(identity.unityStateCaptured, Is.True);
+                Assert.That(identity.policyChangedBeforeUnityStateCapture, Is.False,
+                    "The policy callback ran before the stateful setup rebuilt its Unity state");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+                UnityEngine.Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        [Test]
+        public void PooledReuseEvaluatesIncomingPolicyBeforePreservingSoftState()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var identityObject = new GameObject(nameof(PooledReuseEvaluatesIncomingPolicyBeforePreservingSoftState));
+
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                var identity = identityObject.AddComponent<PolicySetupOrderProbe>();
+                identity.SetPredictionPolicyOverride(PredictionPolicy.SoftCorrection);
+
+                var objectId = new PredictedObjectID(1);
+                manager.RegisterInstance(identityObject, objectId, null, false, false);
+                manager.UnregisterInstance(identity);
+
+                SetField(typeof(PredictedIdentity), identity, "_predictionPolicy",
+                    PredictionPolicy.FullPrediction);
+                manager.RegisterInstance(identityObject, objectId, null, false, false);
+
+                Assert.That(identity.preSetupCount, Is.EqualTo(2),
+                    "The old SoftCorrection policy incorrectly suppressed setup for the incoming full-prediction lifetime");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+                UnityEngine.Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        [Test]
+        public void DefaultCorrectionRingRetainsTheDefaultTenSecondHistoryWindow()
+        {
+            var ring = new AppliedCorrectionRing<int>();
+
+            for (ulong tick = 0; tick < 200; tick++)
+                ring.Record(tick, (int)tick);
+
+            Assert.That(ring.TryGetBaseline(1, out var baseline), Is.True);
+            Assert.That(baseline, Is.EqualTo(1),
+                "The correction baseline was overwritten before the default 20 Hz history window expired");
         }
 
         [Test]
@@ -460,6 +535,40 @@ namespace PurrNet.Prediction.Tests.Editor
 
 #if UNITY_PHYSICS_3D
         [Test]
+        public void ServerRelaySetupCapturesTheAuthoredRigidbodyModeBeforeForcingKinematic()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var identityObject = new GameObject(nameof(ServerRelaySetupCapturesTheAuthoredRigidbodyModeBeforeForcingKinematic));
+
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                identityObject.AddComponent<PredictedTransform>();
+                var rigidbody = identityObject.AddComponent<Rigidbody>();
+                rigidbody.isKinematic = false;
+                rigidbody.useGravity = true;
+                var predicted = identityObject.AddComponent<PredictedRigidbody>();
+                predicted.SetPredictionPolicyOverride(PredictionPolicy.ServerRelay);
+
+                manager.RegisterInstance(identityObject, new PredictedObjectID(1), null, false, false);
+
+                Assert.That(predicted.currentState.isKinematic, Is.False,
+                    "Relay policy was applied before the authored rigidbody mode was captured");
+                Assert.That(predicted.currentState.useGravity, Is.True);
+                Assert.That(rigidbody.isKinematic, Is.True,
+                    "The live client body should still be forced kinematic after setup completes");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+                UnityEngine.Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        [Test]
         public void FullAndSoftPolicyTransitionsPreserveLiveRigidbodyMode()
         {
             var gameObject = new GameObject(nameof(FullAndSoftPolicyTransitionsPreserveLiveRigidbodyMode));
@@ -536,6 +645,38 @@ namespace PurrNet.Prediction.Tests.Editor
 
 #if UNITY_PHYSICS_2D
         [Test]
+        public void ServerRelaySetupCapturesTheAuthoredRigidbody2DModeBeforeForcingKinematic()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var identityObject = new GameObject(nameof(ServerRelaySetupCapturesTheAuthoredRigidbody2DModeBeforeForcingKinematic));
+
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                identityObject.AddComponent<PredictedTransform>();
+                var rigidbody = identityObject.AddComponent<Rigidbody2D>();
+                rigidbody.bodyType = RigidbodyType2D.Dynamic;
+                var predicted = identityObject.AddComponent<PredictedRigidbody2D>();
+                predicted.SetPredictionPolicyOverride(PredictionPolicy.ServerRelay);
+
+                manager.RegisterInstance(identityObject, new PredictedObjectID(1), null, false, false);
+
+                Assert.That((RigidbodyType2D)predicted.currentState.bodyType, Is.EqualTo(RigidbodyType2D.Dynamic),
+                    "Relay policy was applied before the authored rigidbody mode was captured");
+                Assert.That(rigidbody.bodyType, Is.EqualTo(RigidbodyType2D.Kinematic),
+                    "The live client body should still be forced kinematic after setup completes");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+                UnityEngine.Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        [Test]
         public void FullAndSoftPolicyTransitionsPreserveLiveRigidbody2DMode()
         {
             var gameObject = new GameObject(nameof(FullAndSoftPolicyTransitionsPreserveLiveRigidbody2DMode));
@@ -572,6 +713,20 @@ namespace PurrNet.Prediction.Tests.Editor
                 "ApplyEmptyDynamicModuleSnapshot", InstanceFields);
             Assert.That(method, Is.Not.Null);
             method.Invoke(identity, new object[] { tick });
+        }
+
+        private static PredictionManager CreateSpawnedPredictionManager(
+            GameObject managerObject,
+            NetworkManager networkManager)
+        {
+            var tickManager = new TickManager(20, networkManager, null, false);
+            SetField(typeof(NetworkManager), networkManager, "_clientTickManager", tickManager);
+
+            var manager = managerObject.AddComponent<PredictionManager>();
+            SetField(typeof(NetworkIdentity), manager, "<networkManager>k__BackingField", networkManager);
+            SetField(typeof(PredictionManager), manager, "<tickRate>k__BackingField", 20);
+            manager.SetIsSpawned(true, false);
+            return manager;
         }
 
         private static History<TrackedInput> SeedInputStorage(Component identity, Type identityBaseType)
@@ -684,6 +839,32 @@ namespace PurrNet.Prediction.Tests.Editor
         public void RefreshParentScopeForTest()
         {
             base.OnTransformParentChanged();
+        }
+    }
+
+    public sealed class PolicySetupOrderProbe : PredictedIdentity<EmptyState>
+    {
+        public override bool supportsSoftCorrection => true;
+
+        public int preSetupCount { get; private set; }
+        public bool unityStateCaptured { get; private set; }
+        public bool policyChangedBeforeUnityStateCapture { get; private set; }
+
+        public override void OnPreSetup()
+        {
+            preSetupCount++;
+        }
+
+        protected override void GetUnityState(ref EmptyState state)
+        {
+            unityStateCaptured = true;
+        }
+
+        protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
+        {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
+            if (!unityStateCaptured)
+                policyChangedBeforeUnityStateCapture = true;
         }
     }
 

@@ -116,7 +116,8 @@ namespace PurrNet.Prediction
             if (isServer || !UsesSoftCorrectionTimeline())
                 return;
 
-            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>();
+            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>(
+                Mathf.Max(1, predictionManager.tickRate * 10));
             _appliedRing.Record(tick, new AppliedVelocityTotals
             {
                 velocity = _appliedVelocityTotal

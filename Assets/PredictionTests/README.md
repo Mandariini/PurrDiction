@@ -20,7 +20,7 @@ Multi-process end-to-end tests for the prediction pipeline, modeled after PurrNe
 | `SoftCorrection2DScenario` | 2D soft-corrected bodies follow the same convergence and replay guarantees |
 | `OwnedRelayScenario` | PredictedIfOwned resolves to live prediction for the owner and server relay for non-owners |
 | `SoftCorrectionPoolReuseScenario` | A completed pooled lifetime cannot leak pose-correction accumulators into the next object |
-| `GenericSoftCorrectionScenario` | Unsupported generic state cannot silently accept SoftCorrection while ignoring authoritative state |
+| `GenericSoftCorrectionScenario` | An opted-in generic state consumes verified deltas and converges without rollback simulation |
 | `ReplayPolicyTransitionScenario` | Entering SoftCorrection during reconcile freezes the body before the replay physics pass |
 
 All scenarios fail on unexpected Unity `Error`, `Assert`, or `Exception` logs during the active scenario. They run with simulated latency (40–80ms by default, configurable on the `Bootstrap` object or via `-latencyMin`/`-latencyMax`; `-latencyMax 0` disables) so rollback depth resembles real conditions instead of a clean localhost.

@@ -326,7 +326,8 @@ namespace PurrNet.Prediction
             if (isServer || !UsesSoftCorrectionTimeline())
                 return;
 
-            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>();
+            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>(
+                Mathf.Max(1, predictionManager.tickRate * 10));
             _appliedRing.Record(tick, new AppliedVelocityTotals
             {
                 linear = _appliedLinearTotal,
@@ -387,6 +388,12 @@ namespace PurrNet.Prediction
 
         public override void OnPreSetup()
         {
+            if (!_rigidbody)
+                _rigidbody = GetComponent<Rigidbody>();
+            if (!_rigidbody)
+                return;
+
+            RestoreDefaultPhysicsMode();
             if (_rigidbody.isKinematic)
                 return;
 

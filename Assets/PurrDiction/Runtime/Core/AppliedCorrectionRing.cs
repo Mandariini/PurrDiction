@@ -4,15 +4,23 @@ namespace PurrNet.Prediction
 {
     internal sealed class AppliedCorrectionRing<T> where T : struct
     {
-        private const int Size = 128;
+        private const int DefaultCapacity = 20 * 10;
 
-        private readonly ulong[] _ticks = new ulong[Size];
-        private readonly T[] _values = new T[Size];
-        private readonly bool[] _valid = new bool[Size];
+        private readonly ulong[] _ticks;
+        private readonly T[] _values;
+        private readonly bool[] _valid;
+
+        public AppliedCorrectionRing(int capacity = DefaultCapacity)
+        {
+            capacity = Math.Max(1, capacity);
+            _ticks = new ulong[capacity];
+            _values = new T[capacity];
+            _valid = new bool[capacity];
+        }
 
         public void Record(ulong tick, in T totals)
         {
-            int index = (int)(tick % Size);
+            int index = (int)(tick % (ulong)_ticks.Length);
             _ticks[index] = tick;
             _values[index] = totals;
             _valid[index] = true;
@@ -25,7 +33,7 @@ namespace PurrNet.Prediction
         /// </summary>
         public bool TryGetBaseline(ulong tick, out T totals)
         {
-            int index = (int)(tick % Size);
+            int index = (int)(tick % (ulong)_ticks.Length);
             if (_valid[index] && _ticks[index] == tick)
             {
                 totals = _values[index];
@@ -35,7 +43,7 @@ namespace PurrNet.Prediction
             ulong bestTick = ulong.MaxValue;
             int bestIndex = -1;
 
-            for (int i = 0; i < Size; i++)
+            for (int i = 0; i < _ticks.Length; i++)
             {
                 if (!_valid[i])
                     continue;
@@ -60,9 +68,9 @@ namespace PurrNet.Prediction
 
         public void Clear()
         {
-            Array.Clear(_ticks, 0, Size);
-            Array.Clear(_values, 0, Size);
-            Array.Clear(_valid, 0, Size);
+            Array.Clear(_ticks, 0, _ticks.Length);
+            Array.Clear(_values, 0, _values.Length);
+            Array.Clear(_valid, 0, _valid.Length);
         }
     }
 }
