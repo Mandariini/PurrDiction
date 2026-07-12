@@ -224,7 +224,7 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            var owned = incoming.list != null ? incoming.Duplicate() : DisposableList<uint>.Create(0);
+            var owned = incoming.list != null ? incoming : DisposableList<uint>.Create(0);
             _moduleHistory.Write(tick, owned);
             ApplyDynamicHashList(owned);
         }

@@ -292,6 +292,87 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void SetupResolutionIncludesEnabledScopesOnInactivePooledRoots()
+        {
+            var instanceObject = new GameObject(nameof(SetupResolutionIncludesEnabledScopesOnInactivePooledRoots));
+
+            try
+            {
+                var scope = instanceObject.AddComponent<PredictionPolicyScope>();
+                scope.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
+                var predictedTransform = instanceObject.AddComponent<PredictedTransform>();
+                instanceObject.SetActive(false);
+
+                Assert.That(predictedTransform.ResolvePredictionPolicyForSetup(),
+                    Is.EqualTo(PredictionPolicy.SoftCorrection),
+                    "An enabled scope on an inactive pooled root was ignored during registration-time resolution");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(instanceObject);
+            }
+        }
+
+        [Test]
+        public void SetupResolutionPreservesVirtualPolicyOverridesOnInactivePooledRoots()
+        {
+            var instanceObject = new GameObject(nameof(SetupResolutionPreservesVirtualPolicyOverridesOnInactivePooledRoots));
+
+            try
+            {
+                var identity = instanceObject.AddComponent<SetupPolicyOverrideProbe>();
+                instanceObject.SetActive(false);
+
+                Assert.That(identity.ResolvePredictionPolicyForSetup(),
+                    Is.EqualTo(PredictionPolicy.ServerRelay),
+                    "Registration-time policy resolution bypassed the identity's virtual override");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(instanceObject);
+            }
+        }
+
+        [Test]
+        public void ModuleVerifiedStateUsesTheParentVerifiedTick()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var identityObject = new GameObject(nameof(ModuleVerifiedStateUsesTheParentVerifiedTick));
+
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                SetField(typeof(PredictionManager), manager, "<tickRate>k__BackingField", 20);
+                var identity = identityObject.AddComponent<PolicyProbe>();
+                identity.AttachForTest(manager);
+                var module = new ModuleHistoryProbe(identity);
+
+                var historyField = typeof(PredictedModule<ModuleHistoryState>).GetField(
+                    "_history", InstanceFields);
+                Assert.That(historyField, Is.Not.Null);
+                var history = (History<MODULE_STATE<ModuleHistoryState>>)historyField.GetValue(module);
+                history.Write(5, new MODULE_STATE<ModuleHistoryState>
+                {
+                    state = new ModuleHistoryState { value = 5 }
+                });
+                history.Write(10, new MODULE_STATE<ModuleHistoryState>
+                {
+                    state = new ModuleHistoryState { value = 10 }
+                });
+                identity.lastVerifiedTick = 5;
+
+                Assert.That(module.verifiedState.HasValue, Is.True);
+                Assert.That(module.verifiedState.Value.value, Is.EqualTo(5),
+                    "The module exposed a future predicted entry as its verified state");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
         public void DefaultCorrectionRingRetainsTheDefaultTenSecondHistoryWindow()
         {
             var ring = new AppliedCorrectionRing<int>();
@@ -841,6 +922,25 @@ namespace PurrNet.Prediction.Tests.Editor
     public struct EmptyState : IPredictedData<EmptyState>
     {
         public void Dispose() { }
+    }
+
+    public struct ModuleHistoryState : IPredictedData<ModuleHistoryState>
+    {
+        public int value;
+
+        public void Dispose() { }
+    }
+
+    public sealed class ModuleHistoryProbe : PredictedModule<ModuleHistoryState>
+    {
+        public ModuleHistoryProbe(PredictedIdentity identity) : base(identity) { }
+    }
+
+    public sealed class SetupPolicyOverrideProbe : PredictedIdentity<EmptyState>
+    {
+        protected override PredictionPolicy ResolvePredictionPolicy() => PredictionPolicy.ServerRelay;
+
+        protected override void Simulate(ref EmptyState state, float delta) { }
     }
 
     public sealed class StatefulInputProbe : PredictedIdentity<TrackedInput, EmptyState>

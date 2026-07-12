@@ -32,7 +32,20 @@ namespace PurrNet.Prediction
         /// The last fully verified state received from the server (or authoritative state if local).
         /// Returns null if no history exists yet.
         /// </summary>
-        public TState? verifiedState => _history.Count > 0 ? _history[^1].state : null;
+        public TState? verifiedState
+        {
+            get
+            {
+                if (identity.lastVerifiedTick.HasValue &&
+                    _history != null &&
+                    _history.ReadOrPrevious(identity.lastVerifiedTick.Value, out var state))
+                {
+                    return state.state;
+                }
+
+                return null;
+            }
+        }
 
         public PredictedModule(PredictedIdentity identity) : base(identity) { }
 

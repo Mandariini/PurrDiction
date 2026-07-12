@@ -46,6 +46,29 @@ namespace PurrNet.Prediction
             return _predictionPolicy;
         }
 
+        internal PredictionPolicy ResolvePolicyForSetup()
+        {
+            if (_inheritFromParent && TryGetEnabledParentScope(out var parent))
+                return parent.ResolvePolicyForSetup();
+
+            return _predictionPolicy;
+        }
+
+        private bool TryGetEnabledParentScope(out PredictionPolicyScope scope)
+        {
+            var current = transform.parent;
+            while (current)
+            {
+                if (current.TryGetComponent(out scope) && scope.enabled)
+                    return true;
+
+                current = current.parent;
+            }
+
+            scope = null;
+            return false;
+        }
+
         public bool TryGetParentScope(out PredictionPolicyScope scope)
         {
             var current = transform.parent;

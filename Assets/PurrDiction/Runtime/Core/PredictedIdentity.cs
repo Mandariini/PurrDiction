@@ -78,6 +78,7 @@ namespace PurrNet.Prediction
         private bool _hasPendingSetupPolicyChange;
         private PredictionPolicy _pendingSetupOldPolicy;
         private PredictionPolicy _pendingSetupNewPolicy;
+        private bool _isResolvingSetupPredictionPolicy;
 
         /// <summary>
         /// The configured (serialized) policy, re-applied on every registration including pooled reuse.
@@ -130,14 +131,52 @@ namespace PurrNet.Prediction
 
         protected virtual PredictionPolicy ResolvePredictionPolicy()
         {
-            if (!OverridesPredictionPolicyScope() && TryGetPredictionPolicyScope(out var scope))
-                return NormalizePredictionPolicy(scope.ResolvePolicy(), false);
+            if (!OverridesPredictionPolicyScope())
+            {
+                var hasScope = _isResolvingSetupPredictionPolicy
+                    ? TryGetPredictionPolicyScopeForSetup(out var scope)
+                    : TryGetPredictionPolicyScope(out scope);
+
+                if (hasScope)
+                {
+                    var policy = _isResolvingSetupPredictionPolicy
+                        ? scope.ResolvePolicyForSetup()
+                        : scope.ResolvePolicy();
+                    return NormalizePredictionPolicy(policy, false);
+                }
+            }
 
             return NormalizePredictionPolicy(_predictionPolicy, false);
         }
 
         protected virtual PredictionPolicy ResolveSetupPredictionPolicy()
-            => ResolvePredictionPolicy();
+        {
+            var wasResolvingSetupPolicy = _isResolvingSetupPredictionPolicy;
+            _isResolvingSetupPredictionPolicy = true;
+            try
+            {
+                return ResolvePredictionPolicy();
+            }
+            finally
+            {
+                _isResolvingSetupPredictionPolicy = wasResolvingSetupPolicy;
+            }
+        }
+
+        private bool TryGetPredictionPolicyScopeForSetup(out PredictionPolicyScope scope)
+        {
+            var current = transform;
+            while (current)
+            {
+                if (current.TryGetComponent(out scope) && scope.enabled)
+                    return true;
+
+                current = current.parent;
+            }
+
+            scope = null;
+            return false;
+        }
 
         internal PredictionPolicy ResolvePredictionPolicyForSetup()
             => ResolveSetupPredictionPolicy();
