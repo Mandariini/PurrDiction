@@ -37,6 +37,12 @@ namespace PurrNet.Prediction
         /// </summary>
         public int moduleIndex { get; internal set; }
 
+        /// <summary>
+        /// Simulation tick when this dynamic module instance joined its identity. Static modules
+        /// and modules reconstructed from authoritative topology use zero.
+        /// </summary>
+        internal ulong registeredAtTick { get; set; }
+
         internal readonly uint typeHash;
 
         public PredictedModule(PredictedIdentity identity)

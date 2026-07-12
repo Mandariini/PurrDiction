@@ -52,6 +52,8 @@ namespace PurrNet.Prediction
         private bool _isApplyingModuleDiff;
         private bool _isRunningInitialModuleSetup;
         private History<DisposableList<uint>> _moduleHistory;
+        private List<PredictedModule> _softCorrectionLiveModules;
+        private List<PredictedModule> _softCorrectionTemporaryModules;
 
         private readonly struct DynamicModulesKey : IStableHashable
         {
@@ -113,6 +115,7 @@ namespace PurrNet.Prediction
             if (isDynamic && _staticModuleCount < 0)
                 _staticModuleCount = _modules.Count;
 
+            module.registeredAtTick = isDynamic ? predictionManager.localTickInContext : 0;
             module.moduleIndex = _modules.Count;
             _modules.Add(module);
 
@@ -210,7 +213,7 @@ namespace PurrNet.Prediction
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
-                ApplyEmptyDynamicModuleSnapshot(tick);
+                ApplyEmptyDynamicModuleSnapshot(tick, UsesSoftCorrectionTimeline());
                 return;
             }
 
@@ -226,7 +229,7 @@ namespace PurrNet.Prediction
 
             var owned = incoming.list != null ? incoming : DisposableList<uint>.Create(0);
             _moduleHistory.Write(tick, owned);
-            ApplyDynamicHashList(owned);
+            ApplyDynamicModuleSnapshotForRead(tick, owned, UsesSoftCorrectionTimeline());
         }
 
         internal bool WriteDynamicModuleSnapshot(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
@@ -308,7 +311,7 @@ namespace PurrNet.Prediction
             ApplyDynamicHashList(incoming);
         }
 
-        private void ApplyEmptyDynamicModuleSnapshot(ulong tick)
+        private void ApplyEmptyDynamicModuleSnapshot(ulong tick, bool preserveLiveTopology = false)
         {
             if (!HasDynamicModulesOrHistory() || _moduleHistory == null)
                 return;
@@ -316,13 +319,156 @@ namespace PurrNet.Prediction
             if (_moduleHistory.ReadOrPrevious(tick, out var previous) &&
                 !previous.isDisposed && previous.Count == 0)
             {
-                ApplyDynamicHashList(previous);
+                ApplyDynamicModuleSnapshotForRead(tick, previous, preserveLiveTopology);
                 return;
             }
 
             var empty = DisposableList<uint>.Create(0);
             _moduleHistory.Write(tick, empty);
-            ApplyDynamicHashList(empty);
+            ApplyDynamicModuleSnapshotForRead(tick, empty, preserveLiveTopology);
+        }
+
+        private void ApplyDynamicModuleSnapshotForRead(
+            ulong tick,
+            DisposableList<uint> target,
+            bool preserveLiveTopology)
+        {
+            if (preserveLiveTopology)
+                BeginSoftCorrectionDynamicModuleRead(tick, target);
+            else
+                ApplyDynamicHashList(target);
+        }
+
+        /// <summary>
+        /// Presents the authoritative topology while a soft-correction delta is decoded without
+        /// disposing modules that were created later on the live timeline. ReadModules restores
+        /// the live list after consuming the authoritative module payload.
+        /// </summary>
+        internal void BeginSoftCorrectionDynamicModuleRead(ulong tick, DisposableList<uint> target)
+        {
+            EndSoftCorrectionDynamicModuleRead();
+
+            int staticCount = _staticModuleCount < 0 ? _modules.Count : _staticModuleCount;
+            var liveModules = ListPool<PredictedModule>.Instantiate();
+            var temporaryModules = ListPool<PredictedModule>.Instantiate();
+            liveModules.AddRange(_modules);
+
+            _softCorrectionLiveModules = liveModules;
+            _softCorrectionTemporaryModules = temporaryModules;
+
+            try
+            {
+                if (_modules.Count > staticCount)
+                    _modules.RemoveRange(staticCount, _modules.Count - staticCount);
+
+                bool wasApplyingModuleDiff = _isApplyingModuleDiff;
+                _isApplyingModuleDiff = true;
+                try
+                {
+                    for (int targetIndex = 0; targetIndex < target.Count; targetIndex++)
+                    {
+                        uint targetHash = target[targetIndex];
+                        PredictedModule module = null;
+
+                        for (int liveIndex = staticCount; liveIndex < liveModules.Count; liveIndex++)
+                        {
+                            var candidate = liveModules[liveIndex];
+                            if (candidate.typeHash != targetHash || candidate.registeredAtTick > tick)
+                                continue;
+
+                            bool alreadyClaimed = false;
+                            for (int readIndex = staticCount; readIndex < _modules.Count; readIndex++)
+                            {
+                                if (!ReferenceEquals(_modules[readIndex], candidate))
+                                    continue;
+
+                                alreadyClaimed = true;
+                                break;
+                            }
+
+                            if (alreadyClaimed)
+                                continue;
+
+                            module = candidate;
+                            _modules.Add(module);
+                            module.moduleIndex = _modules.Count - 1;
+                            break;
+                        }
+
+                        if (module != null)
+                            continue;
+
+                        module = InstantiateDynamicAt(targetHash, _modules.Count);
+                        if (module == null)
+                        {
+                            throw new InvalidOperationException(
+                                $"Failed to construct authoritative dynamic module with hash {targetHash} for payload decoding.");
+                        }
+
+                        temporaryModules.Add(module);
+                    }
+                }
+                finally
+                {
+                    _isApplyingModuleDiff = wasApplyingModuleDiff;
+                }
+            }
+            catch
+            {
+                EndSoftCorrectionDynamicModuleRead();
+                throw;
+            }
+        }
+
+        internal void EndSoftCorrectionDynamicModuleRead()
+        {
+            if (_softCorrectionLiveModules == null)
+                return;
+
+            var liveModules = _softCorrectionLiveModules;
+            var temporaryModules = _softCorrectionTemporaryModules;
+            _softCorrectionLiveModules = null;
+            _softCorrectionTemporaryModules = null;
+            bool wasApplyingModuleDiff = _isApplyingModuleDiff;
+            _isApplyingModuleDiff = true;
+            Exception removalException = null;
+
+            try
+            {
+                if (temporaryModules != null)
+                {
+                    for (int i = temporaryModules.Count - 1; i >= 0; i--)
+                    {
+                        try
+                        {
+                            temporaryModules[i].OnRemovedInternal();
+                        }
+                        catch (Exception e)
+                        {
+                            removalException ??= e;
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    _modules.Clear();
+                    _modules.AddRange(liveModules);
+                    ReindexModulesFrom(0);
+                }
+                finally
+                {
+                    _isApplyingModuleDiff = wasApplyingModuleDiff;
+                    ListPool<PredictedModule>.Destroy(liveModules);
+                    if (temporaryModules != null)
+                        ListPool<PredictedModule>.Destroy(temporaryModules);
+                }
+            }
+
+            if (removalException != null)
+                throw removalException;
         }
 
         internal void ClearFutureDynamicModules(ulong tick)
@@ -497,19 +643,19 @@ namespace PurrNet.Prediction
             return match;
         }
 
-        private void InstantiateDynamicAt(uint typeHash, int absoluteIndex)
+        private PredictedModule InstantiateDynamicAt(uint typeHash, int absoluteIndex)
         {
             if (!Hasher.TryGetType(typeHash, out var type))
             {
                 PurrLogger.LogError($"Dynamic module reconcile failed. Type with hash {typeHash} is not registered.");
-                return;
+                return null;
             }
 
             var ctor = ResolveModuleConstructor(type);
             if (ctor == null)
             {
                 PurrLogger.LogError($"Dynamic module reconcile failed to construct '{type.Name}'. Module must expose a public constructor whose first parameter is PredictedIdentity (any additional parameters must be optional).");
-                return;
+                return null;
             }
 
             var parameters = ctor.GetParameters();
@@ -534,14 +680,31 @@ namespace PurrNet.Prediction
             catch (Exception e)
             {
                 PurrLogger.LogError($"Dynamic module reconcile failed to construct '{type.Name}': {e.Message}");
-                return;
+                return null;
             }
 
             _modules.Insert(absoluteIndex, module);
             module.moduleIndex = absoluteIndex;
 
-            if (predictionManager)
-                module.SetupInternal(this, predictionManager);
+            try
+            {
+                if (predictionManager)
+                    module.SetupInternal(this, predictionManager);
+                return module;
+            }
+            catch
+            {
+                _modules.Remove(module);
+                try
+                {
+                    module.OnRemovedInternal();
+                }
+                catch (Exception cleanupException)
+                {
+                    PurrLogger.LogException(cleanupException);
+                }
+                throw;
+            }
         }
 
         internal void UpdateModuleView(float deltaTime)
@@ -586,9 +749,16 @@ namespace PurrNet.Prediction
 
         protected void ReadModules(ulong tick, BitPacker packer, DeltaModule deltaModule)
         {
-            for (int i = 0; i < _modules.Count; i++)
+            try
             {
-                _modules[i].ReadStateInternal(tick, packer, deltaModule);
+                for (int i = 0; i < _modules.Count; i++)
+                {
+                    _modules[i].ReadStateInternal(tick, packer, deltaModule);
+                }
+            }
+            finally
+            {
+                EndSoftCorrectionDynamicModuleRead();
             }
         }
 

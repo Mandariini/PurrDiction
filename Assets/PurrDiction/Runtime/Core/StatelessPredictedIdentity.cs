@@ -13,6 +13,8 @@ namespace PurrNet.Prediction
 
     public abstract class StatelessPredictedIdentity : PredictedIdentity
     {
+        public sealed override bool supportsSoftCorrection => false;
+
         [UsedImplicitly]
         public new PlayerID? owner { get; }
 
@@ -61,15 +63,33 @@ namespace PurrNet.Prediction
 
         internal override void GetLatestUnityState() { }
 
-        internal override void WriteFirstState(ulong tick, BitPacker packer) { }
+        internal override void WriteFirstState(ulong tick, BitPacker packer)
+        {
+            var metadata = new PredictedIdentityState { owner = base.owner };
+            Packer<PredictedIdentityState>.Write(packer, metadata);
+        }
 
-        internal override bool WriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule) => false;
+        internal override bool WriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
+        {
+            var metadata = new PredictedIdentityState { owner = base.owner };
+            return WritePredictionMetadata(receiver, packer, deltaModule, metadata);
+        }
 
         internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable) { }
 
-        internal override void ReadFirstState(ulong tick, BitPacker packer) { }
+        internal override void ReadFirstState(ulong tick, BitPacker packer)
+        {
+            PredictedIdentityState metadata = default;
+            Packer<PredictedIdentityState>.Read(packer, ref metadata);
+            SetOwner(metadata.owner);
+        }
 
-        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule) { }
+        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        {
+            PredictedIdentityState metadata = default;
+            ReadPredictionMetadata(packer, deltaModule, ref metadata);
+            SetOwner(metadata.owner);
+        }
 
         internal override void ReadInput(ulong tick, PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable) { }
 

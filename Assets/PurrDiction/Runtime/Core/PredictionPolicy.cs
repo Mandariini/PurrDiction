@@ -33,8 +33,9 @@ namespace PurrNet.Prediction
     /// Controls how a predicted identity participates in client-side prediction and reconciliation.
     /// Policies only alter behavior on clients; the server always simulates every identity normally.
     /// Deterministic identities can use FullPrediction, ServerRelay, and PredictedIfOwned without
-    /// sending per-tick state. SoftCorrection requires authoritative state deltas and an identity
-    /// that explicitly implements verified-state correction through supportsSoftCorrection.
+    /// sending per-tick simulation state; ownership metadata is synchronized when it changes.
+    /// SoftCorrection requires authoritative state deltas and a non-deterministic identity that
+    /// explicitly implements verified-state correction through supportsSoftCorrection.
     /// </summary>
     public enum PredictionPolicy : byte
     {
@@ -67,7 +68,7 @@ namespace PurrNet.Prediction
         /// and <see cref="ServerRelay"/> otherwise (including unowned). The common "predict only what I
         /// control, relay everyone else" setup: your own pawn/vehicle predicts and reconciles normally,
         /// while remote-owned copies just play verified server state. Ownership changes flip the mode
-        /// automatically at the next tick.
+        /// automatically when the ownership change is received in the next verified frame.
         /// </summary>
         PredictedIfOwned = 3
     }

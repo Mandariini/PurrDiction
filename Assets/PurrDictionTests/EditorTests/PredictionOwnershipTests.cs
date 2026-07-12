@@ -314,6 +314,41 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void DeactivatingScopedPooledRootPreservesAppliedSoftCorrectionPolicy()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var instanceObject = new GameObject(
+                nameof(DeactivatingScopedPooledRootPreservesAppliedSoftCorrectionPolicy));
+
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                var scope = instanceObject.AddComponent<PredictionPolicyScope>();
+                scope.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
+                var identity = instanceObject.AddComponent<PolicyProbe>();
+                identity.AttachForTest(manager);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+
+                instanceObject.SetActive(false);
+
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection),
+                    "Pool deactivation replaced the scoped policy before unregistration");
+                Assert.That(identity.ResolvePredictionPolicyForSetup(),
+                    Is.EqualTo(PredictionPolicy.SoftCorrection),
+                    "Registration-time resolution did not preserve the enabled pooled scope");
+
+                instanceObject.SetActive(true);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+                identity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(instanceObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
         public void SetupResolutionPreservesVirtualPolicyOverridesOnInactivePooledRoots()
         {
             var instanceObject = new GameObject(nameof(SetupResolutionPreservesVirtualPolicyOverridesOnInactivePooledRoots));
@@ -833,7 +868,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var method = typeof(PredictedIdentity).GetMethod(
                 "ApplyEmptyDynamicModuleSnapshot", InstanceFields);
             Assert.That(method, Is.Not.Null);
-            method.Invoke(identity, new object[] { tick });
+            method.Invoke(identity, new object[] { tick, false });
         }
 
         private static PredictionManager CreateSpawnedPredictionManager(

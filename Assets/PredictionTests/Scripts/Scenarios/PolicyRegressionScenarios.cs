@@ -23,8 +23,9 @@ public sealed class SoftCorrectionPoolReuseScenario : Scenario
     {
         _probePrefab = new GameObject(nameof(SoftCorrectionPoolProbe));
         _probePrefab.SetActive(false);
-        var probe = _probePrefab.AddComponent<SoftCorrectionPoolProbe>();
-        probe.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
+        var scope = _probePrefab.AddComponent<PredictionPolicyScope>();
+        scope.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
+        _probePrefab.AddComponent<SoftCorrectionPoolProbe>();
         UnityEngine.Object.DontDestroyOnLoad(_probePrefab);
         PredictionTestUtils.RegisterPrefab(ctx, _probePrefab, pooled: true, warmupCount: 1);
 

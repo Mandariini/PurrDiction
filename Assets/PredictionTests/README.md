@@ -19,7 +19,7 @@ Multi-process end-to-end tests for the prediction pipeline, modeled after PurrNe
 | `SoftCorrectionScenario` | 3D soft-corrected bodies tolerate local divergence and converge without replay simulation |
 | `SoftCorrection2DScenario` | 2D soft-corrected bodies follow the same convergence and replay guarantees |
 | `OwnedRelayScenario` | PredictedIfOwned resolves to live prediction for the owner and server relay for non-owners |
-| `SoftCorrectionPoolReuseScenario` | A completed pooled lifetime cannot leak pose-correction accumulators into the next object |
+| `SoftCorrectionPoolReuseScenario` | A scoped soft-correction object preserves its policy through replay pooling, while a completed pooled lifetime cannot leak pose-correction accumulators into the next object |
 | `GenericSoftCorrectionScenario` | An opted-in generic state consumes verified deltas and converges without rollback simulation |
 | `ReplayPolicyTransitionScenario` | Entering SoftCorrection during reconcile freezes the body before the replay physics pass |
 

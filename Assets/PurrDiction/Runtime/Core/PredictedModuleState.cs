@@ -49,7 +49,12 @@ namespace PurrNet.Prediction
 
         public PredictedModule(PredictedIdentity identity) : base(identity) { }
 
-        private ModuleDeltaKey<ModulePredictedState> predictionKey => new ModuleDeltaKey<ModulePredictedState>(identity.id, moduleIndex);
+        /// <summary>
+        /// Stable key retained for source compatibility with custom predicted modules.
+        /// </summary>
+        protected ModuleDeltaKey<PredictedIdentityState> predictionKey => new ModuleDeltaKey<PredictedIdentityState>(identity.id, moduleIndex);
+
+        private ModuleDeltaKey<ModulePredictedState> modulePredictionKey => new ModuleDeltaKey<ModulePredictedState>(identity.id, moduleIndex);
         protected ModuleDeltaKey<TState> stateKey => new ModuleDeltaKey<TState>(identity.id, moduleIndex);
 
         public override string ToString()
@@ -218,7 +223,7 @@ namespace PurrNet.Prediction
         {
             int flagPos = packer.AdvanceBits(1);
 
-            bool changed = deltaModule.WriteReliable(packer, receiver, predictionKey, fullPredictedState.prediction);
+            bool changed = deltaModule.WriteReliable(packer, receiver, modulePredictionKey, fullPredictedState.prediction);
             changed |= deltaModule.WriteReliable(packer, receiver, stateKey, fullPredictedState.state);
 
             packer.WriteAt(flagPos, changed);
@@ -237,12 +242,12 @@ namespace PurrNet.Prediction
 
             if (changed)
             {
-                deltaModule.ReadReliable(packer, predictionKey, ref newState.prediction);
+                deltaModule.ReadReliable(packer, modulePredictionKey, ref newState.prediction);
             }
             else
             {
                 packer.SetBitPosition(pos);
-                deltaModule.ReadReliable(packer, predictionKey, ref newState.prediction);
+                deltaModule.ReadReliable(packer, modulePredictionKey, ref newState.prediction);
                 packer.SetBitPosition(pos);
             }
 

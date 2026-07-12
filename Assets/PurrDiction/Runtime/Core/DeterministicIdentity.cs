@@ -16,21 +16,28 @@ namespace PurrNet.Prediction
 
         internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
         {
+            bool metadataChanged = WritePredictionMetadata(
+                target,
+                packer,
+                deltaModule,
+                fullPredictedState.prediction);
+
             if (predictionManager.validateDeterministicData)
             {
-                Packer<bool>.Write(packer, true);
                 Packer<STATE>.Write(packer, fullPredictedState.state);
                 return true;
             }
 
-            return false;
+            return metadataChanged;
         }
 
         internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
         {
+            PredictedIdentityState prediction = default;
+            ReadPredictionMetadata(packer, deltaModule, ref prediction);
+
             if (predictionManager.validateDeterministicData)
             {
-                packer.AdvanceBits(1);
                 STATE read = default;
                 Packer<STATE>.Read(packer, ref read);
 
@@ -42,6 +49,18 @@ namespace PurrNet.Prediction
                 }
 
                 read.Dispose();
+            }
+
+            if (_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
+            {
+                var verified = stateAtTick.DeepCopy();
+                verified.prediction = prediction;
+                WriteOwnedStateIfChanged(tick, ref verified);
+            }
+            else
+            {
+                fullPredictedState.prediction = prediction;
+                SetOwner(prediction.owner);
             }
         }
 

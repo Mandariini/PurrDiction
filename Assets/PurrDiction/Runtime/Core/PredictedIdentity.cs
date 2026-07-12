@@ -2,11 +2,36 @@ using System;
 using System.Collections.Generic;
 using PurrNet.Modules;
 using PurrNet.Packing;
+using PurrNet.Utils;
 using Unity.Profiling;
 using UnityEngine;
 
 namespace PurrNet.Prediction
 {
+    internal readonly struct PredictionMetadataDeltaKey : IStableHashable
+    {
+        private readonly SceneID _scene;
+        private readonly PredictedComponentID _id;
+
+        public PredictionMetadataDeltaKey(SceneID scene, PredictedComponentID id)
+        {
+            _scene = scene;
+            _id = id;
+        }
+
+        public uint GetStableHash()
+        {
+            const uint offset = 2166136261u;
+            const uint prime = 16777619u;
+            uint hash = offset;
+            hash = (hash ^ Hasher<PredictedIdentityState>.stableHash) * prime;
+            hash = (hash ^ _id.componentId.value) * prime;
+            hash = (hash ^ _id.objectId.instanceId.value) * prime;
+            hash = (hash ^ _scene.id.value) * prime;
+            return hash;
+        }
+    }
+
     public abstract partial class PredictedIdentity : MonoBehaviour
     {
         public ulong? lastVerifiedTick { get; internal set; }
@@ -56,9 +81,10 @@ namespace PurrNet.Prediction
         public virtual bool controlsTransformPolicy => false;
 
         /// <summary>
-        /// True when this identity consumes verified state as a correction target instead of
-        /// requiring rollback. Implementations must override OnVerifiedStateReceived and apply
-        /// the resulting correction during live simulation.
+        /// True when this non-deterministic identity consumes verified state as a correction target
+        /// instead of requiring rollback. Implementations must override OnVerifiedStateReceived and
+        /// apply the resulting correction during live simulation. Deterministic identities cannot use
+        /// SoftCorrection even if a subclass overrides this property.
         /// </summary>
         public virtual bool supportsSoftCorrection => false;
 
@@ -290,7 +316,7 @@ namespace PurrNet.Prediction
 
         private PredictionPolicy NormalizePredictionPolicy(PredictionPolicy policy, bool log)
         {
-            if (policy != PredictionPolicy.SoftCorrection || supportsSoftCorrection)
+            if (policy != PredictionPolicy.SoftCorrection || (!isDeterministic && supportsSoftCorrection))
                 return policy;
 
             if (log)
@@ -424,6 +450,25 @@ namespace PurrNet.Prediction
         }
 
         protected virtual void OnOwnerAssigned(PlayerID? player) { }
+
+        internal bool WritePredictionMetadata(
+            PlayerID receiver,
+            BitPacker packer,
+            DeltaModule deltaModule,
+            PredictedIdentityState metadata)
+        {
+            var key = new PredictionMetadataDeltaKey(sceneId, id);
+            return deltaModule.WriteReliable(packer, receiver, key, metadata);
+        }
+
+        internal void ReadPredictionMetadata(
+            BitPacker packer,
+            DeltaModule deltaModule,
+            ref PredictedIdentityState metadata)
+        {
+            var key = new PredictionMetadataDeltaKey(sceneId, id);
+            deltaModule.ReadReliable(packer, key, ref metadata);
+        }
 
         internal void TriggerOnRemovedFromPool()
         {

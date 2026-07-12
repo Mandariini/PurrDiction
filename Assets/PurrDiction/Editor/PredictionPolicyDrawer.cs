@@ -50,7 +50,7 @@ namespace PurrNet.Prediction.Editor
                 return;
             }
 
-            if (identity && !identity.supportsSoftCorrection)
+            if (identity && (identity.isDeterministic || !identity.supportsSoftCorrection))
             {
                 DrawWithoutSoftCorrection(position, property, label, identity.isDeterministic);
                 return;
@@ -70,7 +70,8 @@ namespace PurrNet.Prediction.Editor
 
         private static PredictionPolicy ResolveDisplayPolicy(PredictedIdentity identity, PredictionPolicy policy)
         {
-            if (identity && !identity.supportsSoftCorrection && policy == PredictionPolicy.SoftCorrection)
+            if (identity && (identity.isDeterministic || !identity.supportsSoftCorrection) &&
+                policy == PredictionPolicy.SoftCorrection)
                 return PredictionPolicy.FullPrediction;
 
             return policy;
@@ -85,7 +86,7 @@ namespace PurrNet.Prediction.Editor
             var policy = (PredictionPolicy)property.enumValueIndex;
             int index = DeterministicIndexOf(policy);
             var tooltip = deterministic
-                ? "Deterministic identities do not send per-tick state. FullPrediction predicts and replays locally; ServerRelay simulates only verified ticks from deterministic history; PredictedIfOwned switches between those modes by owner. SoftCorrection is unavailable because it needs authoritative state deltas."
+                ? "Deterministic identities do not send per-tick simulation state. FullPrediction predicts and replays locally; ServerRelay simulates only verified ticks from deterministic history; PredictedIfOwned switches between those modes when synchronized ownership metadata changes. SoftCorrection is unavailable because it needs authoritative state deltas."
                 : "SoftCorrection is unavailable because this identity does not implement verified-state correction. Override supportsSoftCorrection and OnVerifiedStateReceived to opt in.";
             var policyLabel = new GUIContent(label.text, tooltip);
 

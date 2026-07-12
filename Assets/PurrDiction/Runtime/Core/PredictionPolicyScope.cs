@@ -156,6 +156,14 @@ namespace PurrNet.Prediction
 
         private void OnDisable()
         {
+            // Deactivating a pooled hierarchy must not transiently replace the applied
+            // policy before PredictionManager unregisters its identities. In particular,
+            // SoftCorrection state is intentionally preserved for same-ID replay reuse.
+            // Disabling or removing the scope component on an active hierarchy still
+            // needs to make descendants fall back to their next policy source.
+            if (!gameObject.activeInHierarchy)
+                return;
+
             RefreshDescendantIdentities();
         }
 
