@@ -252,6 +252,46 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void RootPosePreservationUsesIncomingPolicyOnReplayReuse()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var hierarchyObject = new GameObject("PredictedHierarchy");
+            var instanceObject = new GameObject(nameof(RootPosePreservationUsesIncomingPolicyOnReplayReuse));
+
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                SetField(typeof(PredictionManager), manager, "<isReplaying>k__BackingField", true);
+
+                var hierarchy = hierarchyObject.AddComponent<PredictedHierarchy>();
+                SetField(typeof(PredictedIdentity), hierarchy,
+                    "<predictionManager>k__BackingField", manager);
+
+                var instanceId = new PredictedObjectID(7);
+                var predictedTransform = instanceObject.AddComponent<PredictedTransform>();
+                predictedTransform.id = new PredictedComponentID(instanceId, 0);
+                predictedTransform.SetPredictionPolicy(PredictionPolicy.SoftCorrection);
+                SetField(typeof(PredictedIdentity), predictedTransform,
+                    "_predictionPolicy", PredictionPolicy.FullPrediction);
+
+                var method = typeof(PredictedHierarchy).GetMethod(
+                    "PreservesSoftCorrectionRootPose", InstanceFields);
+                Assert.That(method, Is.Not.Null);
+                var preservesPose = (bool)method.Invoke(
+                    hierarchy, new object[] { instanceObject, instanceId });
+
+                Assert.That(preservesPose, Is.False,
+                    "The previous lifetime's SoftCorrection policy preserved a stale pooled root pose");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(instanceObject);
+                UnityEngine.Object.DestroyImmediate(hierarchyObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
         public void DefaultCorrectionRingRetainsTheDefaultTenSecondHistoryWindow()
         {
             var ring = new AppliedCorrectionRing<int>();

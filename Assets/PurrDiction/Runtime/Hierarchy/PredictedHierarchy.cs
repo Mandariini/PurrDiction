@@ -196,7 +196,7 @@ namespace PurrNet.Prediction
 
             return instance.TryGetComponent(out PredictedTransform predictedTransform) &&
                    predictedTransform.id.objectId.Equals(instanceId) &&
-                   predictedTransform.predictionPolicy == PredictionPolicy.SoftCorrection;
+                   predictedTransform.ResolvePredictionPolicyForSetup() == PredictionPolicy.SoftCorrection;
         }
 
         public PredictedObjectID? Create(int prefabId, Vector3 position, Quaternion rotation, PlayerID? owner = null)
