@@ -146,6 +146,8 @@ namespace PurrNet.Prediction
 
         internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
+            bool preserveInterpolation = world.isReplaying && !isFreshSpawn && this.id.Equals(id);
+
             myType = GetType();
             hierarchy = world.hierarchy;
 
@@ -177,7 +179,7 @@ namespace PurrNet.Prediction
                 _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(
                     FULLInterpolate, 1f / world.tickRate, fullPredictedState.DeepCopy(), interpolationBuffer);
             }
-            else
+            else if (!preserveInterpolation)
                 _interpolatedState.Teleport(fullPredictedState.DeepCopy());
 
             _viewState?.Dispose();
