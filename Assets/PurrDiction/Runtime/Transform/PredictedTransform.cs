@@ -2,6 +2,7 @@ using System;
 using JetBrains.Annotations;
 using PurrNet.Modules;
 using PurrNet.Packing;
+using PurrNet.Pooling;
 using PurrNet.Utils;
 using UnityEngine;
 
@@ -16,6 +17,7 @@ namespace PurrNet.Prediction
         [Tooltip("You might want graphics to be unparented due to this gameobject being actively disabled/enabled during reconciles.")]
         [SerializeField] private bool _unparentGraphics;
         [SerializeField] private bool _characterControllerPatch = true;
+        [SerializeField] private SoftCorrectionSettings _softCorrection = SoftCorrectionSettings.Default;
 
         private Transform _originalGraphicsParent;
 
@@ -34,12 +36,17 @@ namespace PurrNet.Prediction
         private bool _hasRigidbody;
         private bool _hasView;
 
+        private PredictedIdentity _transformPolicyOwner;
+
+        public override bool supportsSoftCorrection => true;
+
         [NonSerialized, UsedImplicitly]
         public bool updateGraphics = true;
 
         public override void ResetState()
         {
             base.ResetState();
+            ClearSoftCorrection();
 
             if (_graphics)
                 _graphics.SetPositionAndRotation(transform.position, transform.rotation);
@@ -58,6 +65,54 @@ namespace PurrNet.Prediction
             _hasRigidbody2d = _unity2dRigidbody != null;
 #endif
             _hasView = _graphics;
+        }
+
+        protected override PredictionPolicy ResolvePredictionPolicy()
+        {
+            if (TryGetTransformPolicyOwner(out var policyOwner))
+                return policyOwner.ResolveDelegatedPredictionPolicy();
+
+            return base.ResolvePredictionPolicy();
+        }
+
+        protected override PredictionPolicy ResolveSetupPredictionPolicy()
+        {
+            if (TryGetTransformPolicyOwner(out var policyOwner))
+                return policyOwner.ResolvePredictionPolicyForSetup();
+
+            return base.ResolveSetupPredictionPolicy();
+        }
+
+        public bool TryGetTransformPolicyOwner(out PredictedIdentity policyOwner)
+        {
+            if (_transformPolicyOwner && _transformPolicyOwner.controlsTransformPolicy)
+            {
+                policyOwner = _transformPolicyOwner;
+                return true;
+            }
+
+            var identities = DisposableList<PredictedIdentity>.Create(4);
+            try
+            {
+                GetComponents(identities.list);
+                for (var i = 0; i < identities.Count; i++)
+                {
+                    var identity = identities[i];
+                    if (!identity || identity == this || !identity.controlsTransformPolicy)
+                        continue;
+
+                    _transformPolicyOwner = identity;
+                    policyOwner = identity;
+                    return true;
+                }
+            }
+            finally
+            {
+                identities.Dispose();
+            }
+
+            policyOwner = null;
+            return false;
         }
 
         protected override bool WriteDeltaState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
@@ -179,6 +234,20 @@ namespace PurrNet.Prediction
         private Quaternion _accumulatedRotationError = Quaternion.identity;
         private bool _teleportNextFrame;
 
+        private Vector3 _softPositionError;
+        private Quaternion _softRotationError = Quaternion.identity;
+        private bool _hasSoftError;
+
+        private struct AppliedPoseTotals
+        {
+            public Vector3 position;
+            public Quaternion rotation;
+        }
+
+        private AppliedCorrectionRing<AppliedPoseTotals> _appliedRing;
+        private Vector3 _appliedPositionTotal;
+        private Quaternion _appliedRotationTotal = Quaternion.identity;
+
         public override void ResetInterpolation()
         {
             base.ResetInterpolation();
@@ -187,6 +256,109 @@ namespace PurrNet.Prediction
             _viewState = null;
             _oldPrediction = default;
             _teleportNextFrame = true;
+            ClearSoftCorrection();
+        }
+
+        protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
+        {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
+            ClearSoftCorrection();
+        }
+
+        private void ClearSoftCorrection()
+        {
+            _softPositionError = default;
+            _softRotationError = Quaternion.identity;
+            _hasSoftError = false;
+            _appliedRing?.Clear();
+            _appliedPositionTotal = default;
+            _appliedRotationTotal = Quaternion.identity;
+        }
+
+        internal override void SaveStateInHistory(ulong tick)
+        {
+            base.SaveStateInHistory(tick);
+
+            if (isServer || !UsesSoftCorrectionTimeline())
+                return;
+
+            _appliedRing ??= new AppliedCorrectionRing<AppliedPoseTotals>(
+                Mathf.Max(1, predictionManager.tickRate * 10));
+            _appliedRing.Record(tick, new AppliedPoseTotals
+            {
+                position = _appliedPositionTotal,
+                rotation = _appliedRotationTotal
+            });
+        }
+
+        protected override void OnVerifiedStateReceived(ulong tick, in PredictedTransformState predicted, in PredictedTransformState verified)
+        {
+            var pendingPosition = verified.unityPosition - predicted.unityPosition;
+            var pendingRotation = Quaternion.Inverse(predicted.unityRotation) * verified.unityRotation;
+
+            if (_appliedRing != null && _appliedRing.TryGetBaseline(tick, out var baseline))
+            {
+                var appliedSincePosition = _appliedPositionTotal - baseline.position;
+                var appliedSinceRotation = Quaternion.Inverse(baseline.rotation) * _appliedRotationTotal;
+                pendingPosition -= appliedSincePosition;
+                pendingRotation = Quaternion.Inverse(appliedSinceRotation) * pendingRotation;
+            }
+
+            _softPositionError = pendingPosition;
+            _softRotationError = pendingRotation;
+            _hasSoftError = pendingPosition.sqrMagnitude > 1e-8f ||
+                            Quaternion.Angle(Quaternion.identity, pendingRotation) > 0.01f;
+        }
+
+        protected override void Simulate(ref PredictedTransformState state, float delta)
+        {
+            if (!_hasSoftError)
+                return;
+
+            float positionError = _softPositionError.magnitude;
+            float rotationError = Quaternion.Angle(Quaternion.identity, _softRotationError);
+
+            Vector3 positionStep;
+            Quaternion rotationStep;
+
+            bool snap = positionError > Mathf.Max(0f, _softCorrection.snapPositionThreshold) ||
+                        rotationError > Mathf.Max(0f, _softCorrection.snapRotationThreshold);
+
+            if (snap)
+            {
+                positionStep = _softPositionError;
+                rotationStep = _softRotationError;
+            }
+            else
+            {
+                float blend = 1f - Mathf.Exp(-Mathf.Max(0f, _softCorrection.correctionRate) * delta);
+                positionStep = _softPositionError * blend;
+                rotationStep = Quaternion.Slerp(Quaternion.identity, _softRotationError, blend);
+            }
+
+            _softPositionError -= positionStep;
+            _softRotationError = Quaternion.Inverse(rotationStep) * _softRotationError;
+            _appliedPositionTotal += positionStep;
+            _appliedRotationTotal = (_appliedRotationTotal * rotationStep).normalized;
+
+            if (snap && _interpolationSettings && _interpolationSettings.useInterpolation)
+            {
+                _accumulatedPositionError += positionStep;
+                _accumulatedRotationError = _accumulatedRotationError * rotationStep;
+            }
+
+            if (_softPositionError.sqrMagnitude < 1e-8f &&
+                Quaternion.Angle(Quaternion.identity, _softRotationError) < 0.01f)
+            {
+                _softPositionError = default;
+                _softRotationError = Quaternion.identity;
+                _hasSoftError = false;
+            }
+
+            state.SetPositionAndRotation(
+                state.unityPosition + positionStep,
+                (state.unityRotation * rotationStep).normalized);
+            SetUnityState(state);
         }
 
         protected override void LateAwake()
@@ -281,7 +453,6 @@ namespace PurrNet.Prediction
                 var posRate = positionInterpolation.correctionRateMinMax;
                 var posBlend = positionInterpolation.correctionBlendMinMax;
 
-                // Partially correct
                 float posLerp = Mathf.Clamp01(Mathf.InverseLerp(posBlend.x, posBlend.y, positionError));
                 float rate = Mathf.Lerp(posRate.x, posRate.y, posLerp) * delta;
                 var correction = _accumulatedPositionError * rate;
@@ -289,10 +460,8 @@ namespace PurrNet.Prediction
                 float minThreshold = posThreshold.x * posThreshold.x;
                 float corrMag = correction.sqrMagnitude;
 
-                // Clamp correction to at least posThreshold.x if we have enough error
-                if (corrMag < minThreshold && positionError > minThreshold)
+                if (corrMag < minThreshold && positionError > posThreshold.x)
                     correction = correction.normalized * posThreshold.x;
-                // Make sure we never exceed the total error
                 else if (corrMag > positionError * positionError)
                     correction = _accumulatedPositionError;
 

@@ -15,6 +15,13 @@ Multi-process end-to-end tests for the prediction pipeline, modeled after PurrNe
 | `StaticModuleReuseScenario` | Tick-pooled predicted identities rerun static module setup on reuse and reset list-backed module state |
 | `DynamicModuleShapeScenario` | Reused predicted identities start with no stale dynamic modules, then add/remove different dynamic module shapes |
 | `ProjectileChainReconnectScenario` | A client reconnects during an active projectile/VFX burst, stressing full-sync while dynamic modules and pooled effects churn |
+| `ServerRelayScenario` | ServerRelay bodies remain kinematic on clients and only execute verified ticks |
+| `SoftCorrectionScenario` | 3D soft-corrected bodies tolerate local divergence and converge without replay simulation |
+| `SoftCorrection2DScenario` | 2D soft-corrected bodies follow the same convergence and replay guarantees |
+| `OwnedRelayScenario` | PredictedIfOwned resolves to live prediction for the owner and server relay for non-owners |
+| `SoftCorrectionPoolReuseScenario` | A scoped soft-correction object preserves its policy through replay pooling, while a completed pooled lifetime cannot leak pose-correction accumulators into the next object |
+| `GenericSoftCorrectionScenario` | An opted-in generic state consumes verified deltas and converges without rollback simulation |
+| `ReplayPolicyTransitionScenario` | Entering SoftCorrection during reconcile freezes the body before the replay physics pass |
 
 All scenarios fail on unexpected Unity `Error`, `Assert`, or `Exception` logs during the active scenario. They run with simulated latency (40–80ms by default, configurable on the `Bootstrap` object or via `-latencyMin`/`-latencyMax`; `-latencyMax 0` disables) so rollback depth resembles real conditions instead of a clean localhost.
 
@@ -30,8 +37,11 @@ Build `StandaloneLinux64`/`StandaloneWindows64` with this scene first, then:
 
 ```
 PurrDictionTests -batchmode -nographics -role host -count 3 -results host.json -logFile host.log
-PurrDictionTests -batchmode -nographics -role client -results client-1.json -logFile client-1.log
-PurrDictionTests -batchmode -nographics -role client -results client-2.json -logFile client-2.log
+PurrDictionTests -batchmode -nographics -role client -count 3 -results client-1.json -logFile client-1.log
+PurrDictionTests -batchmode -nographics -role client -count 3 -results client-2.json -logFile client-2.log
 ```
 
 Optional args: `-port`, `-serverHost`, `-connectTimeout`. Exit code is non-zero if any scenario fails. CI runs this via `.github/workflows/prediction-tests.yml` (server and host matrix, IL2CPP).
+
+Policy regression scenarios are included in the normal suite. Pass `-policyRegressionScenariosOnly`
+to run just the bootstrap and the three focused policy scenarios.

@@ -37,6 +37,12 @@ namespace PurrNet.Prediction
         /// </summary>
         public int moduleIndex { get; internal set; }
 
+        /// <summary>
+        /// Simulation tick when this dynamic module instance joined its identity. Static modules
+        /// and modules reconstructed from authoritative topology use zero.
+        /// </summary>
+        internal ulong registeredAtTick { get; set; }
+
         internal readonly uint typeHash;
 
         public PredictedModule(PredictedIdentity identity)
@@ -180,6 +186,11 @@ namespace PurrNet.Prediction
             onDisposed?.Invoke();
         }
 
+        internal void ReleaseStateForPoolInternal()
+        {
+            ReleaseStateForPool();
+        }
+
         internal void TriggerDestroyedEvent()
         {
             Destroyed();
@@ -196,6 +207,11 @@ namespace PurrNet.Prediction
         /// Override to release any owned resources.
         /// </summary>
         protected virtual void OnDisposed() { }
+
+        /// <summary>
+        /// Called when the owning identity is parked in a prefab pool but the module instance is kept for reuse.
+        /// </summary>
+        protected virtual void ReleaseStateForPool() { }
 
         /// <summary>
         /// Invoked when the owning identity is being despawned and cleaned up.

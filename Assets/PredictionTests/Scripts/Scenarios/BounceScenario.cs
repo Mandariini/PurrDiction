@@ -40,8 +40,12 @@ public class BounceScenario : Scenario
 
         PredictionTestUtils.RegisterPrefab(ctx, ball);
         _rig.ballPrefab = ball;
-        _rig.requiredPlayers = ctx.expectedConnections;
         BounceProbe.ResetCounters();
+    }
+
+    public override void PrepareRun(ScenarioContext ctx, ulong startTick)
+    {
+        _rig.ScheduleStart(startTick);
     }
 
     public override async UniTask<ScenarioResult> RunScenario(ScenarioContext ctx)
@@ -74,7 +78,7 @@ public class BounceScenario : Scenario
         if (BounceProbe.hasDuplicate)
         {
             return ScenarioResult.Fail(
-                $"verified bounce fired more than once for tick {BounceProbe.duplicateTick}: {BounceProbe.Digest()}");
+                $"verified bounce fired more than once for tick {BounceProbe.duplicateTick}: {BounceProbe.Timeline()}");
         }
 
         return await DigestExchange.Compare(ctx, DigestChannel, BounceProbe.Digest(), 30f);

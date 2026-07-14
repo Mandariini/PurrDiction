@@ -131,7 +131,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 options,
                 "host",
                 0,
-                $"-role host -count {expectedConnections}"));
+                $"-role host -count {expectedConnections} -connectTimeout 180"));
 
             Thread.Sleep(1000);
 
@@ -142,7 +142,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     options,
                     "client",
                     i + 1,
-                    "-role client -serverHost 127.0.0.1"));
+                    $"-role client -count {expectedConnections} -serverHost 127.0.0.1 -connectTimeout 180"));
             }
 
             var deadline = Stopwatch.StartNew();

@@ -10,6 +10,9 @@ namespace PurrNet.Prediction
     [AddComponentMenu("PurrDiction/Unity Physics/Predicted Projectile 3D")]
     public class PredictedProjectile3D : PredictedIdentity<ProjectileState3D>, IPredictedPhysicsCallbacks
     {
+        [Tooltip("Fraction of the remaining velocity error corrected per second when using SoftCorrection.")]
+        [SerializeField, Min(0f)] private float _softVelocityCorrectionRate = 8f;
+
         [Tooltip("The gravity applied to the projectile (typically negative Y).")]
         [SerializeField, PurrLock] private float _gravity = 0;
 
@@ -28,7 +31,6 @@ namespace PurrNet.Prediction
         [Tooltip("Which collision/trigger events to fire.")]
         [SerializeField, PurrLock] private PhysicsEventMask _eventMask = (PhysicsEventMask)0x3F;
 
-        /// <summary>Extra distance added to SphereCast to avoid tunneling through thin geometry. Multiplied by radius.</summary>
         private const float SafetyMarginFactor = 0.1f;
 
         public float gravity { get => currentState.gravity; set => currentState.gravity = value; }
@@ -47,6 +49,25 @@ namespace PurrNet.Prediction
 
         private float _bounciness;
         private readonly Collider[] _overlapBuffer = new Collider[16];
+        private Vector3 _softVelocityError;
+        private Vector3 _appliedVelocityTotal;
+        private bool _hasSoftVelocityError;
+
+        private struct AppliedVelocityTotals
+        {
+            public Vector3 velocity;
+        }
+
+        private AppliedCorrectionRing<AppliedVelocityTotals> _appliedRing;
+
+        public override bool controlsTransformPolicy => true;
+        public override bool supportsSoftCorrection => true;
+
+        public override void ResetState()
+        {
+            base.ResetState();
+            ClearSoftVelocityCorrection();
+        }
 
         protected override void LateAwake()
         {
@@ -67,10 +88,90 @@ namespace PurrNet.Prediction
             };
         }
 
+        protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
+        {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
+            ClearSoftVelocityCorrection();
+            SyncControlledTransformPolicy(newPolicy);
+        }
+
+        public override void ResetInterpolation()
+        {
+            base.ResetInterpolation();
+            ClearSoftVelocityCorrection();
+        }
+
+        private void ClearSoftVelocityCorrection()
+        {
+            _softVelocityError = default;
+            _appliedVelocityTotal = default;
+            _hasSoftVelocityError = false;
+            _appliedRing?.Clear();
+        }
+
+        internal override void SaveStateInHistory(ulong tick)
+        {
+            base.SaveStateInHistory(tick);
+
+            if (isServer || !UsesSoftCorrectionTimeline())
+                return;
+
+            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>(
+                Mathf.Max(1, predictionManager.tickRate * 10));
+            _appliedRing.Record(tick, new AppliedVelocityTotals
+            {
+                velocity = _appliedVelocityTotal
+            });
+        }
+
+        protected override void OnVerifiedStateReceived(ulong tick, in ProjectileState3D predicted, in ProjectileState3D verified)
+        {
+            var pendingVelocity = verified.velocity - predicted.velocity;
+
+            if (_appliedRing != null && _appliedRing.TryGetBaseline(tick, out var baseline))
+                pendingVelocity -= _appliedVelocityTotal - baseline.velocity;
+
+            _softVelocityError = pendingVelocity;
+            _hasSoftVelocityError = pendingVelocity.sqrMagnitude > 1e-6f;
+
+            ref var live = ref currentState;
+            live.gravity = verified.gravity;
+            live.radius = verified.radius;
+            live.isTrigger = verified.isTrigger;
+            live.lastSolidContact = verified.lastSolidContact;
+            live.hasLastSolidContact = verified.hasLastSolidContact;
+            live.overlappingTriggers.Dispose();
+            live.overlappingTriggers = verified.overlappingTriggers.isDisposed
+                ? DisposableList<PredictedComponentID>.Create(8)
+                : verified.overlappingTriggers.Duplicate();
+        }
+
+        private void ApplySoftVelocityCorrection(ref ProjectileState3D state, float delta)
+        {
+            if (!_hasSoftVelocityError)
+                return;
+
+            float blend = 1f - Mathf.Exp(-Mathf.Max(0f, _softVelocityCorrectionRate) * delta);
+            var velocityStep = _softVelocityError * blend;
+
+            _softVelocityError -= velocityStep;
+            _appliedVelocityTotal += velocityStep;
+
+            if (_softVelocityError.sqrMagnitude < 1e-6f)
+            {
+                _softVelocityError = default;
+                _hasSoftVelocityError = false;
+            }
+
+            state.velocity += velocityStep;
+        }
+
         protected override void Simulate(ref ProjectileState3D state, float delta)
         {
             if (delta <= 0)
                 return;
+
+            ApplySoftVelocityCorrection(ref state, delta);
 
             state.velocity.y += state.gravity * delta;
 
@@ -245,6 +346,9 @@ namespace PurrNet.Prediction
 
         public void AddImpulse(Vector3 impulse)
         {
+            if (SkipsReplaySpawnInitialization())
+                return;
+
             currentState.velocity += impulse;
         }
 
@@ -264,7 +368,7 @@ namespace PurrNet.Prediction
                 gravity = to.gravity,
                 radius = to.radius,
                 isTrigger = to.isTrigger,
-                overlappingTriggers = DisposableList<PredictedComponentID>.Create(8),
+                overlappingTriggers = default,
                 lastSolidContact = default,
                 hasLastSolidContact = false
             };

@@ -24,13 +24,15 @@ namespace PurrDiction.Examples
         private void Shoot()
         {
             currentState.cooldown = _cooldown;
-            var bulletObject = hierarchy.Create(_projectile.gameObject, transform.position + transform.forward, transform.rotation);
+            var bulletObject = hierarchy.Create(_projectile.gameObject, transform.position + transform.forward, transform.rotation, owner);
             if (!bulletObject.TryGetComponent(predictionManager, out PredictedProjectile3D projectile))
             {
                 Debug.LogError($"Failed to get the predicted projectile from bullet!");
                 return;
             }
-            
+            if (projectile.shouldSkipReplaySpawnInitialization)
+                return;
+
             projectile.AddImpulse(transform.forward * _initialForce);
             if(projectile.isTrigger)
                 projectile.onTriggerEnter += (other) => OnProjectileTriggerEnter(projectile, other);

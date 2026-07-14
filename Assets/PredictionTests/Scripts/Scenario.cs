@@ -7,6 +7,8 @@ public abstract class Scenario : MonoBehaviour
 {
     public virtual void Setup(ScenarioContext ctx, NetworkManager manager) { }
 
+    public virtual void PrepareRun(ScenarioContext ctx, ulong startTick) { }
+
     public abstract UniTask<ScenarioResult> RunScenario(ScenarioContext ctx);
 
     /// <summary>

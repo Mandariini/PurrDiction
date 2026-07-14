@@ -34,7 +34,16 @@ namespace PurrDiction.Examples
 #if UNITY_PHYSICS_3D
             var pos = transform.position + transform.forward;
             var projectileId = hierarchy.Create(_projectile, pos, transform.rotation);
+            if (hierarchy.TryGetComponent(projectileId, out PredictedIdentity predicted) &&
+                predicted.shouldSkipReplaySpawnInitialization)
+            {
+                return;
+            }
+
             var projectileRb = hierarchy.GetComponent<Rigidbody>(projectileId);
+            if (!projectileRb)
+                return;
+
 #if UNITY_6000
             projectileRb.linearVelocity = transform.forward * 10;
 #else

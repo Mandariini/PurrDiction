@@ -16,10 +16,11 @@ public class PredictionBootstrap : Scenario
 {
     private const int MaxUnexpectedLogsPerScenario = 8;
     private const int MaxUnexpectedLogLength = 700;
+    private const float ScenarioStartLeadSeconds = 2f;
 
     [SerializeField] private NetworkManager _networkManager;
     [SerializeField] private PredictionManager _predictionManager;
-    [SerializeField] private float _connectionTimeout = 30f;
+    [SerializeField] private float _connectionTimeout = 180f;
     [SerializeField] private float _timeBetweenScenarios = 0.1f;
 
     [Header("Editor overrides (used when -role / -count are absent)")]
@@ -48,6 +49,8 @@ public class PredictionBootstrap : Scenario
 
     private void Awake()
     {
+        ScenarioSequencer.Reset();
+
         var prefabs = ScriptableObject.CreateInstance<PredictedPrefabs>();
         prefabs.autoGenerate = false;
         prefabs.searchAllIfNoFolder = false;
@@ -58,8 +61,31 @@ public class PredictionBootstrap : Scenario
         if (CommandLineUtils.HasFlag("-includeHistoryStressScenario"))
             gameObject.AddComponent<HistoryStressScenario>();
 
-        _scenarios = GetComponentsInChildren<Scenario>();
+        bool policyRegressionsOnly = CommandLineUtils.HasFlag("-policyRegressionScenariosOnly");
+        var policyRegressionScenarios = AddPolicyRegressionScenarios();
+
+        if (policyRegressionsOnly)
+        {
+            _scenarios = new Scenario[policyRegressionScenarios.Length + 1];
+            _scenarios[0] = this;
+            Array.Copy(policyRegressionScenarios, 0, _scenarios, 1, policyRegressionScenarios.Length);
+        }
+        else
+        {
+            _scenarios = GetComponentsInChildren<Scenario>();
+        }
+
         _results = new ScenarioDetails?[_scenarios.Length];
+    }
+
+    private Scenario[] AddPolicyRegressionScenarios()
+    {
+        return new Scenario[]
+        {
+            gameObject.AddComponent<SoftCorrectionPoolReuseScenario>(),
+            gameObject.AddComponent<GenericSoftCorrectionScenario>(),
+            gameObject.AddComponent<ReplayPolicyTransitionScenario>()
+        };
     }
 
     private void OnEnable()
@@ -143,27 +169,24 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
-        if (_role != NetworkRole.Client)
+        if (CommandLineUtils.TryGetArgument("-count", out var countString))
         {
-            if (CommandLineUtils.TryGetArgument("-count", out var countString))
+            if (!int.TryParse(countString, out _expectedConnections) || _expectedConnections < 1)
             {
-                if (!int.TryParse(countString, out _expectedConnections))
-                {
-                    Debug.LogError($"Could not parse -count value '{countString}'");
-                    Application.Quit(-1);
-                    return;
-                }
-            }
-            else
-            {
-#if UNITY_EDITOR
-                _expectedConnections = _editorExpectedConnections;
-#else
-                Debug.LogError("Expected -count argument");
+                Debug.LogError($"Could not parse positive -count value '{countString}'");
                 Application.Quit(-1);
                 return;
-#endif
             }
+        }
+        else
+        {
+#if UNITY_EDITOR
+            _expectedConnections = _editorExpectedConnections;
+#else
+            Debug.LogError("Expected -count argument");
+            Application.Quit(-1);
+            return;
+#endif
         }
 
         CommandLineUtils.TryGetArgument("-results", out _resultsPath);
@@ -334,16 +357,26 @@ public class PredictionBootstrap : Scenario
             if (_scenarios.Length > 0)
             {
                 if (await RunOne(0, ctx))
+                {
                     anyFailed = true;
+                    if (ctx.isServer)
+                        ScenarioSequencer.IssueSequenceComplete();
+                    return;
+                }
             }
 
             if (ctx.isServer)
             {
                 for (var i = 1; i < _scenarios.Length; i++)
                 {
-                    ScenarioSequencer.IssueStart(i);
+                    ScenarioSequencer.IssuePrepare(i);
+                    await ScenarioSequencer.WaitForAllReady(ctx, i);
 
-                    if (await RunOne(i, ctx))
+                    var startLeadTicks = GetScenarioStartLeadTicks();
+                    ScenarioSequencer.IssueStart(i, startLeadTicks);
+                    var startTick = GetLocalScenarioStartTick(startLeadTicks);
+
+                    if (await RunOne(i, ctx, startTick))
                         anyFailed = true;
 
                     await ScenarioSequencer.WaitForAllAcks(ctx, i);
@@ -361,12 +394,19 @@ public class PredictionBootstrap : Scenario
             {
                 for (var i = 1; i < _scenarios.Length; i++)
                 {
-                    await ScenarioSequencer.WaitForStart(ctx, i);
+                    await ScenarioSequencer.WaitForPrepare(ctx, i);
 
                     if (ScenarioSequencer.SequenceComplete)
                         break;
 
-                    if (await RunOne(i, ctx))
+                    ScenarioSequencer.AckLocalReady(ctx, i);
+                    var startLeadTicks = await ScenarioSequencer.WaitForStart(ctx, i);
+
+                    if (ScenarioSequencer.SequenceComplete)
+                        break;
+
+                    var startTick = GetLocalScenarioStartTick(startLeadTicks);
+                    if (await RunOne(i, ctx, startTick))
                         anyFailed = true;
 
                     ScenarioSequencer.AckLocalDone(ctx, i);
@@ -427,7 +467,17 @@ public class PredictionBootstrap : Scenario
         _activePerformanceSampler?.SampleFrame(_predictionManager);
     }
 
-    private async UniTask<bool> RunOne(int i, ScenarioContext ctx)
+    private ulong GetScenarioStartLeadTicks()
+    {
+        return (ulong)Mathf.Max(1, Mathf.CeilToInt(_predictionManager.tickRate * ScenarioStartLeadSeconds));
+    }
+
+    private ulong GetLocalScenarioStartTick(ulong leadTicks)
+    {
+        return _predictionManager.time.tick + leadTicks;
+    }
+
+    private async UniTask<bool> RunOne(int i, ScenarioContext ctx, ulong scheduledStartTick = 0)
     {
         _dataSent = 0;
         _dataReceived = 0;
@@ -435,6 +485,7 @@ public class PredictionBootstrap : Scenario
         _activeScenarioIndex = i;
 
         var scenario = _scenarios[i];
+        scenario.PrepareRun(ctx, scheduledStartTick);
         Debug.Log($"[PredictionTests] {_role} starting scenario {i}: {scenario.GetType().Name}");
 
         long startTick = DateTime.Now.Ticks;

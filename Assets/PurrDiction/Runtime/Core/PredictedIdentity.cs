@@ -2,11 +2,36 @@ using System;
 using System.Collections.Generic;
 using PurrNet.Modules;
 using PurrNet.Packing;
+using PurrNet.Utils;
 using Unity.Profiling;
 using UnityEngine;
 
 namespace PurrNet.Prediction
 {
+    internal readonly struct PredictionMetadataDeltaKey : IStableHashable
+    {
+        private readonly SceneID _scene;
+        private readonly PredictedComponentID _id;
+
+        public PredictionMetadataDeltaKey(SceneID scene, PredictedComponentID id)
+        {
+            _scene = scene;
+            _id = id;
+        }
+
+        public uint GetStableHash()
+        {
+            const uint offset = 2166136261u;
+            const uint prime = 16777619u;
+            uint hash = offset;
+            hash = (hash ^ Hasher<PredictedIdentityState>.stableHash) * prime;
+            hash = (hash ^ _id.componentId.value) * prime;
+            hash = (hash ^ _id.objectId.instanceId.value) * prime;
+            hash = (hash ^ _scene.id.value) * prime;
+            return hash;
+        }
+    }
+
     public abstract partial class PredictedIdentity : MonoBehaviour
     {
         public ulong? lastVerifiedTick { get; internal set; }
@@ -45,10 +70,349 @@ namespace PurrNet.Prediction
         public PredictedComponentID id;
 
         internal bool isFreshSpawn = true;
+        internal bool preservesStateOnSetup { get; private set; }
+        private bool _simulateSoftCorrectionDuringReplay;
+        private bool _skipReplaySpawnInitialization;
 
         public virtual bool hasInput => false;
 
         internal virtual bool isEventHandler => false;
+
+        public virtual bool controlsTransformPolicy => false;
+
+        /// <summary>
+        /// True when this non-deterministic identity consumes verified state as a correction target
+        /// instead of requiring rollback. Implementations must override OnVerifiedStateReceived and
+        /// apply the resulting correction during live simulation. Deterministic identities cannot use
+        /// SoftCorrection even if a subclass overrides this property.
+        /// </summary>
+        public virtual bool supportsSoftCorrection => false;
+
+        [Header("Predicted Identity")]
+        [SerializeField, Tooltip("Use the nearest PredictionPolicyScope by default, or explicitly override it for this identity.")]
+        private PredictionPolicySource _predictionPolicySource = PredictionPolicySource.UseScope;
+
+        [SerializeField, Tooltip("Local prediction policy used when this identity overrides its scope, or when no PredictionPolicyScope is found.")]
+        private PredictionPolicy _predictionPolicy = PredictionPolicy.FullPrediction;
+
+        /// <summary>
+        /// How this identity participates in client-side prediction and reconciliation.
+        /// See <see cref="PredictionPolicy"/> for the semantics of each mode.
+        /// </summary>
+        public PredictionPolicy predictionPolicy { get; private set; }
+
+        private PredictionPolicy _lastRegisteredPredictionPolicy;
+        private bool _hasLastRegisteredPredictionPolicy;
+        private bool _hasPendingSetupPolicyChange;
+        private PredictionPolicy _pendingSetupOldPolicy;
+        private PredictionPolicy _pendingSetupNewPolicy;
+        private bool _isResolvingSetupPredictionPolicy;
+
+        /// <summary>
+        /// The configured (serialized) policy, re-applied on every registration including pooled reuse.
+        /// Setting this on a spawned identity applies the change immediately via <see cref="SetPredictionPolicy"/>.
+        /// </summary>
+        public PredictionPolicy configuredPredictionPolicy
+        {
+            get => _predictionPolicy;
+            set
+            {
+                _predictionPolicy = NormalizePredictionPolicy(value, predictionManager);
+                if (predictionManager && UsesConfiguredPredictionPolicy())
+                    SetPredictionPolicy(ResolvePredictionPolicy());
+            }
+        }
+
+        public PredictionPolicySource predictionPolicySource
+        {
+            get => _predictionPolicySource;
+            set
+            {
+                if (_predictionPolicySource == value)
+                    return;
+
+                _predictionPolicySource = value;
+                RefreshResolvedPredictionPolicy();
+            }
+        }
+
+        internal bool OverridesPredictionPolicyScope()
+            => _predictionPolicySource == PredictionPolicySource.OverrideScope;
+
+        private bool UsesConfiguredPredictionPolicy()
+            => OverridesPredictionPolicyScope() || !TryGetPredictionPolicyScope(out _);
+
+        public bool TryGetPredictionPolicyScope(out PredictionPolicyScope scope)
+        {
+            var current = transform;
+            while (current)
+            {
+                if (current.TryGetComponent(out scope) && scope.isActiveAndEnabled)
+                    return true;
+
+                current = current.parent;
+            }
+
+            scope = null;
+            return false;
+        }
+
+        protected virtual PredictionPolicy ResolvePredictionPolicy()
+        {
+            if (!OverridesPredictionPolicyScope())
+            {
+                var hasScope = _isResolvingSetupPredictionPolicy
+                    ? TryGetPredictionPolicyScopeForSetup(out var scope)
+                    : TryGetPredictionPolicyScope(out scope);
+
+                if (hasScope)
+                {
+                    var policy = _isResolvingSetupPredictionPolicy
+                        ? scope.ResolvePolicyForSetup()
+                        : scope.ResolvePolicy();
+                    return NormalizePredictionPolicy(policy, false);
+                }
+            }
+
+            return NormalizePredictionPolicy(_predictionPolicy, false);
+        }
+
+        protected virtual PredictionPolicy ResolveSetupPredictionPolicy()
+        {
+            var wasResolvingSetupPolicy = _isResolvingSetupPredictionPolicy;
+            _isResolvingSetupPredictionPolicy = true;
+            try
+            {
+                return ResolvePredictionPolicy();
+            }
+            finally
+            {
+                _isResolvingSetupPredictionPolicy = wasResolvingSetupPolicy;
+            }
+        }
+
+        private bool TryGetPredictionPolicyScopeForSetup(out PredictionPolicyScope scope)
+        {
+            var current = transform;
+            while (current)
+            {
+                if (current.TryGetComponent(out scope) && scope.enabled)
+                    return true;
+
+                current = current.parent;
+            }
+
+            scope = null;
+            return false;
+        }
+
+        internal PredictionPolicy ResolvePredictionPolicyForSetup()
+            => ResolveSetupPredictionPolicy();
+
+        internal PredictionPolicy previousRegisteredPredictionPolicy
+            => _hasLastRegisteredPredictionPolicy
+                ? _lastRegisteredPredictionPolicy
+                : predictionPolicy;
+
+        internal void RecordCompletedRegistrationPolicy()
+        {
+            _lastRegisteredPredictionPolicy = predictionPolicy;
+            _hasLastRegisteredPredictionPolicy = true;
+        }
+
+        /// <summary>
+        /// Returns the currently applied policy for a registered identity, or resolves the
+        /// configured source for an identity that has not been registered yet.
+        /// </summary>
+        public PredictionPolicy GetResolvedPredictionPolicy()
+            => predictionManager && !isFreshSpawn ? predictionPolicy : ResolvePredictionPolicy();
+
+        internal PredictionPolicy ResolveDelegatedPredictionPolicy()
+            => GetResolvedPredictionPolicy();
+
+        internal void RefreshResolvedPredictionPolicy()
+        {
+            if (predictionManager)
+                SetPredictionPolicy(ResolvePredictionPolicy());
+        }
+
+        protected virtual void OnTransformParentChanged()
+        {
+            RefreshResolvedPredictionPolicy();
+        }
+
+        /// <summary>
+        /// Configures and applies a persistent local override. Subsequent scope updates do
+        /// not replace this policy until <see cref="UsePredictionPolicyScope"/> is called.
+        /// </summary>
+        public void SetPredictionPolicyOverride(PredictionPolicy policy)
+        {
+            _predictionPolicy = NormalizePredictionPolicy(policy, predictionManager);
+            _predictionPolicySource = PredictionPolicySource.OverrideScope;
+            RefreshResolvedPredictionPolicy();
+        }
+
+        /// <summary>
+        /// Returns this identity to its nearest active scope. If no scope exists, the local
+        /// configured policy remains the fallback.
+        /// </summary>
+        public void UsePredictionPolicyScope()
+        {
+            _predictionPolicySource = PredictionPolicySource.UseScope;
+            RefreshResolvedPredictionPolicy();
+        }
+
+        /// <summary>
+        /// Changes the currently applied prediction policy at runtime without changing its
+        /// configured source. Use <see cref="SetPredictionPolicyOverride"/> for a local policy
+        /// that must survive later scope refreshes. Deterministic identities support
+        /// <see cref="PredictionPolicy.FullPrediction"/>, <see cref="PredictionPolicy.ServerRelay"/>,
+        /// and <see cref="PredictionPolicy.PredictedIfOwned"/>. Switching mid-game is safest at
+        /// ownership changes; the next reconcile realigns the identity with its new timeline.
+        /// </summary>
+        public void SetPredictionPolicy(PredictionPolicy policy)
+        {
+            policy = NormalizePredictionPolicy(policy, true);
+
+            CancelPendingPredictionPolicySetup();
+
+            if (predictionPolicy == policy)
+                return;
+
+            var oldPolicy = predictionPolicy;
+            predictionPolicy = policy;
+            OnPredictionPolicyChanged(oldPolicy, policy);
+            if (predictionManager)
+                predictionManager.HandlePredictionPolicyChanged(this, oldPolicy, policy);
+        }
+
+        private void PreparePredictionPolicyForSetup(PredictionPolicy policy)
+        {
+            CancelPendingPredictionPolicySetup();
+            policy = NormalizePredictionPolicy(policy, true);
+
+            if (predictionPolicy == policy)
+                return;
+
+            _pendingSetupOldPolicy = predictionPolicy;
+            _pendingSetupNewPolicy = policy;
+            predictionPolicy = policy;
+            _hasPendingSetupPolicyChange = true;
+        }
+
+        internal void CompletePredictionPolicySetup()
+        {
+            if (!_hasPendingSetupPolicyChange)
+                return;
+
+            var oldPolicy = _pendingSetupOldPolicy;
+            var newPolicy = _pendingSetupNewPolicy;
+            _hasPendingSetupPolicyChange = false;
+            _pendingSetupOldPolicy = default;
+            _pendingSetupNewPolicy = default;
+
+            OnPredictionPolicyChanged(oldPolicy, newPolicy);
+            if (predictionManager)
+                predictionManager.HandlePredictionPolicyChanged(this, oldPolicy, newPolicy);
+        }
+
+        internal void CancelPendingPredictionPolicySetup()
+        {
+            if (!_hasPendingSetupPolicyChange)
+                return;
+
+            predictionPolicy = _pendingSetupOldPolicy;
+            _hasPendingSetupPolicyChange = false;
+            _pendingSetupOldPolicy = default;
+            _pendingSetupNewPolicy = default;
+        }
+
+        private PredictionPolicy NormalizePredictionPolicy(PredictionPolicy policy, bool log)
+        {
+            if (policy != PredictionPolicy.SoftCorrection || (!isDeterministic && supportsSoftCorrection))
+                return policy;
+
+            if (log)
+            {
+                var reason = isDeterministic
+                    ? "deterministic identities do not receive authoritative state deltas to correct against"
+                    : "the identity does not implement verified-state correction";
+                Logging.PurrLogger.LogError(
+                    $"{GetType().Name} does not support {nameof(PredictionPolicy.SoftCorrection)} because {reason}.",
+                    this);
+            }
+
+            return PredictionPolicy.FullPrediction;
+        }
+
+        protected virtual void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy) { }
+
+        protected void SyncControlledTransformPolicy(PredictionPolicy policy)
+        {
+            if (!controlsTransformPolicy)
+                return;
+
+            if (TryGetComponent(out PredictedTransform predictedTransform) && predictedTransform != this)
+                predictedTransform.SetPredictionPolicy(policy);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal PredictionPolicy EffectivePolicy()
+        {
+            if (predictionPolicy != PredictionPolicy.PredictedIfOwned)
+                return predictionPolicy;
+            return IsOwner() ? PredictionPolicy.FullPrediction : PredictionPolicy.ServerRelay;
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool UsesSoftCorrectionTimeline()
+            => predictionPolicy == PredictionPolicy.SoftCorrection;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool UsesServerRelayTimeline()
+            => EffectivePolicy() == PredictionPolicy.ServerRelay;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool UsesFullPredictionTimeline()
+            => EffectivePolicy() == PredictionPolicy.FullPrediction;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool TracksEffectivePolicyChanges()
+            => predictionPolicy == PredictionPolicy.PredictedIfOwned;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool AccumulatesRollbackInterpolationError()
+            => UsesFullPredictionTimeline();
+
+        internal bool IsSoftCorrectionReplaySimulating()
+            => _simulateSoftCorrectionDuringReplay;
+
+        internal bool SkipsReplaySpawnInitialization()
+            => _skipReplaySpawnInitialization;
+
+        public bool shouldSkipReplaySpawnInitialization => _skipReplaySpawnInitialization;
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool SkipsCurrentSimulationPhase()
+        {
+            var manager = predictionManager;
+            if (manager.cachedIsServer)
+                return false;
+
+            if (UsesFullPredictionTimeline())
+                return false;
+
+            if (UsesSoftCorrectionTimeline())
+                return manager.isReplaying && !_simulateSoftCorrectionDuringReplay;
+
+            return !(manager.isReplaying && manager.isVerified);
+        }
+
+        internal virtual void OnReplayStart() { }
+
+        internal virtual void OnReplayEnd() { }
+
+        internal virtual void SyncEffectivePolicySideEffects() { }
 
         [UsedByIL]
         public bool IsSimulating()
@@ -62,12 +426,61 @@ namespace PurrNet.Prediction
 
         public virtual void ResetState()
         {
+            CancelPendingPredictionPolicySetup();
             isServer = false;
             isFreshSpawn = true;
+            preservesStateOnSetup = false;
+            _simulateSoftCorrectionDuringReplay = false;
+            _skipReplaySpawnInitialization = false;
             owner = null;
             id = default;
             ResetModulesForPool();
             OnRemovedFromPool();
+        }
+
+        internal void SetPreserveStateOnSetup(bool preserve)
+        {
+            preservesStateOnSetup = preserve;
+        }
+
+        internal void SetSoftCorrectionReplaySimulation(bool simulate)
+        {
+            _simulateSoftCorrectionDuringReplay = simulate;
+        }
+
+        internal void SetSkipReplaySpawnInitialization(bool skip)
+        {
+            _skipReplaySpawnInitialization = skip;
+        }
+
+        internal void SetOwner(PlayerID? player, bool syncPolicySideEffects = true)
+        {
+            owner = player;
+            OnOwnerAssigned(player);
+
+            if (syncPolicySideEffects)
+                SyncEffectivePolicySideEffects();
+        }
+
+        protected virtual void OnOwnerAssigned(PlayerID? player) { }
+
+        internal bool WritePredictionMetadata(
+            PlayerID receiver,
+            BitPacker packer,
+            DeltaModule deltaModule,
+            PredictedIdentityState metadata)
+        {
+            var key = new PredictionMetadataDeltaKey(sceneId, id);
+            return deltaModule.WriteReliable(packer, receiver, key, metadata);
+        }
+
+        internal void ReadPredictionMetadata(
+            BitPacker packer,
+            DeltaModule deltaModule,
+            ref PredictedIdentityState metadata)
+        {
+            var key = new PredictionMetadataDeltaKey(sceneId, id);
+            deltaModule.ReadReliable(packer, key, ref metadata);
         }
 
         internal void TriggerOnRemovedFromPool()
@@ -79,15 +492,8 @@ namespace PurrNet.Prediction
 
         protected virtual void OnAddedToPool() {}
 
-        /// <summary>
-        /// Invoked immediately after the object is fully initialized and fresh spawned.
-        /// </summary>
         protected virtual void LateAwake() {}
 
-        /// <summary>
-        /// Invoked when the object is being despawned and cleaned up.
-        /// Allows for any necessary teardown or resource release to be handled.
-        /// </summary>
         protected virtual void Destroyed() {}
 
         private bool _destroyedFired;
@@ -109,15 +515,18 @@ namespace PurrNet.Prediction
         internal virtual void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
             isServer = manager.isServer;
-            this.owner = owner;
             this.id = id;
             _destroyedFired = false;
             predictionManager = world;
             sceneId = world.sceneId;
+            SetOwner(owner, false);
+            PreparePredictionPolicyForSetup(ResolvePredictionPolicyForSetup());
 
             if (!isFreshSpawn)
             {
-                ResetModulesForReuse(manager, world, id, owner);
+                if (preservesStateOnSetup && UsesSoftCorrectionTimeline())
+                    ModuleSetup(world);
+                else ResetModulesForReuse(world);
                 return;
             }
 
@@ -126,7 +535,7 @@ namespace PurrNet.Prediction
             BeginInitialModuleSetup();
             try
             {
-                ModuleSetup(manager,world,id, owner);
+                ModuleSetup(world);
                 LateAwake();
             }
             finally
@@ -241,7 +650,6 @@ namespace PurrNet.Prediction
 
         public GameObject GetRoot()
         {
-            // get the farthest root with a predicted identity
             var current = transform;
 
             while (current.parent != null)
@@ -257,7 +665,13 @@ namespace PurrNet.Prediction
 
         internal void TriggerOnPooledEvent()
         {
+            ReleasePredictionStateForPool();
             OnAddedToPool();
+        }
+
+        internal virtual void ReleasePredictionStateForPool()
+        {
+            ReleaseModuleStateForPool();
         }
 
         public abstract void WriteFirstInput(ulong localTick, BitPacker packer);

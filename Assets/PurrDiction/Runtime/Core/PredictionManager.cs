@@ -314,6 +314,8 @@ namespace PurrNet.Prediction
             _instanceMap.Clear();
             _queue.Clear();
             _systems.Clear();
+            _replayFrozenSystems.Clear();
+            _speculativeRelayLocks.Clear();
             _systemsCount = 0;
             _nextSystemId = 0;
             _clientTicks.Clear();
@@ -348,12 +350,20 @@ namespace PurrNet.Prediction
 
                 if (!_systems.Contains(component))
                 {
-                    component.OnPreSetup();
+                    var componentId = new PredictedComponentID(objectID, i);
+                    bool preserveState = !reset && !component.isFreshSpawn && component.id.Equals(componentId);
+                    var incomingPolicy = component.ResolvePredictionPolicyForSetup();
+                    bool preserveSoftState = preserveState &&
+                                             component.previousRegisteredPredictionPolicy == PredictionPolicy.SoftCorrection &&
+                                             incomingPolicy == PredictionPolicy.SoftCorrection;
+
+                    if (!preserveSoftState)
+                        component.OnPreSetup();
                     if (reset)
                          component.ResetState();
                     if (triggedOnRemovedFromPool)
                         component.TriggerOnRemovedFromPool();
-                    RegisterInstance(component, objectID, i, owner);
+                    RegisterInstance(component, objectID, i, owner, preserveSoftState);
                 }
             }
 
@@ -412,7 +422,7 @@ namespace PurrNet.Prediction
             return _instanceMap.GetValueOrDefault(id);
         }
 
-        private void RegisterInstance(PredictedIdentity system, PredictedObjectID objectId, uint componentId, PlayerID? owner)
+        private void RegisterInstance(PredictedIdentity system, PredictedObjectID objectId, uint componentId, PlayerID? owner, bool preserveState = false)
         {
             if (!isSpawned)
             {
@@ -422,9 +432,20 @@ namespace PurrNet.Prediction
 
             var pid = new PredictedComponentID(objectId, componentId);
             _instanceMap[pid] = system;
-            system.Setup(networkManager, this, pid, owner);
+            system.SetSoftCorrectionReplaySimulation(false);
+            system.SetSkipReplaySpawnInitialization(false);
+            system.SetPreserveStateOnSetup(preserveState);
+            try
+            {
+                system.Setup(networkManager, this, pid, owner);
+                system.CompletePredictionPolicySetup();
+            }
+            finally
+            {
+                system.CancelPendingPredictionPolicySetup();
+                system.SetPreserveStateOnSetup(false);
+            }
 
-            // i want to insert based on objectid first, then componet id such that I can guarantee that the order of the components is preserved
             var myObjId = pid.objectId.instanceId.value;
             int posToInsert = _systemsCount;
 
@@ -440,13 +461,27 @@ namespace PurrNet.Prediction
 
             _systems.Insert(posToInsert, system);
             ++_systemsCount;
+
+            if (isReplaying && system.UsesSoftCorrectionTimeline() && !preserveState)
+            {
+                system.OnReplayEnd();
+                system.SetSoftCorrectionReplaySimulation(true);
+            }
+            else if (isReplaying && preserveState && system.UsesSoftCorrectionTimeline())
+            {
+                system.SetSkipReplaySpawnInitialization(true);
+            }
         }
 
         public void UnregisterInstance(PredictedIdentity predictedIdentity)
         {
+            RemoveSpeculativeRelayLock(predictedIdentity);
             _instanceMap.Remove(predictedIdentity.id);
             if (_systems.Remove(predictedIdentity))
+            {
                 --_systemsCount;
+                predictedIdentity.RecordCompletedRegistrationPolicy();
+            }
         }
 
         protected override void OnObserverRemoved(PlayerID player)
@@ -575,6 +610,8 @@ namespace PurrNet.Prediction
             if (cachedIsServer)
                 isVerified = true;
 
+            LockSpeculativeRelayStates(localTick);
+
             if (cachedIsServer)
                 PrepareInputs();
 
@@ -589,16 +626,19 @@ namespace PurrNet.Prediction
                 system.PrepareInput(cachedIsServer, controller, localTick, _inputQueueSettings.extrapolateForMissing);
             }
 
+            if (!cachedIsServer)
+            {
+                for (var i = 0; i < _systemsCount; i++)
+                    _systems[i].SyncEffectivePolicySideEffects();
+            }
+
             using (SaveHistoryMarker.Auto())
             {
                 for (var i = 0; i < _systemsCount; i++)
                 {
                     var system = _systems[i];
                     if (!system.isEventHandler)
-                    {
-                        PredictionHistoryTelemetry.RecordSave(false);
                         system.RunSaveState(localTick);
-                    }
                 }
             }
 
@@ -621,7 +661,7 @@ namespace PurrNet.Prediction
             using (SimulateInputsMarker.Auto())
             {
                 for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].OnPrepareSimulationInputs(localTick, delta);
+                    _systems[i].RunPrepareSimulationInputs(localTick, delta);
             }
 
             var simulateMarker = SimulateMarker.Auto();
@@ -662,10 +702,7 @@ namespace PurrNet.Prediction
                 {
                     var system = _systems[i];
                     if (system.isEventHandler)
-                    {
-                        PredictionHistoryTelemetry.RecordSave(true);
                         system.RunSaveState(localTick);
-                    }
                 }
             }
 
@@ -681,7 +718,9 @@ namespace PurrNet.Prediction
             }
 
             for (var i = 0; i < _systemsCount; i++)
-                _systems[i].PostSimulate();
+                _systems[i].RunPostSimulate();
+
+            RestoreSpeculativeRelayStates();
 
             if (cachedIsServer)
                 FinalizeTickOnServer(cachedIsClient);
@@ -718,10 +757,7 @@ namespace PurrNet.Prediction
             using var frame = BitPackerPool.Get();
             uint writtenCount = 0;
             for (var systemIdx = 0; systemIdx < _systemsCount; systemIdx++)
-            {
-                var system = _systems[systemIdx];
-                system.GetLatestUnityState();
-            }
+                _systems[systemIdx].RunGetLatestUnityState();
 
             var count = ownedIdentities.Count;
             for (var ownedIdx = 0; ownedIdx < count; ownedIdx++)
@@ -955,7 +991,6 @@ namespace PurrNet.Prediction
 
         private void DoPhysicsPass()
         {
-            // ReSharper disable once NotAccessedVariable
             var delta = tickDelta;
             if (time)
                 delta *= time.timeScale;
@@ -1041,7 +1076,11 @@ namespace PurrNet.Prediction
         private void RollbackToFrame(ulong stateTick)
         {
             for (var i = 0; i < _systemsCount; i++)
-                _systems[i].RunRollback(stateTick);
+            {
+                var system = _systems[i];
+                if (!system.UsesSoftCorrectionTimeline())
+                    system.RunRollback(stateTick);
+            }
             SyncTransforms();
         }
 
@@ -1060,9 +1099,12 @@ namespace PurrNet.Prediction
                     continue;
                 if (_validateDeterministicData && system.isDeterministic)
                     system.RunRollback(stateTick);
-                system.RunClearFuture(stateTick);
+                bool softCorrected = system.UsesSoftCorrectionTimeline();
+                if (!softCorrected)
+                    system.RunClearFuture(stateTick);
                 system.RunReadState(stateTick, frame, _deltaModuleState);
-                system.RunRollback(stateTick);
+                if (!softCorrected)
+                    system.RunRollback(stateTick);
                 system.lastVerifiedTick = stateTick;
             }
 
@@ -1074,9 +1116,12 @@ namespace PurrNet.Prediction
                 var system = _systems[i];
                 if (!system.isEventHandler)
                     continue;
-                system.RunClearFuture(stateTick);
+                bool softCorrected = system.UsesSoftCorrectionTimeline();
+                if (!softCorrected)
+                    system.RunClearFuture(stateTick);
                 system.RunReadState(stateTick, frame, _deltaModuleState);
-                system.RunRollback(stateTick);
+                if (!softCorrected)
+                    system.RunRollback(stateTick);
                 system.lastVerifiedTick = stateTick;
             }
 
@@ -1116,48 +1161,211 @@ namespace PurrNet.Prediction
             isSimulating = true;
             isReplaying = true;
 
-            while (_deltas.Count > 0)
+            NotifyReplayStart();
+
+            try
             {
-                isVerified = true;
-                using var previousFrame = _deltas.Dequeue();
-                bool inPlace = previousFrame.clientTick <= 1;
-                var lastTick = _lastVerifiedTick;
-                if (!inPlace)
-                    _lastVerifiedTick = previousFrame.clientTick;
-
-                ulong verifiedTick = _lastVerifiedTick;
-                bool isJump = verifiedTick - lastTick > 1;
-
-                var inPlaceTick = isJump ? lastTick : verifiedTick;
-
-                if (!previousFrame.fullFrame && (inPlace || isJump))
+                while (_deltas.Count > 0)
                 {
-                    isCatchingUpFrames = true;
-                    RollbackToFrame(inPlaceTick);
-                    SimulateFrameInPlace(inPlaceTick);
-                    SimulateFrame(inPlaceTick, HistorySaveMode.Full);
-                    isCatchingUpFrames = false;
+                    isVerified = true;
+                    using var previousFrame = _deltas.Dequeue();
+                    bool inPlace = previousFrame.clientTick <= 1;
+                    var lastTick = _lastVerifiedTick;
+                    if (!inPlace)
+                        _lastVerifiedTick = previousFrame.clientTick;
+
+                    ulong verifiedTick = _lastVerifiedTick;
+                    bool isJump = verifiedTick - lastTick > 1;
+
+                    var inPlaceTick = isJump ? lastTick : verifiedTick;
+
+                    if (!previousFrame.fullFrame && (inPlace || isJump))
+                    {
+                        isCatchingUpFrames = true;
+                        RollbackToFrame(inPlaceTick);
+                        SimulateFrameInPlace(inPlaceTick);
+                        SimulateFrame(inPlaceTick, HistorySaveMode.Full);
+                        isCatchingUpFrames = false;
+                    }
+
+                    if (previousFrame.fullFrame)
+                        ReadFullFrame(previousFrame.packer, inPlaceTick, verifiedTick);
+                    else RollbackToFrame(previousFrame.packer, inPlaceTick, verifiedTick);
+
+                    SimulateFrame(verifiedTick, HistorySaveMode.VerifiedFrame);
+                    isVerified = false;
                 }
 
-                if (previousFrame.fullFrame)
-                    ReadFullFrame(previousFrame.packer, inPlaceTick, verifiedTick);
-                else RollbackToFrame(previousFrame.packer, inPlaceTick, verifiedTick);
+                SimulateFrame(_lastVerifiedTick + 1, HistorySaveMode.Full);
+                ReplayToLatestTick(_lastVerifiedTick + 2, HistorySaveMode.None);
 
-                SimulateFrame(verifiedTick, HistorySaveMode.VerifiedFrame);
-                isVerified = false;
+                SyncTransforms();
+                UpdateInterpolation(true);
             }
+            finally
+            {
+                NotifyReplayEnd();
 
-            SimulateFrame(_lastVerifiedTick + 1, HistorySaveMode.Full);
-            ReplayToLatestTick(_lastVerifiedTick + 2, HistorySaveMode.None);
-
-            SyncTransforms();
-            UpdateInterpolation(true);
-
-            isReplaying = false;
-            isSimulating = false;
+                isVerified = false;
+                isCatchingUpFrames = false;
+                isReplaying = false;
+                isSimulating = false;
+            }
 
             TickBandwidthProfiler.MarkEndOfTick();
             onRollbackFinished?.Invoke();
+        }
+
+        readonly List<PredictedIdentity> _replayFrozenSystems = new ();
+
+        private struct SpeculativeRelayLock
+        {
+            public PredictedIdentity system;
+            public ulong tick;
+        }
+
+        readonly List<SpeculativeRelayLock> _speculativeRelayLocks = new ();
+
+        private void LockSpeculativeRelayStates(ulong tick)
+        {
+            if (cachedIsServer || isVerified)
+                return;
+
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                var system = _systems[i];
+                if (!system.UsesServerRelayTimeline() || !system.SkipsCurrentSimulationPhase())
+                    continue;
+                if (HasSpeculativeRelayLock(system))
+                    continue;
+
+                system.RunSaveStateUnchecked(tick);
+                _speculativeRelayLocks.Add(new SpeculativeRelayLock
+                {
+                    system = system,
+                    tick = tick
+                });
+            }
+        }
+
+        private bool HasSpeculativeRelayLock(PredictedIdentity system)
+        {
+            for (var i = 0; i < _speculativeRelayLocks.Count; i++)
+            {
+                if (_speculativeRelayLocks[i].system == system)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private void RemoveSpeculativeRelayLock(PredictedIdentity system)
+        {
+            for (var i = _speculativeRelayLocks.Count - 1; i >= 0; i--)
+            {
+                if (_speculativeRelayLocks[i].system == system)
+                    _speculativeRelayLocks.RemoveAt(i);
+            }
+        }
+
+        private void RestoreSpeculativeRelayStates()
+        {
+            if (_speculativeRelayLocks.Count == 0)
+                return;
+
+            for (var i = _speculativeRelayLocks.Count - 1; i >= 0; i--)
+            {
+                var locked = _speculativeRelayLocks[i];
+                var system = locked.system;
+                if (!system || !system.UsesServerRelayTimeline())
+                {
+                    _speculativeRelayLocks.RemoveAt(i);
+                    continue;
+                }
+
+                system.RunRollback(locked.tick);
+            }
+
+            _speculativeRelayLocks.Clear();
+            SyncTransforms();
+        }
+
+        private void ClearSpeculativeRelayLocks()
+        {
+            _speculativeRelayLocks.Clear();
+        }
+
+        private void NotifyReplayStart()
+        {
+            ClearSpeculativeRelayLocks();
+
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                var system = _systems[i];
+                if (system.UsesSoftCorrectionTimeline())
+                    FreezeForReplay(system);
+            }
+        }
+
+        private void FreezeForReplay(PredictedIdentity system)
+        {
+            system.OnReplayStart();
+            _replayFrozenSystems.Add(system);
+        }
+
+        internal void HandlePredictionPolicyChanged(
+            PredictedIdentity system,
+            PredictionPolicy oldPolicy,
+            PredictionPolicy newPolicy)
+        {
+            if (!isReplaying || !_systems.Contains(system))
+                return;
+
+            bool wasSoftCorrected = oldPolicy == PredictionPolicy.SoftCorrection;
+            bool isSoftCorrected = newPolicy == PredictionPolicy.SoftCorrection;
+            if (wasSoftCorrected == isSoftCorrected)
+                return;
+
+            if (isSoftCorrected)
+            {
+                for (var i = 0; i < _replayFrozenSystems.Count; i++)
+                {
+                    if (_replayFrozenSystems[i] == system)
+                        return;
+                }
+
+                system.SetSoftCorrectionReplaySimulation(false);
+                FreezeForReplay(system);
+                return;
+            }
+
+            system.SetSoftCorrectionReplaySimulation(false);
+            for (var i = _replayFrozenSystems.Count - 1; i >= 0; i--)
+            {
+                if (_replayFrozenSystems[i] != system)
+                    continue;
+
+                _replayFrozenSystems.RemoveAt(i);
+                system.OnReplayEnd();
+            }
+        }
+
+        private void NotifyReplayEnd()
+        {
+            for (var i = 0; i < _replayFrozenSystems.Count; i++)
+            {
+                var system = _replayFrozenSystems[i];
+                if (system)
+                    system.OnReplayEnd();
+            }
+
+            _replayFrozenSystems.Clear();
+
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                _systems[i].SetSoftCorrectionReplaySimulation(false);
+                _systems[i].SetSkipReplaySpawnInitialization(false);
+            }
         }
 
         private void UpdateInterpolation(bool accumulateError)
@@ -1191,7 +1399,7 @@ namespace PurrNet.Prediction
             using (SimulateInputsMarker.Auto())
             {
                 for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].OnPrepareSimulationInputs(verifiedTick, delta);
+                    _systems[i].RunPrepareSimulationInputs(verifiedTick, delta);
             }
 
             var simulateMarker = SimulateMarker.Auto();
@@ -1227,9 +1435,9 @@ namespace PurrNet.Prediction
             }
 
             for (var i = 0; i < _systemsCount; i++)
-                _systems[i].PostSimulate();
+                _systems[i].RunPostSimulate();
             for (var j = 0; j < _systemsCount; j++)
-                _systems[j].GetLatestUnityState();
+                _systems[j].RunGetLatestUnityState();
 
             isSimulating = false;
             localTickInContext = localTick;
@@ -1244,16 +1452,20 @@ namespace PurrNet.Prediction
             isSimulating = true;
             localTickInContext = verifiedTick;
 
-            if (saveMode is HistorySaveMode.Full or HistorySaveMode.VerifiedFrame)
+            LockSpeculativeRelayStates(verifiedTick);
+
+            if (saveMode is HistorySaveMode.Full or HistorySaveMode.VerifiedFrame || isReplaying)
             {
                 using (SaveHistoryMarker.Auto())
                 {
                     for (var i = 0; i < _systemsCount; i++)
                     {
                         var system = _systems[i];
-                        if (!system.isEventHandler && (saveMode == HistorySaveMode.Full || system.isDeterministic))
+                        if (!system.isEventHandler &&
+                            (saveMode == HistorySaveMode.Full ||
+                             system.isDeterministic ||
+                             system.IsSoftCorrectionReplaySimulating()))
                         {
-                            PredictionHistoryTelemetry.RecordSave(false);
                             system.RunSaveState(verifiedTick);
                         }
                     }
@@ -1263,7 +1475,7 @@ namespace PurrNet.Prediction
             using (SimulateInputsMarker.Auto())
             {
                 for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].OnPrepareSimulationInputs(verifiedTick, delta);
+                    _systems[i].RunPrepareSimulationInputs(verifiedTick, delta);
             }
 
             var simulateMarker = SimulateMarker.Auto();
@@ -1306,19 +1518,18 @@ namespace PurrNet.Prediction
                     {
                         var system = _systems[i];
                         if (system.isEventHandler)
-                        {
-                            PredictionHistoryTelemetry.RecordSave(true);
                             system.RunSaveState(verifiedTick);
-                        }
                     }
                 }
             }
 
             for (var i = 0; i < _systemsCount; i++)
-                _systems[i].PostSimulate();
+                _systems[i].RunPostSimulate();
 
             for (var j = 0; j < _systemsCount; j++)
-                _systems[j].GetLatestUnityState();
+                _systems[j].RunGetLatestUnityState();
+
+            RestoreSpeculativeRelayStates();
 
             isSimulating = false;
             localTickInContext = localTick;
@@ -1363,7 +1574,6 @@ namespace PurrNet.Prediction
                 _clientTicks[info.sender] = ticks;
             }
 
-            // if we are past the max inputs, let's remove until we are at the min inputs
             if (ticks.Count > _inputQueueSettings.maxInputs)
             {
                 while (ticks.Count > _inputQueueSettings.minInputs)
@@ -1404,7 +1614,6 @@ namespace PurrNet.Prediction
             }
             catch
             {
-                // ignored
             }
         }
 
@@ -1600,7 +1809,7 @@ namespace PurrNet.Prediction
             for (var i = 0; i < children.Count; i++)
             {
                 var child = children[i];
-                child.owner = player;
+                child.SetOwner(player);
             }
 
             ListPool<PredictedIdentity>.Destroy(children);

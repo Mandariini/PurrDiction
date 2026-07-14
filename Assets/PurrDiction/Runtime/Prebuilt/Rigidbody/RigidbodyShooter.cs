@@ -43,7 +43,13 @@ namespace PurrNet.Prediction.Prebuilt
 
             var pos = transform.TransformPoint(spawnOffset);
 
-            var projectileId = hierarchy.Create(projectile.gameObject, pos, transform.rotation);
+            var projectileId = hierarchy.Create(projectile.gameObject, pos, transform.rotation, owner);
+            if (hierarchy.TryGetComponent(projectileId, out PredictedIdentity predicted) &&
+                predicted.shouldSkipReplaySpawnInitialization)
+            {
+                return;
+            }
+
             var projectileRb = hierarchy.GetComponent<Rigidbody>(projectileId);
             if(projectileRb)
                 projectileRb.linearVelocity = transform.forward * projectileInitialVelocity;

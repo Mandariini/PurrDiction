@@ -149,14 +149,16 @@ namespace PurrNet.Prediction
             if (pool.TryTakePrecise(key, out var instance))
             {
                 go = instance;
-                go.transform.SetPositionAndRotation(position, rotation);
+                if (!PreservesSoftCorrectionRootPose(instance, instanceId))
+                    go.transform.SetPositionAndRotation(position, rotation);
                 predictionManager.RegisterInstance(go, instanceId, owner, false, false);
                 go.SetActive(true);
             }
             else if (key.prefabId.value < 0 && pool.TryTakeSceneObject(key, out var sceneObj))
             {
                 go = sceneObj;
-                go.transform.SetPositionAndRotation(position, rotation);
+                if (!PreservesSoftCorrectionRootPose(sceneObj, instanceId))
+                    go.transform.SetPositionAndRotation(position, rotation);
                 predictionManager.RegisterInstance(go, instanceId, owner, false, false);
                 go.SetActive(true);
             }
@@ -185,6 +187,17 @@ namespace PurrNet.Prediction
             }
 
             return instanceId;
+        }
+
+        private bool PreservesSoftCorrectionRootPose(GameObject instance, PredictedObjectID instanceId)
+        {
+            if (!predictionManager.isReplaying || !instance)
+                return false;
+
+            return instance.TryGetComponent(out PredictedTransform predictedTransform) &&
+                   predictedTransform.id.objectId.Equals(instanceId) &&
+                   predictedTransform.previousRegisteredPredictionPolicy == PredictionPolicy.SoftCorrection &&
+                   predictedTransform.ResolvePredictionPolicyForSetup() == PredictionPolicy.SoftCorrection;
         }
 
         public PredictedObjectID? Create(int prefabId, Vector3 position, Quaternion rotation, PlayerID? owner = null)
@@ -251,8 +264,8 @@ namespace PurrNet.Prediction
 
             if (pool.Put(details, go, predictionManager.localTick))
             {
-                go.SetActive(false);
                 predictionManager.UnregisterInstance(go, false, triggerDestroyEvent);
+                go.SetActive(false);
             }
             else
             {

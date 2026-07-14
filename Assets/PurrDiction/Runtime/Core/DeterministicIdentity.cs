@@ -16,21 +16,28 @@ namespace PurrNet.Prediction
 
         internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
         {
+            bool metadataChanged = WritePredictionMetadata(
+                target,
+                packer,
+                deltaModule,
+                fullPredictedState.prediction);
+
             if (predictionManager.validateDeterministicData)
             {
-                Packer<bool>.Write(packer, true);
                 Packer<STATE>.Write(packer, fullPredictedState.state);
                 return true;
             }
 
-            return false;
+            return metadataChanged;
         }
 
         internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
         {
+            PredictedIdentityState prediction = default;
+            ReadPredictionMetadata(packer, deltaModule, ref prediction);
+
             if (predictionManager.validateDeterministicData)
             {
-                packer.AdvanceBits(1);
                 STATE read = default;
                 Packer<STATE>.Read(packer, ref read);
 
@@ -42,6 +49,18 @@ namespace PurrNet.Prediction
                 }
 
                 read.Dispose();
+            }
+
+            if (_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
+            {
+                var verified = stateAtTick.DeepCopy();
+                verified.prediction = prediction;
+                WriteOwnedStateIfChanged(tick, ref verified);
+            }
+            else
+            {
+                fullPredictedState.prediction = prediction;
+                SetOwner(prediction.owner);
             }
         }
 
@@ -70,9 +89,33 @@ namespace PurrNet.Prediction
         public override void ResetState()
         {
             base.ResetState();
-            ResetInterpolation();
-            fullPredictedState = default;
+            DisposeStateStorage();
             _firstViewUpdate = true;
+        }
+
+        protected override void OnDestroy()
+        {
+            base.OnDestroy();
+            DisposeStateStorage();
+        }
+
+        internal override void ReleasePredictionStateForPool()
+        {
+            base.ReleasePredictionStateForPool();
+            DisposeStateStorage();
+        }
+
+        private void DisposeStateStorage()
+        {
+            _viewState?.Dispose();
+            _viewState = null;
+
+            _interpolatedState?.Teleport(default);
+            _stateHistory?.Clear();
+
+            fullPredictedState.Dispose();
+            fullPredictedState = default;
+            viewState = default;
         }
 
         internal override void PrepareInput(bool isServer, bool isLocal, ulong tick, bool extrapolate) { }
@@ -103,6 +146,11 @@ namespace PurrNet.Prediction
             fullPredictedState.state = GetInitialState();
         }
 
+        protected override void OnOwnerAssigned(PlayerID? player)
+        {
+            fullPredictedState.prediction.owner = player;
+        }
+
         internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
             myType = GetType();
@@ -118,7 +166,6 @@ namespace PurrNet.Prediction
             ResetStateToInitialState();
             GetLatestUnityState();
 
-            // if TickRate is 30, then this should be 2
             var interpolationBuffer = (int)Mathf.Max(world.tickRate / (float)10, 2);
 
             if (_interpolatedState == null)
@@ -126,7 +173,11 @@ namespace PurrNet.Prediction
                 _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(
                     FULLInterpolate, 1f / world.tickRate, fullPredictedState.DeepCopy(), interpolationBuffer);
             }
-            else _interpolatedState.Teleport(fullPredictedState.DeepCopy());
+            else
+                _interpolatedState.Teleport(fullPredictedState.DeepCopy());
+
+            _viewState?.Dispose();
+            _viewState = null;
 
             if (_stateHistory == null)
                 _stateHistory = new History<FULL_STATE<STATE>>(world.tickRate * 10);
@@ -134,23 +185,14 @@ namespace PurrNet.Prediction
             _stateHistory.Write(0, fullPredictedState.DeepCopy());
         }
 
-        /// <summary>
-        /// Called when the object is first created.
-        /// Future updates will come only through Simulate.
-        /// </summary>
-        /// <returns>The initial state of the object.</returns>
         protected virtual void GetUnityState(ref STATE state) {}
 
         internal override void GetLatestUnityState()
         {
             fullPredictedState.prediction.owner = owner;
-            // fullPredictedState.prediction.predictedID = id;
             GetUnityState(ref fullPredictedState.state);
         }
 
-        /// <summary>
-        /// Called before the first Simulate is executed
-        /// </summary>
         protected virtual void SimulationStart() {}
 
         internal override void SimulateTick(ulong tick, float delta)
@@ -172,7 +214,37 @@ namespace PurrNet.Prediction
 
         internal override void SaveStateInHistory(ulong tick)
         {
+            if (LatestHistoryMatches(tick, ref fullPredictedState))
+                return;
+
             _stateHistory.Write(tick, fullPredictedState.DeepCopy());
+        }
+
+        private bool LatestHistoryMatches(ulong tick, ref FULL_STATE<STATE> state)
+        {
+            if (_stateHistory == null || _stateHistory.Count <= 0)
+                return false;
+
+            _stateHistory.PruneByTickWindow(tick);
+
+            int lastIndex = _stateHistory.Count - 1;
+            if (_stateHistory.GetEntryTick(lastIndex) > tick)
+                return false;
+
+            var last = _stateHistory[lastIndex];
+            return last.HasSameContents(ref state);
+        }
+
+        private void WriteOwnedStateIfChanged(ulong tick, ref FULL_STATE<STATE> state)
+        {
+            if (LatestHistoryMatches(tick, ref state))
+            {
+                state.Dispose();
+                state = default;
+                return;
+            }
+
+            _stateHistory.Write(tick, state);
         }
 
         FULL_STATE<STATE>? _viewState;
@@ -192,13 +264,13 @@ namespace PurrNet.Prediction
 
         internal override void Rollback(ulong tick)
         {
-            if (!_stateHistory.Read(tick, out var state))
+            if (!_stateHistory.ReadOrPrevious(tick, out var state))
                 return;
 
             fullPredictedState.Dispose();
             fullPredictedState = state.DeepCopy();
 
-            owner = fullPredictedState.prediction.owner;
+            SetOwner(fullPredictedState.prediction.owner);
             SetUnityState(fullPredictedState.state);
         }
 
@@ -206,7 +278,7 @@ namespace PurrNet.Prediction
 
         internal override void WriteFirstState(ulong tick, BitPacker packer)
         {
-            if (!_stateHistory.TryGet(tick, out var state))
+            if (!_stateHistory.ReadOrPrevious(tick, out var state))
             {
                 PurrLogger.LogError($"Failed to write first state for tick {tick}");
                 return;
@@ -224,11 +296,12 @@ namespace PurrNet.Prediction
             Packer<PredictedIdentityState>.Read(packer, ref prediction);
             Packer<STATE>.Read(packer, ref state);
 
-            _stateHistory.Write(tick, new FULL_STATE<STATE>
+            FULL_STATE<STATE> newState = new FULL_STATE<STATE>
             {
                 state = state,
                 prediction = prediction
-            });
+            };
+            WriteOwnedStateIfChanged(tick, ref newState);
         }
 
         internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable) { }
@@ -243,7 +316,7 @@ namespace PurrNet.Prediction
         {
             get
             {
-                if (lastVerifiedTick.HasValue && _stateHistory.TryGet(lastVerifiedTick.Value, out var state))
+                if (lastVerifiedTick.HasValue && _stateHistory.ReadOrPrevious(lastVerifiedTick.Value, out var state))
                     return state.state;
                 return null;
             }
@@ -286,6 +359,10 @@ namespace PurrNet.Prediction
 
         protected virtual void LateUpdateView(STATE viewState, STATE? verified) {}
 
+        /// <summary>
+        /// Produces a transient, non-owning view state. Implementations must not allocate
+        /// disposable members in the returned value.
+        /// </summary>
         protected virtual STATE Interpolate(STATE from, STATE to, float t)
         {
             var offset = to.Add(to, from.Negate(from));
