@@ -252,6 +252,39 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void PooledReuseDoesNotPreserveStateWhenSwitchingIntoSoftCorrection()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var identityObject = new GameObject(nameof(PooledReuseDoesNotPreserveStateWhenSwitchingIntoSoftCorrection));
+
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                var identity = identityObject.AddComponent<PolicySetupOrderProbe>();
+                identity.SetPredictionPolicyOverride(PredictionPolicy.FullPrediction);
+
+                var objectId = new PredictedObjectID(1);
+                manager.RegisterInstance(identityObject, objectId, null, false, false);
+                manager.UnregisterInstance(identity);
+
+                SetField(typeof(PredictedIdentity), identity, "_predictionPolicy",
+                    PredictionPolicy.SoftCorrection);
+                manager.RegisterInstance(identityObject, objectId, null, false, false);
+
+                Assert.That(identity.preSetupCount, Is.EqualTo(2),
+                    "The previous non-soft lifetime was incorrectly preserved when switching into SoftCorrection");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+                UnityEngine.Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        [Test]
         public void RootPosePreservationUsesIncomingPolicyOnReplayReuse()
         {
             var managerObject = new GameObject("PredictionManager");
@@ -282,6 +315,15 @@ namespace PurrNet.Prediction.Tests.Editor
 
                 Assert.That(preservesPose, Is.False,
                     "The previous lifetime's SoftCorrection policy preserved a stale pooled root pose");
+
+                predictedTransform.SetPredictionPolicy(PredictionPolicy.FullPrediction);
+                SetField(typeof(PredictedIdentity), predictedTransform,
+                    "_predictionPolicy", PredictionPolicy.SoftCorrection);
+                preservesPose = (bool)method.Invoke(
+                    hierarchy, new object[] { instanceObject, instanceId });
+
+                Assert.That(preservesPose, Is.False,
+                    "A non-soft lifetime was incorrectly treated as a live soft pose when switching into SoftCorrection");
             }
             finally
             {
@@ -345,6 +387,38 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 UnityEngine.Object.DestroyImmediate(instanceObject);
                 UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void DeactivatingRegisteredScopeRefreshesItsLiveIdentities()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var scopeObject = new GameObject(nameof(DeactivatingRegisteredScopeRefreshesItsLiveIdentities));
+
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                var scope = scopeObject.AddComponent<PredictionPolicyScope>();
+                scope.configuredPredictionPolicy = PredictionPolicy.ServerRelay;
+                var identity = scopeObject.AddComponent<PolicyProbe>();
+
+                manager.RegisterInstance(scopeObject, new PredictedObjectID(1), null, false, false);
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
+
+                scopeObject.SetActive(false);
+
+                Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction),
+                    "The inactive live scope remained applied to a registered identity");
+                manager.UnregisterInstance(identity);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(scopeObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+                UnityEngine.Object.DestroyImmediate(networkObject);
             }
         }
 

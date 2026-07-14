@@ -101,6 +101,8 @@ namespace PurrNet.Prediction
         /// </summary>
         public PredictionPolicy predictionPolicy { get; private set; }
 
+        private PredictionPolicy _lastRegisteredPredictionPolicy;
+        private bool _hasLastRegisteredPredictionPolicy;
         private bool _hasPendingSetupPolicyChange;
         private PredictionPolicy _pendingSetupOldPolicy;
         private PredictionPolicy _pendingSetupNewPolicy;
@@ -206,6 +208,17 @@ namespace PurrNet.Prediction
 
         internal PredictionPolicy ResolvePredictionPolicyForSetup()
             => ResolveSetupPredictionPolicy();
+
+        internal PredictionPolicy previousRegisteredPredictionPolicy
+            => _hasLastRegisteredPredictionPolicy
+                ? _lastRegisteredPredictionPolicy
+                : predictionPolicy;
+
+        internal void RecordCompletedRegistrationPolicy()
+        {
+            _lastRegisteredPredictionPolicy = predictionPolicy;
+            _hasLastRegisteredPredictionPolicy = true;
+        }
 
         /// <summary>
         /// Returns the currently applied policy for a registered identity, or resolves the

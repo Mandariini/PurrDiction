@@ -132,6 +132,7 @@ namespace PurrNet.Prediction
 
         private void RefreshDescendantIdentities()
         {
+            bool refreshRegisteredOnly = !gameObject.activeInHierarchy;
             var identities = ListPool<PredictedIdentity>.Instantiate();
             try
             {
@@ -139,14 +140,25 @@ namespace PurrNet.Prediction
                 for (var i = 0; i < identities.Count; i++)
                 {
                     var identity = identities[i];
-                    if (identity && !identity.OverridesPredictionPolicyScope())
-                        identity.RefreshResolvedPredictionPolicy();
+                    if (!identity || identity.OverridesPredictionPolicyScope())
+                        continue;
+                    if (refreshRegisteredOnly && !IsRegistered(identity))
+                        continue;
+
+                    identity.RefreshResolvedPredictionPolicy();
                 }
             }
             finally
             {
                 ListPool<PredictedIdentity>.Destroy(identities);
             }
+        }
+
+        private static bool IsRegistered(PredictedIdentity identity)
+        {
+            var manager = identity.predictionManager;
+            return manager && manager.TryGetIdentity(identity.id, out var registered) &&
+                   ReferenceEquals(identity, registered);
         }
 
         private void OnEnable()
@@ -156,14 +168,6 @@ namespace PurrNet.Prediction
 
         private void OnDisable()
         {
-            // Deactivating a pooled hierarchy must not transiently replace the applied
-            // policy before PredictionManager unregisters its identities. In particular,
-            // SoftCorrection state is intentionally preserved for same-ID replay reuse.
-            // Disabling or removing the scope component on an active hierarchy still
-            // needs to make descendants fall back to their next policy source.
-            if (!gameObject.activeInHierarchy)
-                return;
-
             RefreshDescendantIdentities();
         }
 

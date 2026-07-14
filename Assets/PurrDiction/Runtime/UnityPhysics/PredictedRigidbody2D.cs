@@ -83,6 +83,11 @@ namespace PurrNet.Prediction
 
         internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
+            if (!_rigidbody)
+                _rigidbody = GetComponent<Rigidbody2D>();
+            if (_rigidbody && !preservesStateOnSetup)
+                RestoreDefaultPhysicsMode();
+
             base.Setup(manager, world, id, owner);
 
             if (!_rigidbody)
@@ -96,7 +101,8 @@ namespace PurrNet.Prediction
                 ClearStaleFreeze();
             }
 
-            RestoreDefaultPhysicsMode();
+            if (!preservesStateOnSetup)
+                RestoreDefaultPhysicsMode();
             _appliedKinematicPolicy = PredictionPolicy.FullPrediction;
             ApplyEffectiveKinematic();
         }

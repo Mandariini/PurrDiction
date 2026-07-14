@@ -352,8 +352,10 @@ namespace PurrNet.Prediction
                 {
                     var componentId = new PredictedComponentID(objectID, i);
                     bool preserveState = !reset && !component.isFreshSpawn && component.id.Equals(componentId);
+                    var incomingPolicy = component.ResolvePredictionPolicyForSetup();
                     bool preserveSoftState = preserveState &&
-                                             component.ResolvePredictionPolicyForSetup() == PredictionPolicy.SoftCorrection;
+                                             component.previousRegisteredPredictionPolicy == PredictionPolicy.SoftCorrection &&
+                                             incomingPolicy == PredictionPolicy.SoftCorrection;
 
                     if (!preserveSoftState)
                         component.OnPreSetup();
@@ -476,7 +478,10 @@ namespace PurrNet.Prediction
             RemoveSpeculativeRelayLock(predictedIdentity);
             _instanceMap.Remove(predictedIdentity.id);
             if (_systems.Remove(predictedIdentity))
+            {
                 --_systemsCount;
+                predictedIdentity.RecordCompletedRegistrationPolicy();
+            }
         }
 
         protected override void OnObserverRemoved(PlayerID player)

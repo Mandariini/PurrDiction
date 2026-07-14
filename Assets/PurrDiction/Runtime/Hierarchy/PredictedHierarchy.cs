@@ -196,6 +196,7 @@ namespace PurrNet.Prediction
 
             return instance.TryGetComponent(out PredictedTransform predictedTransform) &&
                    predictedTransform.id.objectId.Equals(instanceId) &&
+                   predictedTransform.previousRegisteredPredictionPolicy == PredictionPolicy.SoftCorrection &&
                    predictedTransform.ResolvePredictionPolicyForSetup() == PredictionPolicy.SoftCorrection;
         }
 
@@ -263,8 +264,8 @@ namespace PurrNet.Prediction
 
             if (pool.Put(details, go, predictionManager.localTick))
             {
-                go.SetActive(false);
                 predictionManager.UnregisterInstance(go, false, triggerDestroyEvent);
+                go.SetActive(false);
             }
             else
             {
