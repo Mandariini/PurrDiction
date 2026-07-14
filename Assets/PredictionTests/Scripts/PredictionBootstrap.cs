@@ -372,8 +372,9 @@ public class PredictionBootstrap : Scenario
                     ScenarioSequencer.IssuePrepare(i);
                     await ScenarioSequencer.WaitForAllReady(ctx, i);
 
-                    var startTick = GetScenarioStartTick();
-                    ScenarioSequencer.IssueStart(i, startTick);
+                    var startLeadTicks = GetScenarioStartLeadTicks();
+                    ScenarioSequencer.IssueStart(i, startLeadTicks);
+                    var startTick = GetLocalScenarioStartTick(startLeadTicks);
 
                     if (await RunOne(i, ctx, startTick))
                         anyFailed = true;
@@ -399,11 +400,12 @@ public class PredictionBootstrap : Scenario
                         break;
 
                     ScenarioSequencer.AckLocalReady(ctx, i);
-                    var startTick = await ScenarioSequencer.WaitForStart(ctx, i);
+                    var startLeadTicks = await ScenarioSequencer.WaitForStart(ctx, i);
 
                     if (ScenarioSequencer.SequenceComplete)
                         break;
 
+                    var startTick = GetLocalScenarioStartTick(startLeadTicks);
                     if (await RunOne(i, ctx, startTick))
                         anyFailed = true;
 
@@ -465,9 +467,13 @@ public class PredictionBootstrap : Scenario
         _activePerformanceSampler?.SampleFrame(_predictionManager);
     }
 
-    private ulong GetScenarioStartTick()
+    private ulong GetScenarioStartLeadTicks()
     {
-        var leadTicks = (ulong)Mathf.Max(1, Mathf.CeilToInt(_predictionManager.tickRate * ScenarioStartLeadSeconds));
+        return (ulong)Mathf.Max(1, Mathf.CeilToInt(_predictionManager.tickRate * ScenarioStartLeadSeconds));
+    }
+
+    private ulong GetLocalScenarioStartTick(ulong leadTicks)
+    {
         return _predictionManager.time.tick + leadTicks;
     }
 

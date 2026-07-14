@@ -10,7 +10,7 @@ public static class ScenarioSequencer
 
     private static readonly Dictionary<int, HashSet<PlayerID>> _readyByIndex = new();
     private static readonly Dictionary<int, HashSet<PlayerID>> _acksByIndex = new();
-    private static readonly Dictionary<int, ulong> _startTicksByIndex = new();
+    private static readonly Dictionary<int, ulong> _startLeadTicksByIndex = new();
     private static readonly HashSet<PlayerID> _endOfRunAcks = new();
 
     private static int _latestPreparedIndex = -1;
@@ -23,7 +23,7 @@ public static class ScenarioSequencer
     {
         _readyByIndex.Clear();
         _acksByIndex.Clear();
-        _startTicksByIndex.Clear();
+        _startLeadTicksByIndex.Clear();
         _endOfRunAcks.Clear();
         _latestPreparedIndex = -1;
         _latestStartedIndex = -1;
@@ -84,9 +84,9 @@ public static class ScenarioSequencer
         _readyByIndex.Remove(index);
     }
 
-    public static void IssueStart(int index, ulong startTick)
+    public static void IssueStart(int index, ulong startLeadTicks)
     {
-        BroadcastStart(index, startTick);
+        BroadcastStart(index, startLeadTicks);
     }
 
     public static async UniTask<ulong> WaitForStart(ScenarioContext ctx, int index)
@@ -94,7 +94,7 @@ public static class ScenarioSequencer
         try
         {
             await UniTaskUtils.WaitWithTimeout(
-                () => _startTicksByIndex.ContainsKey(index) || _sequenceComplete,
+                () => _startLeadTicksByIndex.ContainsKey(index) || _sequenceComplete,
                 SCENARIO_TIMEOUT_SECONDS,
                 ctx.cancellationToken);
         }
@@ -106,7 +106,7 @@ public static class ScenarioSequencer
                 e);
         }
 
-        return _startTicksByIndex.TryGetValue(index, out var startTick) ? startTick : 0;
+        return _startLeadTicksByIndex.TryGetValue(index, out var startLeadTicks) ? startLeadTicks : 0;
     }
 
     public static async UniTask WaitForAllAcks(ScenarioContext ctx, int index)
@@ -235,9 +235,9 @@ public static class ScenarioSequencer
     }
 
     [ObserversRpc(runLocally: true)]
-    private static void BroadcastStart(int index, ulong startTick)
+    private static void BroadcastStart(int index, ulong startLeadTicks)
     {
-        _startTicksByIndex[index] = startTick;
+        _startLeadTicksByIndex[index] = startLeadTicks;
         if (index > _latestStartedIndex)
             _latestStartedIndex = index;
     }

@@ -291,7 +291,9 @@ public sealed class GenericSoftCorrectionScenario : Scenario
         }
         catch (TimeoutException)
         {
-            return ScenarioResult.Fail($"never reached scheduled start tick {_startTick}");
+            return ScenarioResult.Fail(
+                $"never reached scheduled start tick {_startTick} " +
+                $"(current tick {ctx.predictionManager.time.tick})");
         }
 
         if (!ctx.predictionManager.hierarchy.Create(_probePrefab).HasValue)
@@ -450,7 +452,9 @@ public sealed class ReplayPolicyTransitionScenario : Scenario
         }
         catch (TimeoutException)
         {
-            return ScenarioResult.Fail($"never reached scheduled start tick {_startTick}");
+            return ScenarioResult.Fail(
+                $"never reached scheduled start tick {_startTick} " +
+                $"(current tick {ctx.predictionManager.time.tick})");
         }
 
         if (!ctx.predictionManager.hierarchy.Create(
