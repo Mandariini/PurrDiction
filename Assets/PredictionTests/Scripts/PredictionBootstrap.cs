@@ -63,6 +63,7 @@ public class PredictionBootstrap : Scenario
 
         gameObject.AddComponent<PieceLifecycleScenario>();
         gameObject.AddComponent<PieceReconnectScenario>();
+        gameObject.AddComponent<TickAgreementScenario>();
 
         bool policyRegressionsOnly = CommandLineUtils.HasFlag("-policyRegressionScenariosOnly");
         var policyRegressionScenarios = AddPolicyRegressionScenarios();

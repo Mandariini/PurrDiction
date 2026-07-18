@@ -214,9 +214,7 @@ namespace PurrNet.Prediction
 
         internal override void SaveStateInHistory(ulong tick)
         {
-            if (LatestHistoryMatches(tick, ref fullPredictedState))
-                return;
-
+            _stateHistory.PruneByTickWindow(tick);
             _stateHistory.Write(tick, fullPredictedState.DeepCopy());
         }
 

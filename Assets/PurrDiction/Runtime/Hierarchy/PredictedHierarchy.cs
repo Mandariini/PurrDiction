@@ -850,13 +850,17 @@ namespace PurrNet.Prediction
                 var rootId = new PredictedObjectID(baseId);
                 root.transform.GetPositionAndRotation(out var rootPos, out var rootRot);
 
+                PredictedComponentID? authoredParent = TryResolveParentLink(root, out var authoredLink)
+                    ? authoredLink
+                    : (PredictedComponentID?)null;
+
                 for (var k = 0; k < proto.pieceCount; k++)
                 {
                     var pieceId = new PredictedObjectID(baseId + (uint)k);
                     var pieceGo = _collectScratch[k];
 
                     var record = k == 0
-                        ? new InstanceDetails(pid, 0, pieceId, rootPos, rootRot, null, null)
+                        ? new InstanceDetails(pid, 0, pieceId, rootPos, rootRot, null, authoredParent)
                         : new InstanceDetails(pid, (uint)k, pieceId, Vector3.zero, Quaternion.identity, null, null);
 
                     _isSceneObject.Add(pieceId);
