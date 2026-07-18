@@ -161,16 +161,16 @@ namespace PurrNet.Prediction.Tests.Editor
 
             var taken = new List<PooledPiece>();
 
-            Assert.That(pool.TryTakeTree(new PredictedObjectID(11), Vector3.zero, true, taken, out _, out _), Is.False);
+            Assert.That(pool.TryTakeTree(new PredictedObjectID(11), 1, Vector3.zero, true, taken, out _, out _), Is.False);
 
-            Assert.That(pool.TryTakeTree(new PredictedObjectID(10), new Vector3(5, 0, 0), true, taken, out _, out var drifted), Is.False);
+            Assert.That(pool.TryTakeTree(new PredictedObjectID(10), 1, new Vector3(5, 0, 0), true, taken, out _, out var drifted), Is.False);
             Assert.That(drifted, Is.True, "an exact id at a drifted spawn position must report the drift");
 
-            Assert.That(pool.TryTakeTree(new PredictedObjectID(10), Vector3.zero, true, taken, out var rootGo, out _), Is.True);
+            Assert.That(pool.TryTakeTree(new PredictedObjectID(10), 1, Vector3.zero, true, taken, out var rootGo, out _), Is.True);
             Assert.That(rootGo, Is.EqualTo(tree));
             Assert.That(taken.Count, Is.EqualTo(1));
 
-            Assert.That(pool.TryTakeTree(new PredictedObjectID(10), Vector3.zero, true, taken, out _, out _), Is.False,
+            Assert.That(pool.TryTakeTree(new PredictedObjectID(10), 1, Vector3.zero, true, taken, out _, out _), Is.False,
                 "a taken entry must leave the pool");
         }
 
@@ -194,7 +194,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
             pool.PutTree(1, new PredictedObjectID(20), Vector3.zero, root, pieces, 0, true);
 
-            Assert.That(pool.TryTakePiece(new PredictedObjectID(21), out var takenMid), Is.True);
+            Assert.That(pool.TryTakePiece(new PredictedObjectID(21), 1, out var takenMid), Is.True);
             Assert.That(takenMid, Is.EqualTo(mid));
             Assert.That(takenMid.transform.parent, Is.Null, "the taken piece must leave the pooled tree");
             Assert.That(leaf.transform.parent, Is.Null, "the leaf stays pooled as its own entry, detached from the taken piece");
@@ -203,7 +203,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(pool.Contains(new PredictedObjectID(21)), Is.False);
             Assert.That(pool.Contains(new PredictedObjectID(20)), Is.True);
 
-            Assert.That(pool.TryTakePiece(new PredictedObjectID(22), out var takenLeaf), Is.True);
+            Assert.That(pool.TryTakePiece(new PredictedObjectID(22), 1, out var takenLeaf), Is.True);
             Assert.That(takenLeaf, Is.EqualTo(leaf));
         }
 

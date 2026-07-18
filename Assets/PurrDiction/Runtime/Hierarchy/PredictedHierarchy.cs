@@ -395,7 +395,7 @@ namespace PurrNet.Prediction
 
             if (hasRoot)
             {
-                if (!_pool.TryTakeTree(rootRecord.instanceId, rootRecord.spawnPosition, prefabId >= 0, _takenPiecesScratch, out rootGo, out var drifted))
+                if (!_pool.TryTakeTree(rootRecord.instanceId, prefabId, rootRecord.spawnPosition, prefabId >= 0, _takenPiecesScratch, out rootGo, out var drifted))
                 {
                     if (drifted || prefabId < 0)
                         _pool.TryTakeNearestCompleteTree(prefabId, rootRecord.spawnPosition, _takenPiecesScratch, out rootGo);
@@ -448,7 +448,7 @@ namespace PurrNet.Prediction
                 if (_pieceGoScratch.ContainsKey(k))
                     continue;
 
-                if (_pool.TryTakePiece(record.instanceId, out var pieceGo))
+                if (_pool.TryTakePiece(record.instanceId, prefabId, out var pieceGo))
                 {
                     _pieceGoScratch[k] = pieceGo;
                     _individuallyTakenScratch.Add(k);
@@ -598,7 +598,7 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            if (!_pool.TryTakePiece(record.instanceId, out var pieceGo))
+            if (!_pool.TryTakePiece(record.instanceId, record.prefabId, out var pieceGo))
             {
                 _donorNeededScratch.Clear();
                 _donorNeededScratch.Add(record);
@@ -1222,6 +1222,8 @@ namespace PurrNet.Prediction
             _isSceneObject.Clear();
             _runtimeParents.Clear();
             _reservedSceneObjects.Clear();
+            _pendingSceneReservations.Clear();
+            _pool.Clear(predictionManager);
         }
 
         public override void UpdateRollbackInterpolationState(float delta, bool accumulateError) { }

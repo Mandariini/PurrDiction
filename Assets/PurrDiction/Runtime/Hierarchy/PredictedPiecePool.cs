@@ -80,12 +80,13 @@ namespace PurrNet.Prediction
         /// spawn position drifted too far, it is left in place and foundButDrifted is set so the
         /// caller can fall back to a fuzzy complete-tree take.
         /// </summary>
-        public bool TryTakeTree(PredictedObjectID rootPieceId, Vector3 expectedSpawnPosition, bool checkDrift,
+        public bool TryTakeTree(PredictedObjectID rootPieceId, PackedInt prefabId, Vector3 expectedSpawnPosition, bool checkDrift,
             List<PooledPiece> resultPieces, out GameObject rootGo, out bool foundButDrifted)
         {
             foundButDrifted = false;
 
-            if (!_byPieceId.TryGetValue(rootPieceId, out var entry) || entry.rootPieceId.Equals(rootPieceId) == false)
+            if (!_byPieceId.TryGetValue(rootPieceId, out var entry) || entry.rootPieceId.Equals(rootPieceId) == false ||
+                entry.prefabId != prefabId)
             {
                 rootGo = null;
                 return false;
@@ -146,9 +147,9 @@ namespace PurrNet.Prediction
         /// Takes a single piece out of the pool, splitting its entry when the piece sits inside
         /// a pooled subtree: pooled pieces below it become their own entries and stay pooled.
         /// </summary>
-        public bool TryTakePiece(PredictedObjectID pieceId, out GameObject go)
+        public bool TryTakePiece(PredictedObjectID pieceId, PackedInt prefabId, out GameObject go)
         {
-            if (!_byPieceId.TryGetValue(pieceId, out var entry))
+            if (!_byPieceId.TryGetValue(pieceId, out var entry) || entry.prefabId != prefabId)
             {
                 go = null;
                 return false;
