@@ -155,17 +155,30 @@ public class PieceReconnectScenario : Scenario
     private async UniTask<ScenarioResult> FinishAndCompare(ScenarioContext ctx)
     {
         var pm = ctx.predictionManager;
+        pm.TryGetPrefab(PawnIdentity.pawnPrefab, out var pawnPrefabId);
 
         try
         {
             await UniTaskUtils.WaitWithTimeout(
-                () => PieceLifecycleScenario.EndShapeReached(pm),
+                () => PieceLifecycleScenario.EndShapeReached(pm) && PieceLifecycleScenario.ProbesStable(pm),
+                Timeout,
+                ctx.cancellationToken);
+
+            await UniTaskUtils.WaitWithTimeout(
+                () => PredictionTestUtils.CountInstances(pm, pawnPrefabId) >= ctx.expectedConnections,
+                Timeout,
+                ctx.cancellationToken);
+
+            await UniTaskUtils.WaitWithTimeout(
+                () => PawnIdentity.AllStable(pm, pawnPrefabId),
                 Timeout,
                 ctx.cancellationToken);
         }
         catch (TimeoutException)
         {
-            return ScenarioResult.Fail($"decomposed shape never re-stabilized: {PieceLifecycleScenario.DescribeShape(pm)}");
+            return ScenarioResult.Fail(
+                $"decomposed shape never re-stabilized: {PieceLifecycleScenario.DescribeShape(pm)} " +
+                $"pawns={PredictionTestUtils.CountInstances(pm, pawnPrefabId)}/{ctx.expectedConnections} pawnsStable={PawnIdentity.AllStable(pm, pawnPrefabId)}");
         }
 
         await UniTask.WaitForSeconds(SettleSeconds, cancellationToken: ctx.cancellationToken);

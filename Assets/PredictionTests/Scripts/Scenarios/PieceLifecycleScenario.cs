@@ -71,13 +71,13 @@ public class PieceLifecycleScenario : Scenario
         try
         {
             await UniTaskUtils.WaitWithTimeout(
-                () => EndShapeReached(pm),
+                () => EndShapeReached(pm) && ProbesStable(pm),
                 Timeout,
                 ctx.cancellationToken);
         }
         catch (TimeoutException)
         {
-            return ScenarioResult.Fail($"piece lifecycle timeout: {DescribeShape(pm)}");
+            return ScenarioResult.Fail($"piece lifecycle timeout: {DescribeShape(pm)} probesStable={ProbesStable(pm)}");
         }
 
         await UniTask.WaitForSeconds(SettleSeconds, cancellationToken: ctx.cancellationToken);
@@ -174,7 +174,25 @@ public class PieceLifecycleScenario : Scenario
         var sb = new StringBuilder();
         sb.Append(PredictionTestUtils.WorldDigest(ctx, counter));
         PredictionTestUtils.AppendIdentities<PieceProbe>(pm, rigPrefabId, sb,
-            probe => ((long)probe.currentState.ticksAlive - (long)pm.time.tick).ToString());
+            probe => probe.currentState.ticksAlive.ToString());
         return sb.ToString();
+    }
+
+    internal static bool ProbesStable(PredictionManager pm)
+    {
+        ref var state = ref pm.hierarchy.currentState;
+
+        for (var i = 0; i < state.spawnedPrefabs.Count; i++)
+        {
+            var record = state.spawnedPrefabs[i];
+            if (record.prefabId != rigPrefabId)
+                continue;
+
+            if (record.instanceId.TryGetComponent<PieceProbe>(pm, out var probe) &&
+                probe.currentState.ticksAlive < PieceProbe.TickCap)
+                return false;
+        }
+
+        return true;
     }
 }

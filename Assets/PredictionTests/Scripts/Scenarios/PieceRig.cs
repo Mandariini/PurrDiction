@@ -3,6 +3,8 @@ using UnityEngine;
 
 public class PieceProbe : PredictedIdentity<PieceProbe.ProbeState>
 {
+    public const uint TickCap = 150;
+
     public struct ProbeState : IPredictedData<ProbeState>
     {
         public uint ticksAlive;
@@ -12,7 +14,8 @@ public class PieceProbe : PredictedIdentity<PieceProbe.ProbeState>
 
     protected override void Simulate(ref ProbeState state, float delta)
     {
-        state.ticksAlive += 1;
+        if (state.ticksAlive < TickCap)
+            state.ticksAlive += 1;
     }
 }
 
