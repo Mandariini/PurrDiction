@@ -5,12 +5,6 @@ using PurrNet;
 using PurrNet.Prediction;
 using UnityEngine;
 
-/// <summary>
-/// Spawns two compound piece rigs, lets them reparent a piece across prefab
-/// boundaries, delete a piece subtree and delete a whole root while a reparented
-/// orphan survives, then asserts the decomposed shape, the intactness of
-/// serialized cross-piece references and digest convergence across all peers.
-/// </summary>
 public class PieceLifecycleScenario : Scenario
 {
     private const int DigestChannel = 1300;

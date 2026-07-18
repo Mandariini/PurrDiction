@@ -31,14 +31,6 @@ public static class PieceReconnectSignals
     }
 }
 
-/// <summary>
-/// Runs after PieceLifecycleScenario left a decomposed world (pruned pieces, a
-/// cross-prefab reparent deviation and a promoted orphan). A victim client
-/// disconnects and rejoins, forcing a full-state rebuild of that shape: the rig is
-/// re-instantiated whole and pruned, the orphan is rebuilt from a donor, and the
-/// parent deviation is reapplied. Asserts serialized cross-piece references survive
-/// the rebuild and that digests converge across all peers.
-/// </summary>
 public class PieceReconnectScenario : Scenario
 {
     private const int DigestChannel = 1400;

@@ -19,13 +19,6 @@ public class PieceProbe : PredictedIdentity<PieceProbe.ProbeState>
     }
 }
 
-/// <summary>
-/// Driver for the compound piece-hierarchy prefab. Two rigs pair up deterministically;
-/// the target rig reparents its armC piece under the actor rig, the actor deletes its
-/// own armB subtree, and finally the target deletes its whole root while the reparented
-/// armC survives as a promoted orphan. All steps run inside Simulate so replays and
-/// rollbacks re-execute them through the piece reconcile machinery.
-/// </summary>
 public class PieceRigRoot : PredictedIdentity<PieceRigRoot.RigState>
 {
     public PieceProbe armA;

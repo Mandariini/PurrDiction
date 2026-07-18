@@ -28,11 +28,6 @@ namespace PurrNet.Prediction
         }
     }
 
-    /// <summary>
-    /// Immutable description of the identity-bearing pieces of a prefab (or scene root),
-    /// indexed by pieceIndex in preorder depth-first traversal. Piece 0 is always the root.
-    /// Derived from the authored asset, never sent over the wire.
-    /// </summary>
     internal sealed class PiecePrototype
     {
         public readonly PrototypePiece[] pieces;
@@ -121,11 +116,6 @@ namespace PurrNet.Prediction
             static bool HasPieceAtDepth(Transform t) => t.TryGetComponent<PredictedIdentity>(out _);
         }
 
-        /// <summary>
-        /// Reattaches a piece transform at its authored location under the given parent piece,
-        /// descending through non-predicted intermediate transforms via the inverse sibling path.
-        /// Falls back to attaching directly under the parent when the path no longer resolves.
-        /// </summary>
         public static void AttachAtPath(Transform parent, Transform piece, int[] inversedPath, bool worldPositionStays)
         {
             if (inversedPath == null || inversedPath.Length == 0)
@@ -158,11 +148,6 @@ namespace PurrNet.Prediction
             piece.SetSiblingIndex(targetSiblingIndex);
         }
 
-        /// <summary>
-        /// Collects the identity-bearing GameObjects of an instantiated copy in the same
-        /// preorder traversal used by Build, so results[k] corresponds to pieceIndex k.
-        /// Returns false when the discovered piece count differs from the prototype.
-        /// </summary>
         public bool TryCollectInstancePieces(GameObject instanceRoot, List<GameObject> results, HashSet<Transform> boundaries = null)
         {
             results.Clear();
