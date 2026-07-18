@@ -239,6 +239,10 @@ namespace PurrNet.Prediction
         protected virtual void OnTransformParentChanged()
         {
             RefreshResolvedPredictionPolicy();
+
+            var manager = predictionManager;
+            if (manager && manager.hierarchy)
+                manager.hierarchy.NotifyInstanceParentChanged(gameObject);
         }
 
         /// <summary>

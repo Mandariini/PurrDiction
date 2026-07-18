@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using PurrNet.Packing;
 using UnityEngine;
 
@@ -11,14 +11,21 @@ namespace PurrNet.Prediction
         public readonly Vector3 spawnPosition;
         public readonly Quaternion spawnRotation;
         public readonly PlayerID? owner;
+        public readonly PredictedComponentID? parent;
 
         public InstanceDetails(int prefabId, PredictedObjectID instanceId, Vector3 spawnPosition, Quaternion spawnRotation, PlayerID? owner)
+            : this(prefabId, instanceId, spawnPosition, spawnRotation, owner, null)
+        {
+        }
+
+        public InstanceDetails(int prefabId, PredictedObjectID instanceId, Vector3 spawnPosition, Quaternion spawnRotation, PlayerID? owner, PredictedComponentID? parent)
         {
             this.prefabId = prefabId;
             this.instanceId = instanceId;
             this.spawnPosition = spawnPosition;
             this.spawnRotation = spawnRotation;
             this.owner = owner;
+            this.parent = parent;
         }
 
         static bool Vector3CloseEnough(Vector3 a, Vector3 b)
@@ -35,7 +42,8 @@ namespace PurrNet.Prediction
         {
             return prefabId == other.prefabId && instanceId.Equals(other.instanceId) &&
                    spawnPosition.Equals(other.spawnPosition) &&
-                   spawnRotation.Equals(other.spawnRotation) && owner == other.owner;
+                   spawnRotation.Equals(other.spawnRotation) && owner == other.owner &&
+                   Nullable.Equals(parent, other.parent);
         }
 
         public override bool Equals(object obj)
@@ -45,12 +53,12 @@ namespace PurrNet.Prediction
 
         public override int GetHashCode()
         {
-            return HashCode.Combine(prefabId, instanceId, spawnPosition, spawnRotation, owner);
+            return HashCode.Combine(prefabId, instanceId, spawnPosition, spawnRotation, owner, parent);
         }
 
         public override string ToString()
         {
-            return $"id: {instanceId}, {spawnPosition} | {spawnRotation}\n";
+            return $"id: {instanceId}, {spawnPosition} | {spawnRotation}{(parent.HasValue ? $" | parent: {parent.Value}" : string.Empty)}\n";
         }
     }
 }

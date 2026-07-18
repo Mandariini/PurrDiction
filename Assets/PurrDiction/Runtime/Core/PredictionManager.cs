@@ -223,9 +223,11 @@ namespace PurrNet.Prediction
                     if (roots.Add(root))
                     {
                         if (!_poolParent || root.transform.root != _poolParent.transform)
-                            hierarchy.RegisterSceneObject(root, pid--);
+                            hierarchy.ReserveSceneObject(root, pid--);
                     }
                 }
+
+                hierarchy.RegisterReservedSceneObjects();
             }
 
             HashSetPool<GameObject>.Destroy(roots);
@@ -338,10 +340,30 @@ namespace PurrNet.Prediction
             return system;
         }
 
+        private static readonly List<PredictedIdentity> _perObjectIdentityCache = new ();
+
+        internal void CollectOwnedIdentities(GameObject root, List<PredictedIdentity> result)
+        {
+            CollectOwnedIdentities(root.transform, true, result);
+        }
+
+        private void CollectOwnedIdentities(Transform current, bool isRoot, List<PredictedIdentity> result)
+        {
+            if (!isRoot && hierarchy && hierarchy.IsInstanceRoot(current.gameObject))
+                return;
+
+            current.GetComponents(_perObjectIdentityCache);
+            result.AddRange(_perObjectIdentityCache);
+
+            int count = current.childCount;
+            for (int i = 0; i < count; i++)
+                CollectOwnedIdentities(current.GetChild(i), false, result);
+        }
+
         public void RegisterInstance(GameObject go, PredictedObjectID objectID, PlayerID? owner, bool reset, bool triggedOnRemovedFromPool)
         {
             var components = ListPool<PredictedIdentity>.Instantiate();
-            go.GetComponentsInChildren(true, components);
+            CollectOwnedIdentities(go, components);
             int count = components.Count;
 
             for (uint i = 0; i < count; i++)
@@ -376,7 +398,7 @@ namespace PurrNet.Prediction
                 return;
 
             var components = ListPool<PredictedIdentity>.Instantiate();
-            go.GetComponentsInChildren(true, components);
+            CollectOwnedIdentities(go, components);
 
             for (var i = 0; i < components.Count; i++)
             {
@@ -398,7 +420,7 @@ namespace PurrNet.Prediction
             if (!go) return;
 
             var components = ListPool<PredictedIdentity>.Instantiate();
-            go.GetComponentsInChildren(true, components);
+            CollectOwnedIdentities(go, components);
 
             for (var i = 0; i < components.Count; i++)
             {
@@ -1639,8 +1661,12 @@ namespace PurrNet.Prediction
             UpdateView();
         }
 
+        internal uint viewPassId { get; private set; }
+
         private void UpdateView()
         {
+            viewPassId++;
+
             var updateViewMarker = UpdateViewMarker.Auto();
             try
             {
@@ -1804,7 +1830,7 @@ namespace PurrNet.Prediction
 
             var children = ListPool<PredictedIdentity>.Instantiate();
 
-            rootGo.GetComponentsInChildren(true, children);
+            CollectOwnedIdentities(rootGo, children);
 
             for (var i = 0; i < children.Count; i++)
             {

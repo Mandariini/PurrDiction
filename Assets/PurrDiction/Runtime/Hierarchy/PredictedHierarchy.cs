@@ -12,6 +12,9 @@ namespace PurrNet.Prediction
         readonly Dictionary<PredictedObjectID, GameObject> _instanceMap = new ();
         readonly Dictionary<GameObject, PredictedObjectID> _goToId = new ();
         readonly HashSet<PredictedObjectID> _isSceneObject = new ();
+        readonly Dictionary<PredictedObjectID, PredictedComponentID> _runtimeParents = new ();
+        readonly Dictionary<PredictedObjectID, PredictedComponentID> _desiredParentsScratch = new ();
+        readonly List<PredictedObjectID> _reservedSceneObjects = new ();
 
         private uint _nextInstanceId = 2;
 
@@ -20,6 +23,7 @@ namespace PurrNet.Prediction
             var state = new PredictedHierarchyState(
                 DisposableList<InstanceDetails>.Create(16),
                 DisposableList<PredictedObjectID>.Create(16),
+                DisposableList<InstanceParent>.Create(16),
                 _nextInstanceId);
             return state;
         }
@@ -34,6 +38,15 @@ namespace PurrNet.Prediction
 
             for (var i = 0; i < count; i++)
                 state.spawnedPrefabs.Add(_spawnedPrefabs[i]);
+
+            state.parents.Clear();
+
+            for (var i = 0; i < count; i++)
+            {
+                var instanceId = _spawnedPrefabs[i].instanceId;
+                if (_runtimeParents.TryGetValue(instanceId, out var parentLink))
+                    state.parents.Add(new InstanceParent(instanceId, parentLink));
+            }
 
             state.nextInstanceId = _nextInstanceId;
         }
@@ -53,7 +66,7 @@ namespace PurrNet.Prediction
                             var details = op.values[j];
                             var pid = details.prefabId;
                             var instanceId = details.instanceId;
-                            var goId = CreateInsertedWithID(instanceId.instanceId.value, _spawnedPrefabs.Count, pid, details.spawnPosition, details.spawnRotation, details.owner);
+                            var goId = CreateInsertedWithID(instanceId.instanceId.value, _spawnedPrefabs.Count, pid, details.spawnPosition, details.spawnRotation, details.owner, details.parent);
                             if (!goId.HasValue)
                                 PurrLogger.LogError($"Mismatch: Failed to create prefab {pid}");
                         }
@@ -71,7 +84,7 @@ namespace PurrNet.Prediction
                             var pid = details.prefabId;
                             var instanceId = details.instanceId;
                             var goId = CreateInsertedWithID(instanceId.instanceId.value, insertIndex, pid, details.spawnPosition, details.spawnRotation,
-                                details.owner);
+                                details.owner, details.parent);
                             if (!goId.HasValue)
                                 PurrLogger.LogError($"Mismatch: Failed to create prefab {pid}");
                         }
@@ -88,6 +101,7 @@ namespace PurrNet.Prediction
                             if (_instanceMap.Remove(details.instanceId, out var instance) && instance)
                             {
                                 _goToId.Remove(instance);
+                                _runtimeParents.Remove(details.instanceId);
                                 Delete(details, instance, true, false);
                             }
                             else
@@ -115,9 +129,49 @@ namespace PurrNet.Prediction
             var actions = MyersDiff.Diff(_spawnedPrefabs, state.spawnedPrefabs);
 
             Apply(_spawnedPrefabs, actions);
+            ApplyParents(state.parents);
 
             _nextInstanceId = state.nextInstanceId;
             _isRollingBack = false;
+        }
+
+        private void ApplyParents(DisposableList<InstanceParent> parents)
+        {
+            _desiredParentsScratch.Clear();
+
+            if (!parents.isDisposed)
+            {
+                for (var i = 0; i < parents.Count; i++)
+                {
+                    var link = parents[i];
+                    _desiredParentsScratch[link.child] = link.parent;
+                }
+            }
+
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+            {
+                var instanceId = _spawnedPrefabs[i].instanceId;
+
+                if (!_instanceMap.TryGetValue(instanceId, out var go) || !go)
+                    continue;
+
+                bool hasDesired = _desiredParentsScratch.TryGetValue(instanceId, out var desired);
+                bool hasCurrent = _runtimeParents.TryGetValue(instanceId, out var current);
+
+                if (hasDesired == hasCurrent && (!hasDesired || desired.Equals(current)))
+                    continue;
+
+                if (hasDesired && predictionManager.TryGetIdentity(desired, out var parentIdentity) && parentIdentity)
+                {
+                    go.transform.SetParent(parentIdentity.transform, true);
+                    _runtimeParents[instanceId] = desired;
+                }
+                else
+                {
+                    go.transform.SetParent(null, true);
+                    _runtimeParents.Remove(instanceId);
+                }
+            }
         }
 
         public PredictedObjectID? Create(int prefabId, PlayerID? owner = null)
@@ -137,10 +191,24 @@ namespace PurrNet.Prediction
         }
 
         PredictedObjectID? CreateInsertedWithID(uint iid, int index, int prefabId, Vector3 position, Quaternion rotation,
-            PlayerID? owner = null)
+            PlayerID? owner = null, PredictedComponentID? parent = null)
         {
             var instanceId = new PredictedObjectID(iid);
-            var key = new InstanceDetails(prefabId, instanceId, position, rotation, owner);
+            var key = new InstanceDetails(prefabId, instanceId, position, rotation, owner, parent);
+
+            Transform parentTrs = null;
+
+            if (parent.HasValue)
+            {
+                if (predictionManager.TryGetIdentity(parent.Value, out var parentIdentity) && parentIdentity)
+                {
+                    parentTrs = parentIdentity.transform;
+                }
+                else
+                {
+                    PurrLogger.LogError($"Failed to resolve spawn parent {parent.Value} for prefab {prefabId}; spawning unparented.");
+                }
+            }
 
             GameObject go;
 
@@ -150,7 +218,9 @@ namespace PurrNet.Prediction
             {
                 go = instance;
                 if (!PreservesSoftCorrectionRootPose(instance, instanceId))
-                    go.transform.SetPositionAndRotation(position, rotation);
+                    ApplySpawnPose(go.transform, parentTrs, position, rotation);
+                else if (parentTrs)
+                    go.transform.SetParent(parentTrs, true);
                 predictionManager.RegisterInstance(go, instanceId, owner, false, false);
                 go.SetActive(true);
             }
@@ -158,7 +228,9 @@ namespace PurrNet.Prediction
             {
                 go = sceneObj;
                 if (!PreservesSoftCorrectionRootPose(sceneObj, instanceId))
-                    go.transform.SetPositionAndRotation(position, rotation);
+                    ApplySpawnPose(go.transform, parentTrs, position, rotation);
+                else if (parentTrs)
+                    go.transform.SetParent(parentTrs, true);
                 predictionManager.RegisterInstance(go, instanceId, owner, false, false);
                 go.SetActive(true);
             }
@@ -170,7 +242,13 @@ namespace PurrNet.Prediction
                     return default;
                 }
 
-                go = predictionManager.InternalCreate(prefab, position, rotation, instanceId, owner);
+                var worldPosition = parentTrs ? parentTrs.TransformPoint(position) : position;
+                var worldRotation = parentTrs ? parentTrs.rotation * rotation : rotation;
+
+                go = predictionManager.InternalCreate(prefab, worldPosition, worldRotation, instanceId, owner);
+
+                if (parentTrs)
+                    ApplySpawnPose(go.transform, parentTrs, position, rotation);
             }
 
             if (_instanceMap.Remove(instanceId, out var other))
@@ -180,6 +258,8 @@ namespace PurrNet.Prediction
             _goToId[go] = instanceId;
             _spawnedPrefabs.Insert(index, key);
 
+            NotifyInstanceParentChanged(go);
+
             if (!_isRollingBack && !predictionManager.isSimulating)
             {
                 ref var state = ref currentState;
@@ -187,6 +267,73 @@ namespace PurrNet.Prediction
             }
 
             return instanceId;
+        }
+
+        private static void ApplySpawnPose(Transform trs, Transform parent, Vector3 position, Quaternion rotation)
+        {
+            if (parent)
+            {
+                trs.SetParent(parent, false);
+                trs.localPosition = position;
+                trs.localRotation = rotation;
+            }
+            else
+            {
+                trs.SetPositionAndRotation(position, rotation);
+            }
+        }
+
+        internal bool IsInstanceRoot(GameObject go)
+        {
+            return _goToId.ContainsKey(go);
+        }
+
+        internal void NotifyInstanceParentChanged(GameObject go)
+        {
+            if (!_goToId.TryGetValue(go, out var instanceId))
+                return;
+
+            if (TryResolveParentLink(go, out var parentLink))
+                _runtimeParents[instanceId] = parentLink;
+            else
+                _runtimeParents.Remove(instanceId);
+        }
+
+        private bool TryResolveParentLink(GameObject go, out PredictedComponentID parent)
+        {
+            var current = go.transform.parent;
+
+            while (current != null)
+            {
+                if (current.TryGetComponent(out PredictedIdentity identity) &&
+                    ReferenceEquals(identity.predictionManager, predictionManager))
+                {
+                    parent = identity.id;
+                    return true;
+                }
+
+                current = current.parent;
+            }
+
+            parent = default;
+            return false;
+        }
+
+        private void RescueForeignChildren(Transform trs)
+        {
+            for (int i = trs.childCount - 1; i >= 0; i--)
+            {
+                var child = trs.GetChild(i);
+
+                if (_goToId.TryGetValue(child.gameObject, out var childId))
+                {
+                    child.SetParent(null, true);
+                    _runtimeParents.Remove(childId);
+                    continue;
+                }
+
+                RescueForeignChildren(child);
+            }
         }
 
         private bool PreservesSoftCorrectionRootPose(GameObject instance, PredictedObjectID instanceId)
@@ -203,6 +350,42 @@ namespace PurrNet.Prediction
         public PredictedObjectID? Create(int prefabId, Vector3 position, Quaternion rotation, PlayerID? owner = null)
         {
             return CreateInsertedWithID(_nextInstanceId++, _spawnedPrefabs.Count, prefabId, position, rotation, owner);
+        }
+
+        /// <summary>
+        /// Spawns a prefab parented under the transform of the given predicted component.
+        /// The position and rotation are local to that parent. The parent link is part of
+        /// predicted state: rollbacks, replays and late joins restore it automatically.
+        /// </summary>
+        public PredictedObjectID? CreateChild(int prefabId, Vector3 localPosition, Quaternion localRotation, PredictedComponentID parent, PlayerID? owner = null)
+        {
+            return CreateInsertedWithID(_nextInstanceId++, _spawnedPrefabs.Count, prefabId, localPosition, localRotation, owner, parent);
+        }
+
+        /// <summary>
+        /// Spawns a prefab parented under the transform of the given predicted component.
+        /// The position and rotation are local to that parent. The parent link is part of
+        /// predicted state: rollbacks, replays and late joins restore it automatically.
+        /// </summary>
+        public PredictedObjectID? CreateChild(GameObject prefab, Vector3 localPosition, Quaternion localRotation, PredictedComponentID parent, PlayerID? owner = null)
+        {
+            if (!predictionManager.TryGetPrefab(prefab, out var pid))
+                return default;
+
+            return CreateChild(pid, localPosition, localRotation, parent, owner);
+        }
+
+        /// <summary>
+        /// Spawns a prefab parented under the given predicted identity.
+        /// The position and rotation are local to that parent. The parent link is part of
+        /// predicted state: rollbacks, replays and late joins restore it automatically.
+        /// </summary>
+        public PredictedObjectID? CreateChild(GameObject prefab, Vector3 localPosition, Quaternion localRotation, PredictedIdentity parent, PlayerID? owner = null)
+        {
+            if (!parent)
+                return Create(prefab, localPosition, localRotation, owner);
+
+            return CreateChild(prefab, localPosition, localRotation, parent.id, owner);
         }
 
         readonly Dictionary<int, PredictedTickPool> _prefabToPool = new ();
@@ -229,7 +412,7 @@ namespace PurrNet.Prediction
             foreach (var (pid, pool) in _prefabToPool)
             {
                 if (pid < 0)
-                    return;
+                    continue;
 
                 pool.ClearOld(predictionManager);
             }
@@ -246,7 +429,7 @@ namespace PurrNet.Prediction
             foreach (var (pid, pool) in _prefabToPool)
             {
                 if (pid < 0)
-                    return;
+                    continue;
 
                 pool.Clear(predictionManager);
             }
@@ -254,6 +437,8 @@ namespace PurrNet.Prediction
 
         private void Delete(InstanceDetails details, GameObject go, bool canPool, bool triggerDestroyEvent)
         {
+            RescueForeignChildren(go.transform);
+
             if (!canPool)
             {
                 predictionManager.InternalDelete(details.prefabId, go);
@@ -264,6 +449,9 @@ namespace PurrNet.Prediction
 
             if (pool.Put(details, go, predictionManager.localTick))
             {
+                if (TryResolveParentLink(go, out _))
+                    go.transform.SetParent(null, true);
+
                 predictionManager.UnregisterInstance(go, false, triggerDestroyEvent);
                 go.SetActive(false);
             }
@@ -273,7 +461,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        internal void RegisterSceneObject(GameObject root, int pid)
+        internal void ReserveSceneObject(GameObject root, int pid)
         {
             var instanceId = new PredictedObjectID(_nextInstanceId++);
             var key = new InstanceDetails(pid, instanceId, root.transform.position, root.transform.rotation, null);
@@ -282,8 +470,26 @@ namespace PurrNet.Prediction
             _instanceMap.Add(instanceId, root);
             _goToId.Add(root, instanceId);
             _spawnedPrefabs.Add(key);
+            _reservedSceneObjects.Add(instanceId);
+        }
 
-            predictionManager.RegisterInstance(root, instanceId, null, false, false);
+        internal void RegisterReservedSceneObjects()
+        {
+            for (var i = 0; i < _reservedSceneObjects.Count; i++)
+            {
+                var instanceId = _reservedSceneObjects[i];
+                if (_instanceMap.TryGetValue(instanceId, out var root) && root)
+                    predictionManager.RegisterInstance(root, instanceId, null, false, false);
+            }
+
+            for (var i = 0; i < _reservedSceneObjects.Count; i++)
+            {
+                var instanceId = _reservedSceneObjects[i];
+                if (_instanceMap.TryGetValue(instanceId, out var root) && root)
+                    NotifyInstanceParentChanged(root);
+            }
+
+            _reservedSceneObjects.Clear();
         }
 
         public PredictedObjectID? Create(GameObject prefab, PlayerID? owner = null)
@@ -397,6 +603,7 @@ namespace PurrNet.Prediction
 
             var isVerified = predictionManager.isVerified;
             _goToId.Remove(instance);
+            _runtimeParents.Remove(id);
 
             var count = _spawnedPrefabs.Count;
             for (var i = 0; i < count; i++)
@@ -460,8 +667,10 @@ namespace PurrNet.Prediction
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
             {
                 var instance = _spawnedPrefabs[i];
-                if (!_instanceMap.TryGetValue(instance.instanceId, out var go))
+                if (!_instanceMap.TryGetValue(instance.instanceId, out var go) || !go)
                     continue;
+
+                RescueForeignChildren(go.transform);
 
                 if (_isSceneObject.Contains(instance.instanceId))
                 {
@@ -476,6 +685,8 @@ namespace PurrNet.Prediction
             _goToId.Clear();
             _spawnedPrefabs.Clear();
             _isSceneObject.Clear();
+            _runtimeParents.Clear();
+            _reservedSceneObjects.Clear();
         }
 
         public override void UpdateRollbackInterpolationState(float delta, bool accumulateError) { }

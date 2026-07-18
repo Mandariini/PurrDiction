@@ -21,6 +21,16 @@ namespace PurrNet.Prediction
 
         private Transform _originalGraphicsParent;
 
+        private PredictedTransform _viewParent;
+        private bool _viewParentDirty = true;
+        private PredictedTransform _activeViewFrame;
+        private bool _hasActiveViewFrame;
+        private Vector3 _viewWorldPosition;
+        private Quaternion _viewWorldRotation = Quaternion.identity;
+        private uint _viewWorldPass = uint.MaxValue;
+        private uint _lastViewPass = uint.MaxValue;
+        private float _lastViewDeltaTime;
+
         public Transform graphics => _graphics;
 
 #if UNITY_PHYSICS_3D
@@ -47,6 +57,13 @@ namespace PurrNet.Prediction
         {
             base.ResetState();
             ClearSoftCorrection();
+
+            _viewParent = null;
+            _viewParentDirty = true;
+            _activeViewFrame = null;
+            _hasActiveViewFrame = false;
+            _viewWorldPass = uint.MaxValue;
+            _lastViewPass = uint.MaxValue;
 
             if (_graphics)
                 _graphics.SetPositionAndRotation(transform.position, transform.rotation);
@@ -250,13 +267,126 @@ namespace PurrNet.Prediction
 
         public override void ResetInterpolation()
         {
-            base.ResetInterpolation();
+            if (_hasActiveViewFrame && _activeViewFrame)
+            {
+                var state = currentState;
+                WorldToViewFrame(_activeViewFrame.currentState, ref state.unityPosition, ref state.unityRotation);
+                TeleportViewState(state);
+            }
+            else
+            {
+                base.ResetInterpolation();
+            }
+
             _accumulatedPositionError = default;
             _accumulatedRotationError = Quaternion.identity;
             _viewState = null;
             _oldPrediction = default;
             _teleportNextFrame = true;
             ClearSoftCorrection();
+        }
+
+        protected override void OnTransformParentChanged()
+        {
+            base.OnTransformParentChanged();
+            _viewParentDirty = true;
+        }
+
+        protected override void OnViewInterpolationReset()
+        {
+            _viewParent = null;
+            _viewParentDirty = true;
+            _activeViewFrame = null;
+            _hasActiveViewFrame = false;
+            _accumulatedPositionError = default;
+            _accumulatedRotationError = Quaternion.identity;
+            _viewState = null;
+            _oldPrediction = default;
+        }
+
+        /// <summary>
+        /// Forces the view parent to be re-resolved on the next tick. Only needed when the
+        /// chain of plain transforms between this object and its nearest predicted ancestor
+        /// is restructured without this object's own parent changing.
+        /// </summary>
+        public void RefreshViewParent()
+        {
+            _viewParentDirty = true;
+        }
+
+        private PredictedTransform ResolveViewParent()
+        {
+            if (!_viewParentDirty)
+            {
+                if (ReferenceEquals(_viewParent, null))
+                    return null;
+                if (_viewParent)
+                    return _viewParent;
+            }
+
+            _viewParent = null;
+            bool sawUnregistered = false;
+            var current = transform.parent;
+
+            while (current != null)
+            {
+                if (current.TryGetComponent(out PredictedTransform candidate))
+                {
+                    if (ReferenceEquals(candidate.predictionManager, predictionManager))
+                        _viewParent = candidate;
+                    else
+                        sawUnregistered = true;
+                    break;
+                }
+
+                current = current.parent;
+            }
+
+            _viewParentDirty = sawUnregistered && ReferenceEquals(_viewParent, null);
+            return _viewParent;
+        }
+
+        private static void WorldToViewFrame(in PredictedTransformState frame, ref Vector3 position, ref Quaternion rotation)
+        {
+            var inverse = Quaternion.Inverse(frame.unityRotation);
+            position = inverse * (position - frame.unityPosition);
+            rotation = inverse * rotation;
+        }
+
+        private static void ViewFrameToWorld(in Vector3 framePosition, in Quaternion frameRotation, ref Vector3 position, ref Quaternion rotation)
+        {
+            position = framePosition + frameRotation * position;
+            rotation = frameRotation * rotation;
+        }
+
+        private void UpdateActiveViewFrame(ref PredictedTransformState state)
+        {
+            var parent = ResolveViewParent();
+
+            if (!ReferenceEquals(parent, _activeViewFrame))
+            {
+                _activeViewFrame = parent;
+                _hasActiveViewFrame = !ReferenceEquals(parent, null);
+
+                _viewState = null;
+                _oldPrediction = default;
+                _accumulatedPositionError = default;
+                _accumulatedRotationError = Quaternion.identity;
+
+                var teleport = state;
+                if (_hasActiveViewFrame)
+                {
+                    parent.GetLatestUnityState();
+                    WorldToViewFrame(parent.currentState, ref teleport.unityPosition, ref teleport.unityRotation);
+                }
+                TeleportViewState(teleport);
+            }
+
+            if (_hasActiveViewFrame && _activeViewFrame)
+            {
+                _activeViewFrame.GetLatestUnityState();
+                WorldToViewFrame(_activeViewFrame.currentState, ref state.unityPosition, ref state.unityRotation);
+            }
         }
 
         protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
@@ -343,7 +473,11 @@ namespace PurrNet.Prediction
 
             if (snap && _interpolationSettings && _interpolationSettings.useInterpolation)
             {
-                _accumulatedPositionError += positionStep;
+                var viewPositionStep = positionStep;
+                if (_hasActiveViewFrame && _activeViewFrame)
+                    viewPositionStep = Quaternion.Inverse(_activeViewFrame.currentState.unityRotation) * viewPositionStep;
+
+                _accumulatedPositionError += viewPositionStep;
                 _accumulatedRotationError = _accumulatedRotationError * rotationStep;
             }
 
@@ -391,6 +525,8 @@ namespace PurrNet.Prediction
 
         protected override void ModifyRollbackViewState(ref PredictedTransformState state, float delta, bool accumulateError)
         {
+            UpdateActiveViewFrame(ref state);
+
             bool _smoothCorrections = _interpolationSettings && _interpolationSettings.useInterpolation;
 
             if (!_smoothCorrections)
@@ -407,7 +543,7 @@ namespace PurrNet.Prediction
             var rotationInterpolation = _interpolationSettings.rotationInterpolation;
 
             var lastView = _viewState.Value;
-            var lastPrediction = currentState;
+            var lastPrediction = state;
             var oldPrediction = _oldPrediction;
             var newView = lastView;
 
@@ -501,13 +637,75 @@ namespace PurrNet.Prediction
             };
         }
 
+        internal override void UpdateView(float deltaTime)
+        {
+            if (predictionManager == null)
+            {
+                base.UpdateView(deltaTime);
+                return;
+            }
+
+            var pass = predictionManager.viewPassId;
+            if (_lastViewPass == pass)
+                return;
+
+            _lastViewPass = pass;
+            _lastViewDeltaTime = deltaTime;
+            base.UpdateView(deltaTime);
+        }
+
+        internal void GetViewWorldPose(float deltaTime, out Vector3 position, out Quaternion rotation)
+        {
+            if (predictionManager != null)
+            {
+                UpdateView(deltaTime);
+
+                if (_viewWorldPass == predictionManager.viewPassId)
+                {
+                    position = _viewWorldPosition;
+                    rotation = _viewWorldRotation;
+                    return;
+                }
+            }
+
+            position = currentState.unityPosition;
+            rotation = currentState.unityRotation;
+        }
+
+        /// <summary>
+        /// Returns the interpolated world-space view pose of this transform for the current
+        /// view pass, composing through predicted parents when this object is nested.
+        /// </summary>
+        public void GetViewWorldPose(out Vector3 position, out Quaternion rotation)
+            => GetViewWorldPose(0f, out position, out rotation);
+
+        private void ComposeViewPose(in PredictedTransformState viewState)
+        {
+            var position = viewState.unityPosition;
+            var rotation = viewState.unityRotation;
+
+            if (_hasActiveViewFrame && _activeViewFrame)
+            {
+                _activeViewFrame.GetViewWorldPose(_lastViewDeltaTime, out var framePosition, out var frameRotation);
+                ViewFrameToWorld(framePosition, frameRotation, ref position, ref rotation);
+            }
+
+            _viewWorldPosition = position;
+            _viewWorldRotation = rotation;
+
+            if (predictionManager != null)
+                _viewWorldPass = predictionManager.viewPassId;
+        }
+
         protected override void UpdateView(PredictedTransformState viewState, PredictedTransformState? verified)
         {
+            ComposeViewPose(in viewState);
+
             if (!_hasView)
                 return;
 
             if (updateGraphics)
-                _graphics.SetPositionAndRotation(viewState.unityPosition, viewState.unityRotation);
+                _graphics.SetPositionAndRotation(_viewWorldPosition, _viewWorldRotation);
         }
     }
 }
