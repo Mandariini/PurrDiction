@@ -61,6 +61,9 @@ public class PredictionBootstrap : Scenario
         if (CommandLineUtils.HasFlag("-includeHistoryStressScenario"))
             gameObject.AddComponent<HistoryStressScenario>();
 
+        gameObject.AddComponent<PieceLifecycleScenario>();
+        gameObject.AddComponent<PieceReconnectScenario>();
+
         bool policyRegressionsOnly = CommandLineUtils.HasFlag("-policyRegressionScenariosOnly");
         var policyRegressionScenarios = AddPolicyRegressionScenarios();
 
