@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using PurrNet.Logging;
-using PurrNet.Packing;
 using PurrNet.Pooling;
 using UnityEngine;
 
@@ -13,8 +12,6 @@ namespace PurrNet.Prediction
         readonly Dictionary<PredictedObjectID, GameObject> _instanceMap = new ();
         readonly Dictionary<GameObject, PredictedObjectID> _goToId = new ();
         readonly HashSet<PredictedObjectID> _isSceneObject = new ();
-        readonly Dictionary<PredictedObjectID, PredictedComponentID?> _runtimeParents = new ();
-        readonly Dictionary<PredictedObjectID, PredictedComponentID?> _desiredParentsScratch = new ();
         readonly List<PredictedObjectID> _reservedSceneObjects = new ();
         readonly Dictionary<int, PiecePrototype> _prototypes = new ();
         readonly PredictedPiecePool _pool = new ();
@@ -39,7 +36,6 @@ namespace PurrNet.Prediction
             var state = new PredictedHierarchyState(
                 DisposableList<InstanceDetails>.Create(16),
                 DisposableList<PredictedObjectID>.Create(16),
-                DisposableList<InstanceParent>.Create(16),
                 _nextInstanceId);
             return state;
         }
@@ -54,15 +50,6 @@ namespace PurrNet.Prediction
 
             for (var i = 0; i < count; i++)
                 state.spawnedPrefabs.Add(_spawnedPrefabs[i]);
-
-            state.parents.Clear();
-
-            for (var i = 0; i < count; i++)
-            {
-                var instanceId = _spawnedPrefabs[i].instanceId;
-                if (_runtimeParents.TryGetValue(instanceId, out var parentLink))
-                    state.parents.Add(new InstanceParent(instanceId, parentLink));
-            }
 
             state.nextInstanceId = _nextInstanceId;
         }
@@ -85,11 +72,16 @@ namespace PurrNet.Prediction
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
             {
                 var record = _spawnedPrefabs[i];
-                if (!_targetIdsScratch.ContainsKey(record.instanceId))
+
+                if (_targetIdsScratch.TryGetValue(record.instanceId, out var targetIndex))
                 {
-                    _removalScratch.Add(record);
-                    _removalSetScratch.Add(record.instanceId);
+                    var targetRecord = target[targetIndex];
+                    if (targetRecord.prefabId == record.prefabId && targetRecord.pieceIndex.value == record.pieceIndex.value)
+                        continue;
                 }
+
+                _removalScratch.Add(record);
+                _removalSetScratch.Add(record.instanceId);
             }
 
             if (_removalScratch.Count > 0)
@@ -162,70 +154,10 @@ namespace PurrNet.Prediction
 
             _nextInstanceId = state.nextInstanceId;
 
-            ApplyParents(state.parents);
-
             _isRollingBack = false;
         }
 
-        private void ApplyParents(DisposableList<InstanceParent> parents)
-        {
-            _desiredParentsScratch.Clear();
-
-            if (!parents.isDisposed)
-            {
-                for (var i = 0; i < parents.Count; i++)
-                {
-                    var link = parents[i];
-                    _desiredParentsScratch[link.child] = link.parent;
-                }
-            }
-
-            for (var i = 0; i < _spawnedPrefabs.Count; i++)
-            {
-                var record = _spawnedPrefabs[i];
-                var instanceId = record.instanceId;
-
-                if (!_instanceMap.TryGetValue(instanceId, out var go) || !go)
-                    continue;
-
-                bool hasDesired = _desiredParentsScratch.TryGetValue(instanceId, out var desired);
-                bool hasCurrent = _runtimeParents.TryGetValue(instanceId, out var current);
-
-                if (hasDesired == hasCurrent && (!hasDesired || SameAttach(desired, current)))
-                    continue;
-
-                if (hasDesired)
-                {
-                    if (desired.HasValue && predictionManager.TryGetIdentity(desired.Value, out var parentIdentity) && parentIdentity)
-                        go.transform.SetParent(parentIdentity.transform, true);
-                    else
-                        go.transform.SetParent(null, true);
-
-                    _runtimeParents[instanceId] = desired;
-                }
-                else
-                {
-                    var def = GetDefaultParent(record);
-
-                    if (def.HasValue && predictionManager.TryGetIdentity(def.Value, out var defaultIdentity) && defaultIdentity)
-                    {
-                        var proto = GetPrototype(record.prefabId);
-                        var path = proto != null && record.pieceIndex.value > 0
-                            ? proto.pieces[record.pieceIndex.value].inverseSiblingPath
-                            : null;
-                        PiecePrototype.AttachAtPath(defaultIdentity.transform, go.transform, path, true);
-                    }
-                    else
-                    {
-                        go.transform.SetParent(null, true);
-                    }
-
-                    _runtimeParents.Remove(instanceId);
-                }
-            }
-        }
-
-        static bool SameAttach(PredictedComponentID? a, PredictedComponentID? b)
+        internal static bool SameAttach(PredictedComponentID? a, PredictedComponentID? b)
         {
             if (a.HasValue != b.HasValue)
                 return false;
@@ -632,9 +564,9 @@ namespace PurrNet.Prediction
 
             pieceGo.SetActive(pp.activeSelf);
 
-            PlayerID? owner = record.owner;
+            var recordOwner = record.owner;
             if (_recordsById.TryGetValue(record.rootId, out var rootRecord))
-                owner = rootRecord.owner;
+                recordOwner = rootRecord.owner;
 
             if (_instanceMap.Remove(record.instanceId, out var other))
                 PurrLogger.LogError($"Duplicate instance ID {record.instanceId}. Existing GameObject: `{other.name}`, New GameObject: `{pieceGo.name}`", other);
@@ -642,7 +574,7 @@ namespace PurrNet.Prediction
             _instanceMap[record.instanceId] = pieceGo;
             _goToId[pieceGo] = record.instanceId;
 
-            predictionManager.RegisterInstance(pieceGo, record.instanceId, owner, false, false);
+            predictionManager.RegisterInstance(pieceGo, record.instanceId, recordOwner, false, false);
         }
 
         private static void ApplySpawnPose(Transform trs, Transform parent, Vector3 position, Quaternion rotation)
@@ -659,9 +591,16 @@ namespace PurrNet.Prediction
             }
         }
 
+        private bool _suppressParentWarnings;
+
         internal void NotifyInstanceParentChanged(GameObject go)
         {
             if (!_goToId.TryGetValue(go, out var instanceId))
+                return;
+
+            RefreshDescendantPolicies(go);
+
+            if (_isRollingBack || _suppressParentWarnings)
                 return;
 
             if (!_recordsById.TryGetValue(instanceId, out var record))
@@ -669,23 +608,44 @@ namespace PurrNet.Prediction
 
             PredictedComponentID? resolved = TryResolveParentLink(go, out var parentLink)
                 ? parentLink
-                : (PredictedComponentID?)null;
+                : null;
 
-            var def = GetDefaultParent(record);
+            if (SameAttach(resolved, GetDefaultParent(record)))
+                return;
 
-            if (SameAttach(resolved, def))
+            if (!go.TryGetComponent<PredictedParent>(out _))
+                PurrLogger.LogWarning($"'{go.name}' was reparented but has no PredictedParent component; the change is local-only and the simulation still treats it as attached to its default parent.", go);
+
+            if (resolved.HasValue)
+                ValidateRuntimeParenting(go);
+        }
+
+        internal bool TryRestoreAttach(PredictedObjectID pieceId, PredictedComponentID? target)
+        {
+            if (!_instanceMap.TryGetValue(pieceId, out var go) || !go)
+                return false;
+
+            if (!target.HasValue)
             {
-                _runtimeParents.Remove(instanceId);
+                go.transform.SetParent(null, true);
+                return true;
             }
-            else
+
+            if (!predictionManager.TryGetIdentity(target.Value, out var parentIdentity) || !parentIdentity)
+                return false;
+
+            if (_recordsById.TryGetValue(pieceId, out var record) && SameAttach(GetDefaultParent(record), target))
             {
-                _runtimeParents[instanceId] = resolved;
-
-                if (!_isRollingBack && resolved.HasValue)
-                    ValidateRuntimeParenting(go);
+                var proto = GetPrototype(record.prefabId);
+                var path = proto != null && record.pieceIndex.value > 0
+                    ? proto.pieces[record.pieceIndex.value].inverseSiblingPath
+                    : null;
+                PiecePrototype.AttachAtPath(parentIdentity.transform, go.transform, path, true);
+                return true;
             }
 
-            RefreshDescendantPolicies(go);
+            go.transform.SetParent(parentIdentity.transform, true);
+            return true;
         }
 
         private void ValidateRuntimeParenting(GameObject go)
@@ -716,7 +676,7 @@ namespace PurrNet.Prediction
             ListPool<PredictedIdentity>.Destroy(identities);
         }
 
-        private bool TryResolveParentLink(GameObject go, out PredictedComponentID parent)
+        internal bool TryResolveParentLink(GameObject go, out PredictedComponentID parent)
         {
             var current = go.transform.parent;
 
@@ -952,6 +912,25 @@ namespace PurrNet.Prediction
             return false;
         }
 
+        /// <summary>
+        /// True when both pieces belong to the same spawn instance. Replaces
+        /// id.objectId equality checks from before pieces had their own ids.
+        /// </summary>
+        public bool SameInstance(PredictedObjectID a, PredictedObjectID b)
+        {
+            return _recordsById.TryGetValue(a, out var recordA) &&
+                   _recordsById.TryGetValue(b, out var recordB) &&
+                   recordA.rootId.Equals(recordB.rootId);
+        }
+
+        /// <summary>
+        /// True when both components belong to the same spawn instance.
+        /// </summary>
+        public bool SameInstance(PredictedIdentity a, PredictedIdentity b)
+        {
+            return a && b && SameInstance(a.id.objectId, b.id.objectId);
+        }
+
         public bool TryGetGameObject(PredictedObjectID? id, out GameObject go)
         {
             if (!id.HasValue)
@@ -973,31 +952,80 @@ namespace PurrNet.Prediction
 
             _removalScratch.Clear();
             _removalSetScratch.Clear();
-            CollectCascade(instance.transform, record.rootId);
+            CollectCascade(record);
 
             var isVerified = predictionManager.isVerified;
             bool canPool = record.prefabId.value < 0 || !isVerified;
 
-            RemovePieceSet(_removalScratch, _removalSetScratch, canPool, true, true);
+            _suppressParentWarnings = true;
+            try
+            {
+                RemovePieceSet(_removalScratch, _removalSetScratch, canPool, true, true);
+            }
+            finally
+            {
+                _suppressParentWarnings = false;
+            }
 
             if (record.isRootRecord)
                 PromoteOrphans(record);
         }
 
-        private void CollectCascade(Transform current, PredictedObjectID rootId)
+        private void CollectCascade(in InstanceDetails target)
         {
-            if (_goToId.TryGetValue(current.gameObject, out var pieceId))
-            {
-                if (!_recordsById.TryGetValue(pieceId, out var pieceRecord) || !pieceRecord.rootId.Equals(rootId))
-                    return;
+            var rootId = target.rootId;
 
-                _removalScratch.Add(pieceRecord);
-                _removalSetScratch.Add(pieceId);
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+            {
+                var record = _spawnedPrefabs[i];
+
+                if (!record.rootId.Equals(rootId))
+                    continue;
+
+                if (ChainReaches(record, target.instanceId, rootId))
+                {
+                    _removalScratch.Add(record);
+                    _removalSetScratch.Add(record.instanceId);
+                }
+            }
+        }
+
+        private bool ChainReaches(InstanceDetails record, PredictedObjectID targetId, PredictedObjectID rootId)
+        {
+            var proto = GetPrototype(record.prefabId);
+            int maxHops = proto != null ? proto.pieceCount + 1 : 64;
+            var current = record;
+
+            for (var hop = 0; hop < maxHops; hop++)
+            {
+                if (current.instanceId.Equals(targetId))
+                    return true;
+
+                var parentObj = EffectiveParentObject(current);
+
+                if (!parentObj.HasValue)
+                    return false;
+
+                if (!_recordsById.TryGetValue(parentObj.Value, out var parentRecord) || !parentRecord.rootId.Equals(rootId))
+                    return false;
+
+                current = parentRecord;
             }
 
-            int childCount = current.childCount;
-            for (var i = 0; i < childCount; i++)
-                CollectCascade(current.GetChild(i), rootId);
+            return false;
+        }
+
+        private PredictedObjectID? EffectiveParentObject(in InstanceDetails record)
+        {
+            if (_instanceMap.TryGetValue(record.instanceId, out var go) && go &&
+                go.TryGetComponent<PredictedParent>(out var carrier))
+            {
+                var link = carrier.resolvedParent;
+                return link?.objectId;
+            }
+
+            var def = GetDefaultParent(record);
+            return def?.objectId;
         }
 
         private void PromoteOrphans(InstanceDetails rootRecord)
@@ -1041,7 +1069,6 @@ namespace PurrNet.Prediction
                     if (!_instanceMap.TryGetValue(record.instanceId, out var go) || !go)
                     {
                         _instanceMap.Remove(record.instanceId);
-                        _runtimeParents.Remove(record.instanceId);
                         if (removeRecords)
                             RemoveRecord(record.instanceId);
                         memberSet.Remove(record.instanceId);
@@ -1086,7 +1113,6 @@ namespace PurrNet.Prediction
 
                 _instanceMap.Remove(piece.id);
                 _goToId.Remove(piece.gameObject);
-                _runtimeParents.Remove(piece.id);
                 memberSet.Remove(piece.id);
 
                 if (removeRecords)
@@ -1220,7 +1246,6 @@ namespace PurrNet.Prediction
             _spawnedPrefabs.Clear();
             _recordsById.Clear();
             _isSceneObject.Clear();
-            _runtimeParents.Clear();
             _reservedSceneObjects.Clear();
             _pendingSceneReservations.Clear();
             _pool.Clear(predictionManager);

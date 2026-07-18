@@ -78,20 +78,22 @@ public static class PredictionTestUtils
             sb.Append(']');
         }
 
-        if (!state.parents.isDisposed && state.parents.Count > 0)
+        bool any = false;
+        foreach (var details in entries)
         {
-            var links = new List<InstanceParent>();
-            for (var i = 0; i < state.parents.Count; i++)
-                links.Add(state.parents[i]);
-            links.Sort((a, b) => a.child.instanceId.value.CompareTo(b.child.instanceId.value));
+            if (!details.instanceId.TryGetComponent<PredictedParent>(pm, out var carrier))
+                continue;
 
-            sb.Append("|parents=");
-            foreach (var link in links)
+            if (!any)
             {
-                sb.Append('[').Append(link.child.instanceId.value).Append("->");
-                sb.Append(link.parent.HasValue ? link.parent.Value.objectId.instanceId.value.ToString() : "root");
-                sb.Append(']');
+                sb.Append("|parents=");
+                any = true;
             }
+
+            var link = carrier.currentState.parent;
+            sb.Append('[').Append(details.instanceId.instanceId.value).Append("->");
+            sb.Append(link.HasValue ? link.Value.objectId.instanceId.value.ToString() : "root");
+            sb.Append(']');
         }
 
         return sb.ToString();

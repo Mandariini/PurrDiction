@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Runtime.CompilerServices;
 using JetBrains.Annotations;
 using PurrNet.Modules;
 using PurrNet.Packing;

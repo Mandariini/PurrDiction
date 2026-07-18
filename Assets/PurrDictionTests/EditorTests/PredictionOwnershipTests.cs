@@ -409,6 +409,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.ServerRelay));
 
                 scopeObject.SetActive(false);
+                InvokeLifecycle(scope, "OnDisable");
 
                 Assert.That(identity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction),
                     "The inactive live scope remained applied to a registered identity");

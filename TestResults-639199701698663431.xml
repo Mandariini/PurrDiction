@@ -1,0 +1,402 @@
+<?xml version="1.0" encoding="utf-8"?>
+<test-run id="2" testcasecount="54" result="Failed(Child)" total="54" passed="53" failed="1" inconclusive="0" skipped="0" asserts="0" engine-version="3.5.0.0" clr-version="4.0.30319.42000" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:09Z" duration="1.1291285">
+  <test-suite type="TestSuite" id="1000" name="PurrDiction" fullname="PurrDiction" runstate="Runnable" testcasecount="54" result="Failed" site="Child" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:09Z" duration="1.129129" total="54" passed="53" failed="1" inconclusive="0" skipped="0" asserts="0">
+    <properties>
+      <property name="platform" value="EditMode" />
+    </properties>
+    <failure>
+      <message><![CDATA[One or more child tests had errors]]></message>
+    </failure>
+    <test-suite type="Assembly" id="1059" name="PurrNet.Prediction.EditorTests.dll" fullname="C:/wkspaces/unity/riten/PurrDiction/Library/ScriptAssemblies/PurrNet.Prediction.EditorTests.dll" runstate="Runnable" testcasecount="54" result="Failed" site="Child" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:09Z" duration="1.124655" total="54" passed="53" failed="1" inconclusive="0" skipped="0" asserts="0">
+      <properties>
+        <property name="_PID" value="31360" />
+        <property name="_APPDOMAIN" value="Unity Child Domain" />
+        <property name="platform" value="EditMode" />
+        <property name="EditorOnly" value="True" />
+      </properties>
+      <failure>
+        <message><![CDATA[One or more child tests had errors]]></message>
+      </failure>
+      <test-suite type="TestSuite" id="1060" name="PurrNet" fullname="PurrNet" runstate="Runnable" testcasecount="54" result="Failed" site="Child" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:09Z" duration="1.124294" total="54" passed="53" failed="1" inconclusive="0" skipped="0" asserts="0">
+        <properties />
+        <failure>
+          <message><![CDATA[One or more child tests had errors]]></message>
+        </failure>
+        <test-suite type="TestSuite" id="1061" name="Prediction" fullname="PurrNet.Prediction" runstate="Runnable" testcasecount="54" result="Failed" site="Child" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:09Z" duration="1.124088" total="54" passed="53" failed="1" inconclusive="0" skipped="0" asserts="0">
+          <properties />
+          <failure>
+            <message><![CDATA[One or more child tests had errors]]></message>
+          </failure>
+          <test-suite type="TestSuite" id="1062" name="Tests" fullname="PurrNet.Prediction.Tests" runstate="Runnable" testcasecount="54" result="Failed" site="Child" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:09Z" duration="1.123878" total="54" passed="53" failed="1" inconclusive="0" skipped="0" asserts="0">
+            <properties />
+            <failure>
+              <message><![CDATA[One or more child tests had errors]]></message>
+            </failure>
+            <test-suite type="TestSuite" id="1063" name="Editor" fullname="PurrNet.Prediction.Tests.Editor" runstate="Runnable" testcasecount="54" result="Failed" site="Child" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:09Z" duration="1.123633" total="54" passed="53" failed="1" inconclusive="0" skipped="0" asserts="0">
+              <properties />
+              <failure>
+                <message><![CDATA[One or more child tests had errors]]></message>
+              </failure>
+              <test-suite type="TestFixture" id="1001" name="PredictedHierarchyPieceTests" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" testcasecount="9" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.034140" total="9" passed="9" failed="0" inconclusive="0" skipped="0" asserts="0">
+                <properties />
+                <test-case id="1006" name="AttachAtPathRestoresAuthoredLocation" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.AttachAtPathRestoresAuthoredLocation" methodname="AttachAtPathRestoresAuthoredLocation" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="1367921176" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.013936" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1010" name="PoolNearestFallbackOnlyReturnsCompleteTrees" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.PoolNearestFallbackOnlyReturnsCompleteTrees" methodname="PoolNearestFallbackOnlyReturnsCompleteTrees" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="496013499" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.002768" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1009" name="PoolPieceExtractionSplitsPooledSubtrees" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.PoolPieceExtractionSplitsPooledSubtrees" methodname="PoolPieceExtractionSplitsPooledSubtrees" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="607162687" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.002436" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1008" name="PoolPreciseTreeTakeMatchesExactRootAndRejectsDrift" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.PoolPreciseTreeTakeMatchesExactRootAndRejectsDrift" methodname="PoolPreciseTreeTakeMatchesExactRootAndRejectsDrift" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="2133901406" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000631" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1005" name="PrototypeBoundariesStopDescent" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.PrototypeBoundariesStopDescent" methodname="PrototypeBoundariesStopDescent" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="1302801499" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000451" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1003" name="PrototypeRecordsParentPiecesAndPathsThroughPlainTransforms" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.PrototypeRecordsParentPiecesAndPathsThroughPlainTransforms" methodname="PrototypeRecordsParentPiecesAndPathsThroughPlainTransforms" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="1172881532" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000368" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1004" name="PrototypeRejectsIdentitylessRoot" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.PrototypeRejectsIdentitylessRoot" methodname="PrototypeRejectsIdentitylessRoot" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="183863405" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.001829" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                  <output><![CDATA[
+IgnoreFailingMessages:true
+[PiecePrototype] 'bare' has no PredictedIdentity on its root; the root must carry at least one predicted component.
+
+IgnoreFailingMessages:false
+]]></output>
+                </test-case>
+                <test-case id="1002" name="PrototypeTraversalMatchesGetComponentsInChildrenOrder" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.PrototypeTraversalMatchesGetComponentsInChildrenOrder" methodname="PrototypeTraversalMatchesGetComponentsInChildrenOrder" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="585683490" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.001992" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1007" name="RootIdIsDerivedFromPieceIndex" fullname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests.RootIdIsDerivedFromPieceIndex" methodname="RootIdIsDerivedFromPieceIndex" classname="PurrNet.Prediction.Tests.Editor.PredictedHierarchyPieceTests" runstate="Runnable" seed="1549206866" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000706" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+              </test-suite>
+              <test-suite type="TestFixture" id="1011" name="PredictionOwnershipTests" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" testcasecount="29" result="Failed" site="Child" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.054222" total="29" passed="28" failed="1" inconclusive="0" skipped="0" asserts="0">
+                <properties />
+                <failure>
+                  <message><![CDATA[One or more child tests had errors]]></message>
+                </failure>
+                <test-case id="1024" name="DeactivatingRegisteredScopeRefreshesItsLiveIdentities" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.DeactivatingRegisteredScopeRefreshesItsLiveIdentities" methodname="DeactivatingRegisteredScopeRefreshesItsLiveIdentities" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="373641468" result="Failed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.013319" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                  <failure>
+                    <message><![CDATA[  The inactive live scope remained applied to a registered identity
+  Expected: FullPrediction
+  But was:  ServerRelay
+]]></message>
+                    <stack-trace><![CDATA[at PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.DeactivatingRegisteredScopeRefreshesItsLiveIdentities () [0x0007a] in C:\wkspaces\unity\riten\PurrDiction\Assets\PurrDictionTests\EditorTests\PredictionOwnershipTests.cs:413
+]]></stack-trace>
+                  </failure>
+                </test-case>
+                <test-case id="1023" name="DeactivatingScopedPooledRootPreservesAppliedSoftCorrectionPolicy" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.DeactivatingScopedPooledRootPreservesAppliedSoftCorrectionPolicy" methodname="DeactivatingScopedPooledRootPreservesAppliedSoftCorrectionPolicy" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="211287101" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000725" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1027" name="DefaultCorrectionRingRetainsTheDefaultTenSecondHistoryWindow" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.DefaultCorrectionRingRetainsTheDefaultTenSecondHistoryWindow" methodname="DefaultCorrectionRingRetainsTheDefaultTenSecondHistoryWindow" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1900930187" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000286" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1014" name="DeterministicInputIdentityReleasesEveryOwnedInputWhenPooled" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.DeterministicInputIdentityReleasesEveryOwnedInputWhenPooled" methodname="DeterministicInputIdentityReleasesEveryOwnedInputWhenPooled" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1219622842" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.001663" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1030" name="DisablingOrRemovingScopeRefreshesDescendants" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.DisablingOrRemovingScopeRefreshesDescendants" methodname="DisablingOrRemovingScopeRefreshesDescendants" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="2046846624" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000905" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1040" name="FullAndSoftPolicyTransitionsPreserveLiveRigidbody2DMode" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.FullAndSoftPolicyTransitionsPreserveLiveRigidbody2DMode" methodname="FullAndSoftPolicyTransitionsPreserveLiveRigidbody2DMode" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="355783997" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.001089" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1037" name="FullAndSoftPolicyTransitionsPreserveLiveRigidbodyMode" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.FullAndSoftPolicyTransitionsPreserveLiveRigidbodyMode" methodname="FullAndSoftPolicyTransitionsPreserveLiveRigidbodyMode" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1159501420" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000952" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1031" name="InheritedScopeTracksParentPolicyAndCanReturnToLocalPolicy" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.InheritedScopeTracksParentPolicyAndCanReturnToLocalPolicy" methodname="InheritedScopeTracksParentPolicyAndCanReturnToLocalPolicy" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="515021658" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000567" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1038" name="LeavingServerRelayRestoresAuthoritativeRigidbodyState" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.LeavingServerRelayRestoresAuthoritativeRigidbodyState" methodname="LeavingServerRelayRestoresAuthoritativeRigidbodyState" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="421102321" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.001294" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1026" name="ModuleVerifiedStateUsesTheParentVerifiedTick" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.ModuleVerifiedStateUsesTheParentVerifiedTick" methodname="ModuleVerifiedStateUsesTheParentVerifiedTick" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1517788873" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.003813" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1020" name="PooledReuseDoesNotPreserveStateWhenSwitchingIntoSoftCorrection" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.PooledReuseDoesNotPreserveStateWhenSwitchingIntoSoftCorrection" methodname="PooledReuseDoesNotPreserveStateWhenSwitchingIntoSoftCorrection" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="278674178" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.001962" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1019" name="PooledReuseEvaluatesIncomingPolicyBeforePreservingSoftState" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.PooledReuseEvaluatesIncomingPolicyBeforePreservingSoftState" methodname="PooledReuseEvaluatesIncomingPolicyBeforePreservingSoftState" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="460705435" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000481" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1015" name="ProjectileInterpolationDoesNotAllocateDisposableViewState" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.ProjectileInterpolationDoesNotAllocateDisposableViewState" methodname="ProjectileInterpolationDoesNotAllocateDisposableViewState" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="805189669" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000892" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1016" name="ReparentingIdentityRefreshesNearestPredictionPolicyScope" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.ReparentingIdentityRefreshesNearestPredictionPolicyScope" methodname="ReparentingIdentityRefreshesNearestPredictionPolicyScope" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1567543340" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000546" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1035" name="RepeatedEmptyDynamicModuleSnapshotsReuseSparseHistory" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.RepeatedEmptyDynamicModuleSnapshotsReuseSparseHistory" methodname="RepeatedEmptyDynamicModuleSnapshotsReuseSparseHistory" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1575829478" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.002156" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1029" name="ResetStateClearsPendingSoftTransformCorrection" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.ResetStateClearsPendingSoftTransformCorrection" methodname="ResetStateClearsPendingSoftTransformCorrection" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="627613494" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000733" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1033" name="ResetStateDoesNotInterpolateDisposedState" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.ResetStateDoesNotInterpolateDisposedState" methodname="ResetStateDoesNotInterpolateDisposedState" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1340220507" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.002749" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1034" name="RestoringRelayLocksClearsTheSnapshotForTheNextTick" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.RestoringRelayLocksClearsTheSnapshotForTheNextTick" methodname="RestoringRelayLocksClearsTheSnapshotForTheNextTick" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="248278" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.001666" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1021" name="RootPosePreservationUsesIncomingPolicyOnReplayReuse" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.RootPosePreservationUsesIncomingPolicyOnReplayReuse" methodname="RootPosePreservationUsesIncomingPolicyOnReplayReuse" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="86893841" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.003553" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1017" name="RuntimePolicyApisPersistOverridesAndReturnToScope" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.RuntimePolicyApisPersistOverridesAndReturnToScope" methodname="RuntimePolicyApisPersistOverridesAndReturnToScope" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1228377468" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000783" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1039" name="ServerRelaySetupCapturesTheAuthoredRigidbody2DModeBeforeForcingKinematic" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.ServerRelaySetupCapturesTheAuthoredRigidbody2DModeBeforeForcingKinematic" methodname="ServerRelaySetupCapturesTheAuthoredRigidbody2DModeBeforeForcingKinematic" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="690208708" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.004203" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1036" name="ServerRelaySetupCapturesTheAuthoredRigidbodyModeBeforeForcingKinematic" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.ServerRelaySetupCapturesTheAuthoredRigidbodyModeBeforeForcingKinematic" methodname="ServerRelaySetupCapturesTheAuthoredRigidbodyModeBeforeForcingKinematic" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="502920087" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.002229" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1018" name="SetupAppliesPolicySideEffectsAfterUnityStateCapture" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.SetupAppliesPolicySideEffectsAfterUnityStateCapture" methodname="SetupAppliesPolicySideEffectsAfterUnityStateCapture" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="796081809" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000497" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1022" name="SetupResolutionIncludesEnabledScopesOnInactivePooledRoots" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.SetupResolutionIncludesEnabledScopesOnInactivePooledRoots" methodname="SetupResolutionIncludesEnabledScopesOnInactivePooledRoots" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="51152806" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000267" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1025" name="SetupResolutionPreservesVirtualPolicyOverridesOnInactivePooledRoots" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.SetupResolutionPreservesVirtualPolicyOverridesOnInactivePooledRoots" methodname="SetupResolutionPreservesVirtualPolicyOverridesOnInactivePooledRoots" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1647670465" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000679" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1012" name="SparseHistoryPrunesByTickAgeAndKeepsRollbackAnchor" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.SparseHistoryPrunesByTickAgeAndKeepsRollbackAnchor" methodname="SparseHistoryPrunesByTickAgeAndKeepsRollbackAnchor" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1079230738" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000990" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1013" name="StatefulInputIdentityReleasesEveryOwnedInputWhenPooled" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.StatefulInputIdentityReleasesEveryOwnedInputWhenPooled" methodname="StatefulInputIdentityReleasesEveryOwnedInputWhenPooled" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="653518102" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000776" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1032" name="TransformFollowsPhysicsPolicyOwnerInsteadOfIndependentScope" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.TransformFollowsPhysicsPolicyOwnerInsteadOfIndependentScope" methodname="TransformFollowsPhysicsPolicyOwnerInsteadOfIndependentScope" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="850901726" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000969" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1028" name="UnsupportedIdentityNormalizesSoftCorrectionToFullPrediction" fullname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests.UnsupportedIdentityNormalizesSoftCorrectionToFullPrediction" methodname="UnsupportedIdentityNormalizesSoftCorrectionToFullPrediction" classname="PurrNet.Prediction.Tests.Editor.PredictionOwnershipTests" runstate="Runnable" seed="1871863347" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:08Z" duration="0.000466" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+              </test-suite>
+              <test-suite type="TestFixture" id="1041" name="PredictionPolicyContractTests" fullname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" classname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" runstate="Runnable" testcasecount="7" result="Passed" start-time="2026-07-18 09:16:08Z" end-time="2026-07-18 09:16:09Z" duration="0.932039" total="7" passed="7" failed="0" inconclusive="0" skipped="0" asserts="0">
+                <properties />
+                <test-case id="1047" name="DeterministicCurrentStateAppliesPostSpawnOwnerAtVerifiedRollback" fullname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests.DeterministicCurrentStateAppliesPostSpawnOwnerAtVerifiedRollback" methodname="DeterministicCurrentStateAppliesPostSpawnOwnerAtVerifiedRollback" classname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" runstate="Runnable" seed="87134197" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.008619" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1042" name="DeterministicIdentityRejectsSoftCorrectionEvenWhenSubclassOptsIn" fullname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests.DeterministicIdentityRejectsSoftCorrectionEvenWhenSubclassOptsIn" methodname="DeterministicIdentityRejectsSoftCorrectionEvenWhenSubclassOptsIn" classname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" runstate="Runnable" seed="1506519985" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000780" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1048" name="LegacyProtectedPredictionKeyRemainsAvailableToCustomModules" fullname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests.LegacyProtectedPredictionKeyRemainsAvailableToCustomModules" methodname="LegacyProtectedPredictionKeyRemainsAvailableToCustomModules" classname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" runstate="Runnable" seed="1589520530" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000115" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1046" name="StatelessCurrentStateSynchronizesPostSpawnOwnerChange" fullname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests.StatelessCurrentStateSynchronizesPostSpawnOwnerChange" methodname="StatelessCurrentStateSynchronizesPostSpawnOwnerChange" classname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" runstate="Runnable" seed="641375482" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000713" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1043" name="StatelessFirstStateSynchronizesCurrentOwner" fullname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests.StatelessFirstStateSynchronizesCurrentOwner" methodname="StatelessFirstStateSynchronizesCurrentOwner" classname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" runstate="Runnable" seed="1503056163" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000493" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1045" name="StaticCurrentStateSynchronizesPostSpawnOwnerChange" fullname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests.StaticCurrentStateSynchronizesPostSpawnOwnerChange" methodname="StaticCurrentStateSynchronizesPostSpawnOwnerChange" classname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" runstate="Runnable" seed="1836664375" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000615" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1044" name="StaticFirstStateSynchronizesCurrentOwner" fullname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests.StaticFirstStateSynchronizesCurrentOwner" methodname="StaticFirstStateSynchronizesCurrentOwner" classname="PurrNet.Prediction.Tests.Editor.PredictionPolicyContractTests" runstate="Runnable" seed="469325110" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000378" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+              </test-suite>
+              <test-suite type="TestFixture" id="1049" name="SoftCorrectionDynamicModuleTests" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" testcasecount="9" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.101969" total="9" passed="9" failed="0" inconclusive="0" skipped="0" asserts="0">
+                <properties />
+                <test-case id="1051" name="AuthoritativeReadViewUsesSenderOrderThenRestoresLiveOrder" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.AuthoritativeReadViewUsesSenderOrderThenRestoresLiveOrder" methodname="AuthoritativeReadViewUsesSenderOrderThenRestoresLiveOrder" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="387286674" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.004040" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1052" name="ModulePayloadUsesAuthoritativeOrderWithoutChangingLaterLiveModule" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.ModulePayloadUsesAuthoritativeOrderWithoutChangingLaterLiveModule" methodname="ModulePayloadUsesAuthoritativeOrderWithoutChangingLaterLiveModule" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="1098290743" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.009588" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1050" name="PastEmptyTopologyDoesNotRemoveLiveSoftCorrectionModule" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.PastEmptyTopologyDoesNotRemoveLiveSoftCorrectionModule" methodname="PastEmptyTopologyDoesNotRemoveLiveSoftCorrectionModule" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="1035245486" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.001068" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1054" name="PastOnlyModuleIsDisposedAfterAuthoritativePayloadRead" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.PastOnlyModuleIsDisposedAfterAuthoritativePayloadRead" methodname="PastOnlyModuleIsDisposedAfterAuthoritativePayloadRead" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="1117694163" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.001782" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1053" name="RecreatedSameTypeModuleDoesNotConsumeOldLifetimePayload" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.RecreatedSameTypeModuleDoesNotConsumeOldLifetimePayload" methodname="RecreatedSameTypeModuleDoesNotConsumeOldLifetimePayload" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="1469171382" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000885" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1055" name="TemporaryDisposalCallbackCannotRemoveSavedLiveModule" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.TemporaryDisposalCallbackCannotRemoveSavedLiveModule" methodname="TemporaryDisposalCallbackCannotRemoveSavedLiveModule" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="794152225" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000565" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1057" name="ThrowingTemporaryDisposalStillCleansRemainingDecoders" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.ThrowingTemporaryDisposalStillCleansRemainingDecoders" methodname="ThrowingTemporaryDisposalStillCleansRemainingDecoders" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="985658343" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000854" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1056" name="ThrowingTemporarySetupDoesNotLeakDecoderModule" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.ThrowingTemporarySetupDoesNotLeakDecoderModule" methodname="ThrowingTemporarySetupDoesNotLeakDecoderModule" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="1351685072" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.000521" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                </test-case>
+                <test-case id="1058" name="UnconstructableAuthoritativeModuleAbortsAndRestoresLiveTopology" fullname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests.UnconstructableAuthoritativeModuleAbortsAndRestoresLiveTopology" methodname="UnconstructableAuthoritativeModuleAbortsAndRestoresLiveTopology" classname="PurrNet.Prediction.Tests.Editor.SoftCorrectionDynamicModuleTests" runstate="Runnable" seed="294496183" result="Passed" start-time="2026-07-18 09:16:09Z" end-time="2026-07-18 09:16:09Z" duration="0.002097" asserts="0">
+                  <properties>
+                    <property name="retryIteration" value="0" />
+                    <property name="repeatIteration" value="0" />
+                  </properties>
+                  <output><![CDATA[[PredictedIdentity.Module] Dynamic module reconcile failed. Type with hash 3735928559 is not registered.
+Saving results to: C:/Users/blenm/AppData/LocalLow/DefaultCompany/PurrDiction\TestResults.xml
+]]></output>
+                </test-case>
+              </test-suite>
+            </test-suite>
+          </test-suite>
+        </test-suite>
+      </test-suite>
+    </test-suite>
+  </test-suite>
+</test-run>

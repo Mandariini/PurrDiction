@@ -69,6 +69,23 @@ namespace PurrNet.Prediction
         /// </summary>
         public PredictedComponentID id;
 
+        /// <summary>
+        /// Id of the root piece of the spawn instance this component belongs to.
+        /// Use this instead of id.objectId when comparing whether two components
+        /// come from the same spawned prefab: id.objectId identifies the piece
+        /// (the GameObject carrying this component), not the whole instance.
+        /// </summary>
+        public PredictedObjectID rootObjectId
+        {
+            get
+            {
+                var manager = predictionManager;
+                if (manager && manager.hierarchy && manager.hierarchy.TryGetRootId(id.objectId, out var rootId))
+                    return rootId;
+                return id.objectId;
+            }
+        }
+
         internal bool isFreshSpawn = true;
         internal bool preservesStateOnSetup { get; private set; }
         private bool _simulateSoftCorrectionDuringReplay;

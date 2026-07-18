@@ -1616,6 +1616,7 @@ namespace PurrNet.Prediction
             }
             catch
             {
+                // ignored
             }
         }
 

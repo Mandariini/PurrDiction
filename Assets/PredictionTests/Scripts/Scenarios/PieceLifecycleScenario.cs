@@ -45,6 +45,7 @@ public class PieceLifecycleScenario : Scenario
         var armC = new GameObject("armC");
         armC.transform.SetParent(root.transform);
         rig.armC = armC.AddComponent<PieceProbe>();
+        armC.AddComponent<PredictedParent>();
 
         return root;
     }
