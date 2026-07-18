@@ -821,25 +821,32 @@ namespace PurrNet.Prediction
                     Packer<PackedInt>.Write(frame, tickRate);
                     Packer<float>.Write(frame, tickDelta);
                     Packer<uint>.Write(frame, _sessionSeed);
-                }
 
-                Packer<PackedInt>.Write(frame, _systemsCount);
+                    Packer<PackedInt>.Write(frame, _systemsCount);
 
-                for (var i = 0; i < _systemsCount; i++)
-                {
-                    if (_systems[i].isEventHandler)
-                        continue;
-
-                    if (fullFrame)
+                    for (var i = 0; i < _systemsCount; i++)
+                    {
+                        if (_systems[i].isEventHandler)
+                            continue;
                         _systems[i].RunWriteFirstState(localTick, frame);
-                    else _systems[i].RunWriteCurrentState(player, frame, _deltaModuleState);
-                }
+                    }
 
-                for (var i = 0; i < _systemsCount; i++)
-                {
-                    if (fullFrame)
+                    for (var i = 0; i < _systemsCount; i++)
                         _systems[i].WriteFirstInput(localTick, frame);
-                    else _systems[i].WriteInput(localTick, player, frame, _deltaModuleState, true);
+                }
+                else
+                {
+                    Packer<PackedInt>.Write(frame, _systemsCount);
+
+                    for (var i = 0; i < _systemsCount; i++)
+                    {
+                        if (_systems[i].isEventHandler)
+                            continue;
+                        _systems[i].RunWriteCurrentState(player, frame, _deltaModuleState);
+                    }
+
+                    for (var i = 0; i < _systemsCount; i++)
+                        _systems[i].WriteInput(localTick, player, frame, _deltaModuleState, true);
                 }
             }
         }

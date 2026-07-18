@@ -1,9 +1,8 @@
-﻿using PurrNet.Packing;
-using PurrNet.Pooling;
+﻿using PurrNet.Pooling;
 
 namespace PurrNet.Prediction
 {
-    public struct PredictedPhysicsData : IPredictedData<PredictedPhysicsData>, IDuplicate<PredictedPhysicsData>
+    public struct PredictedPhysicsData : IPredictedData<PredictedPhysicsData>
     {
         public DisposableList<PhysicsEvent> events;
 
@@ -16,14 +15,6 @@ namespace PurrNet.Prediction
             for (var i = 0; i < count; i++)
                 events[i].Dispose();
             events.Dispose();
-        }
-
-        public PredictedPhysicsData Duplicate()
-        {
-            return new PredictedPhysicsData
-            {
-                events = events.Duplicate()
-            };
         }
 
         public override string ToString()

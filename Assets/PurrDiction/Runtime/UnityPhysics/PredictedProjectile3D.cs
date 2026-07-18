@@ -84,7 +84,7 @@ namespace PurrNet.Prediction
                 gravity = _gravity,
                 radius = Mathf.Max(_radius, 0.001f),
                 isTrigger = _isTrigger,
-                overlappingTriggers = DisposableList<PredictedComponentID>.Create(8)
+                overlappingTriggers = default
             };
         }
 
@@ -141,9 +141,7 @@ namespace PurrNet.Prediction
             live.lastSolidContact = verified.lastSolidContact;
             live.hasLastSolidContact = verified.hasLastSolidContact;
             live.overlappingTriggers.Dispose();
-            live.overlappingTriggers = verified.overlappingTriggers.isDisposed
-                ? DisposableList<PredictedComponentID>.Create(8)
-                : verified.overlappingTriggers.Duplicate();
+            live.overlappingTriggers = verified.overlappingTriggers.Duplicate();
         }
 
         private void ApplySoftVelocityCorrection(ref ProjectileState3D state, float delta)
@@ -220,13 +218,13 @@ namespace PurrNet.Prediction
 
                         if (state.hasLastSolidContact && solidHitId.Equals(state.lastSolidContact))
                         {
-                            if (_eventMask.HasFlag(PhysicsEventMask.CollisionStay))
+                            if ((_eventMask & PhysicsEventMask.CollisionStay) != 0)
                                 predictionManager.physics3d.RegisterEvent(PhysicsEventType.Stay, this, hit.collider.gameObject, false,
                                     hit.point, hit.normal, relativeVelocity);
                         }
                         else
                         {
-                            if (_eventMask.HasFlag(PhysicsEventMask.CollisionEnter))
+                            if ((_eventMask & PhysicsEventMask.CollisionEnter) != 0)
                                 predictionManager.physics3d.RegisterEvent(PhysicsEventType.Enter, this, hit.collider.gameObject, false,
                                     hit.point, hit.normal, relativeVelocity);
                         }
@@ -247,7 +245,7 @@ namespace PurrNet.Prediction
 
             if (predictionManager.physics3d != null && state.hasLastSolidContact && (!solidHit || !solidHitId.Equals(state.lastSolidContact)))
             {
-                if (_eventMask.HasFlag(PhysicsEventMask.CollisionExit))
+                if ((_eventMask & PhysicsEventMask.CollisionExit) != 0)
                 {
                     var otherGo = state.lastSolidContact.GetGameObject(predictionManager);
                     if (otherGo != null)
@@ -267,7 +265,7 @@ namespace PurrNet.Prediction
             if (predictionManager.physics3d != null && _eventMask != PhysicsEventMask.None)
             {
                 int overlapCount = Physics.OverlapSphereNonAlloc(finalPos, state.radius, _overlapBuffer, _layerMask, QueryTriggerInteraction.Collide);
-                var currentOverlaps = DisposableList<PredictedComponentID>.Create(8);
+                DisposableList<PredictedComponentID> currentOverlaps = default;
 
                 for (int i = 0; i < overlapCount; i++)
                 {
@@ -275,37 +273,49 @@ namespace PurrNet.Prediction
                     if (!c.isTrigger || !PredictionManager.TryGetClosestPredictedID(c.gameObject, out var pid) || pid.Equals(id))
                         continue;
                     bool found = false;
-                    for (int j = 0; j < currentOverlaps.Count; j++)
+                    int currentCount = currentOverlaps.isDisposed ? 0 : currentOverlaps.Count;
+                    for (int j = 0; j < currentCount; j++)
                     {
                         if (currentOverlaps[j].Equals(pid)) { found = true; break; }
                     }
                     if (!found)
+                    {
+                        if (currentOverlaps.isDisposed)
+                            currentOverlaps = DisposableList<PredictedComponentID>.Create(8);
                         currentOverlaps.Add(pid);
+                    }
                 }
 
                 if (sphereCastTriggerHit)
                 {
                     bool inCurrent = false;
-                    for (int j = 0; j < currentOverlaps.Count; j++)
+                    int currentCount = currentOverlaps.isDisposed ? 0 : currentOverlaps.Count;
+                    for (int j = 0; j < currentCount; j++)
                     {
                         if (currentOverlaps[j].Equals(sphereCastTriggerHitId)) { inCurrent = true; break; }
                     }
                     if (!inCurrent)
+                    {
+                        if (currentOverlaps.isDisposed)
+                            currentOverlaps = DisposableList<PredictedComponentID>.Create(8);
                         currentOverlaps.Add(sphereCastTriggerHitId);
+                    }
                 }
 
                 var prev = state.overlappingTriggers;
-                for (int i = 0; i < prev.Count; i++)
+                int prevCount = prev.isDisposed ? 0 : prev.Count;
+                for (int i = 0; i < prevCount; i++)
                 {
                     var pid = prev[i];
                     bool inCurrent = false;
-                    for (int j = 0; j < currentOverlaps.Count; j++)
+                    int currentCount = currentOverlaps.isDisposed ? 0 : currentOverlaps.Count;
+                    for (int j = 0; j < currentCount; j++)
                     {
                         if (currentOverlaps[j].Equals(pid)) { inCurrent = true; break; }
                     }
                     if (!inCurrent)
                     {
-                        if (_eventMask.HasFlag(PhysicsEventMask.TriggerExit))
+                        if ((_eventMask & PhysicsEventMask.TriggerExit) != 0)
                         {
                             var otherGo = pid.GetGameObject(predictionManager);
                             if (otherGo != null)
@@ -314,7 +324,7 @@ namespace PurrNet.Prediction
                     }
                     else
                     {
-                        if (_eventMask.HasFlag(PhysicsEventMask.TriggerStay))
+                        if ((_eventMask & PhysicsEventMask.TriggerStay) != 0)
                         {
                             var otherGo = pid.GetGameObject(predictionManager);
                             if (otherGo != null)
@@ -323,15 +333,16 @@ namespace PurrNet.Prediction
                     }
                 }
 
-                for (int i = 0; i < currentOverlaps.Count; i++)
+                int newCount = currentOverlaps.isDisposed ? 0 : currentOverlaps.Count;
+                for (int i = 0; i < newCount; i++)
                 {
                     var pid = currentOverlaps[i];
                     bool inPrev = false;
-                    for (int j = 0; j < prev.Count; j++)
+                    for (int j = 0; j < prevCount; j++)
                     {
                         if (prev[j].Equals(pid)) { inPrev = true; break; }
                     }
-                    if (!inPrev && _eventMask.HasFlag(PhysicsEventMask.TriggerEnter))
+                    if (!inPrev && (_eventMask & PhysicsEventMask.TriggerEnter) != 0)
                     {
                         var otherGo = pid.GetGameObject(predictionManager);
                         if (otherGo != null)
