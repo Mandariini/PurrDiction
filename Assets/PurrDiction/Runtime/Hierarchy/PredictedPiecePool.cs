@@ -32,6 +32,13 @@ namespace PurrNet.Prediction
             public readonly List<PooledPiece> pieces = new ();
         }
 
+        sealed class PieceIndexComparer : IComparer<PooledPiece>
+        {
+            public static readonly PieceIndexComparer instance = new ();
+
+            public int Compare(PooledPiece a, PooledPiece b) => a.pieceIndex.CompareTo(b.pieceIndex);
+        }
+
         readonly Dictionary<PredictedObjectID, Entry> _byPieceId = new ();
         readonly List<Entry> _entries = new ();
         readonly HashSet<GameObject> _entryPieceScratch = new ();
@@ -52,7 +59,7 @@ namespace PurrNet.Prediction
             for (var i = 0; i < pieces.Count; i++)
             {
                 entry.pieces.Add(pieces[i]);
-                _byPieceId[pieces[i].id] = entry;
+                MapPiece(pieces[i].id, entry);
             }
 
             _entries.Add(entry);
@@ -60,8 +67,44 @@ namespace PurrNet.Prediction
 
         public void PutPiece(PackedInt prefabId, PredictedObjectID pieceId, uint pieceIndex, GameObject go, ulong tick)
         {
-            var single = new List<PooledPiece> { new PooledPiece(pieceId, pieceIndex, go) };
-            PutTree(prefabId, pieceId, go.transform.position, go, single, tick, false);
+            var entry = new Entry
+            {
+                rootGo = go,
+                rootPieceId = pieceId,
+                prefabId = prefabId,
+                addedTick = tick,
+                rootSpawnPosition = go.transform.position,
+                isComplete = false
+            };
+
+            entry.pieces.Add(new PooledPiece(pieceId, pieceIndex, go));
+            MapPiece(pieceId, entry);
+            _entries.Add(entry);
+        }
+
+        void MapPiece(PredictedObjectID id, Entry entry)
+        {
+            if (_byPieceId.TryGetValue(id, out var stale) && stale != entry)
+            {
+                for (var i = stale.pieces.Count - 1; i >= 0; i--)
+                {
+                    if (stale.pieces[i].id.Equals(id))
+                        stale.pieces.RemoveAt(i);
+                }
+
+                stale.isComplete = false;
+
+                if (stale.pieces.Count == 0)
+                    _entries.Remove(stale);
+            }
+
+            _byPieceId[id] = entry;
+        }
+
+        void UnmapPiece(PredictedObjectID id, Entry entry)
+        {
+            if (_byPieceId.TryGetValue(id, out var mapped) && mapped == entry)
+                _byPieceId.Remove(id);
         }
 
         public bool Contains(PredictedObjectID pieceId)
@@ -158,7 +201,7 @@ namespace PurrNet.Prediction
             if (!go)
             {
                 entry.pieces.RemoveAt(pieceIdx);
-                _byPieceId.Remove(pieceId);
+                UnmapPiece(pieceId, entry);
                 go = null;
                 return false;
             }
@@ -166,7 +209,7 @@ namespace PurrNet.Prediction
             SplitOffChildSubtrees(entry, go);
 
             entry.pieces.RemoveAt(pieceIdx);
-            _byPieceId.Remove(pieceId);
+            UnmapPiece(pieceId, entry);
             entry.isComplete = false;
 
             if (go.transform.parent != null)
@@ -246,17 +289,17 @@ namespace PurrNet.Prediction
                 {
                     from.pieces.RemoveAt(i);
                     to.pieces.Add(candidate);
-                    _byPieceId[candidate.id] = to;
+                    MapPiece(candidate.id, to);
                 }
             }
 
-            to.pieces.Sort((a, b) => a.pieceIndex.CompareTo(b.pieceIndex));
+            to.pieces.Sort(PieceIndexComparer.instance);
         }
 
         void RemoveEntry(Entry entry)
         {
             for (var i = 0; i < entry.pieces.Count; i++)
-                _byPieceId.Remove(entry.pieces[i].id);
+                UnmapPiece(entry.pieces[i].id, entry);
             _entries.Remove(entry);
         }
 
@@ -287,7 +330,7 @@ namespace PurrNet.Prediction
         void DestroyEntry(PredictionManager predictionManager, Entry entry)
         {
             for (var i = 0; i < entry.pieces.Count; i++)
-                _byPieceId.Remove(entry.pieces[i].id);
+                UnmapPiece(entry.pieces[i].id, entry);
 
             _entries.Remove(entry);
 

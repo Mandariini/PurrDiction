@@ -1,3 +1,4 @@
+using PurrNet.Logging;
 using UnityEngine;
 
 namespace PurrNet.Prediction
@@ -25,6 +26,8 @@ namespace PurrNet.Prediction
 
         private PredictedComponentID? _resolved;
         private bool _dirty = true;
+        private PredictedComponentID? _pendingParent;
+        private bool _hasPendingParent;
 
         protected override void OnTransformParentChanged()
         {
@@ -74,6 +77,22 @@ namespace PurrNet.Prediction
 
         protected override void GetUnityState(ref ParentState state)
         {
+            if (_hasPendingParent)
+            {
+                var manager = predictionManager;
+
+                if (manager && manager.hierarchy && manager.hierarchy.TryRestoreAttach(id.objectId, _pendingParent))
+                {
+                    _hasPendingParent = false;
+                    _dirty = true;
+                }
+                else
+                {
+                    state.parent = _pendingParent;
+                    return;
+                }
+            }
+
             state.parent = Resolve();
         }
 
@@ -82,18 +101,25 @@ namespace PurrNet.Prediction
             var current = Resolve();
 
             if (PredictedHierarchy.SameAttach(current, state.parent))
+            {
+                _hasPendingParent = false;
                 return;
+            }
 
             var manager = predictionManager;
 
             if (manager && manager.hierarchy && manager.hierarchy.TryRestoreAttach(id.objectId, state.parent))
             {
+                _hasPendingParent = false;
                 _dirty = true;
                 return;
             }
 
-            transform.SetParent(null, true);
-            _dirty = true;
+            if (!_hasPendingParent || !PredictedHierarchy.SameAttach(_pendingParent, state.parent))
+                PurrLogger.LogWarning($"'{name}' could not reattach to {(state.parent.HasValue ? state.parent.Value.ToString() : "root")}; keeping the target pending until it resolves.", this);
+
+            _pendingParent = state.parent;
+            _hasPendingParent = true;
         }
     }
 }

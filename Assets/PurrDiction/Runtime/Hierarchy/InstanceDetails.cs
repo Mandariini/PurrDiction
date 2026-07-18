@@ -27,11 +27,6 @@ namespace PurrNet.Prediction
         {
         }
 
-        public InstanceDetails(int prefabId, PredictedObjectID instanceId, Vector3 spawnPosition, Quaternion spawnRotation, PlayerID? owner, PredictedComponentID? parent)
-            : this(prefabId, 0, instanceId, spawnPosition, spawnRotation, owner, parent)
-        {
-        }
-
         public InstanceDetails(int prefabId, uint pieceIndex, PredictedObjectID instanceId, Vector3 spawnPosition, Quaternion spawnRotation, PlayerID? owner, PredictedComponentID? parent)
         {
             this.prefabId = prefabId;

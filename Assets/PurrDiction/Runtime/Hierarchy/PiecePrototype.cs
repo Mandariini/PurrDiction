@@ -1,6 +1,5 @@
 using System.Collections.Generic;
 using PurrNet.Logging;
-using PurrNet.Pooling;
 using UnityEngine;
 
 namespace PurrNet.Prediction
@@ -13,10 +12,9 @@ namespace PurrNet.Prediction
         public readonly Quaternion localRotation;
         public readonly Vector3 localScale;
         public readonly bool activeSelf;
-        public readonly int componentCount;
 
         public PrototypePiece(int parentPieceIndex, int[] inverseSiblingPath, Vector3 localPosition,
-            Quaternion localRotation, Vector3 localScale, bool activeSelf, int componentCount)
+            Quaternion localRotation, Vector3 localScale, bool activeSelf)
         {
             this.parentPieceIndex = parentPieceIndex;
             this.inverseSiblingPath = inverseSiblingPath;
@@ -24,7 +22,6 @@ namespace PurrNet.Prediction
             this.localRotation = localRotation;
             this.localScale = localScale;
             this.activeSelf = activeSelf;
-            this.componentCount = componentCount;
         }
     }
 
@@ -60,11 +57,6 @@ namespace PurrNet.Prediction
             {
                 ownPieceIndex = result.Count;
 
-                var components = ListPool<PredictedIdentity>.Instantiate();
-                current.GetComponents(components);
-                int componentCount = components.Count;
-                ListPool<PredictedIdentity>.Destroy(components);
-
                 var path = parentPieceIndex < 0 ? System.Array.Empty<int>() : GetInverseSiblingPath(current, parentPieceIndex, result);
 
                 result.Add(new PrototypePiece(
@@ -73,8 +65,7 @@ namespace PurrNet.Prediction
                     current.localPosition,
                     current.localRotation,
                     current.localScale,
-                    current.gameObject.activeSelf,
-                    componentCount));
+                    current.gameObject.activeSelf));
             }
 
             int childCount = current.childCount;

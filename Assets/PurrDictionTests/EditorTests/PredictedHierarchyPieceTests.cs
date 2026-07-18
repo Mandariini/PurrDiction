@@ -214,6 +214,14 @@ namespace PurrNet.Prediction.Tests.Editor
         [Test]
         public void DirectDestroyOfAPieceDegradesToAHardDelete()
         {
+            UnityEngine.TestTools.LogAssert.ignoreFailingMessages = true;
+
+            PurrNet.Utils.Hasher.PrepareType<PredictedHierarchyState>();
+            PurrNet.Utils.Hasher.PrepareType<InstanceDetails>();
+            PurrNet.Utils.Hasher.PrepareType<PredictedObjectID>();
+            PurrNet.Utils.Hasher.PrepareType<PredictedComponentID>();
+            PurrNet.Utils.Hasher.PrepareType<PredictedGameObjectState>();
+
             var networkObject = Track(new GameObject("NetworkManager"));
             var managerObject = Track(new GameObject("PredictionManager"));
 
@@ -232,9 +240,8 @@ namespace PurrNet.Prediction.Tests.Editor
 
             Assert.That(hierarchy.TryGetGameObject(pieceAId, out var pieceAGo), Is.True);
 
-            UnityEngine.TestTools.LogAssert.ignoreFailingMessages = true;
+            InvokeDestroyLifecycle(pieceAGo);
             Object.DestroyImmediate(pieceAGo);
-            UnityEngine.TestTools.LogAssert.ignoreFailingMessages = false;
 
             Assert.That(hierarchy.TryGetGameObject(pieceAId, out _), Is.False,
                 "the destroyed piece must leave the instance map");
@@ -245,6 +252,8 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(hierarchy.TryGetRootId(pieceBId, out _), Is.True,
                 "unrelated pieces of the same instance must survive");
             Assert.That(hierarchy.TryGetGameObject(new PredictedObjectID(2), out _), Is.True);
+
+            UnityEngine.TestTools.LogAssert.ignoreFailingMessages = false;
         }
 
         private const BindingFlags InstanceFields = BindingFlags.Instance | BindingFlags.NonPublic;
@@ -259,6 +268,19 @@ namespace PurrNet.Prediction.Tests.Editor
             SetField(typeof(PredictionManager), manager, "<tickRate>k__BackingField", 20);
             manager.SetIsSpawned(true, false);
             return manager;
+        }
+
+        private static void InvokeDestroyLifecycle(GameObject go)
+        {
+            var identities = new List<PredictedIdentity>();
+            go.GetComponentsInChildren(true, identities);
+
+            for (var i = identities.Count - 1; i >= 0; i--)
+            {
+                var method = typeof(PredictedIdentity).GetMethod("OnDestroy", InstanceFields);
+                Assert.That(method, Is.Not.Null, "Missing PredictedIdentity.OnDestroy");
+                method.Invoke(identities[i], null);
+            }
         }
 
         private static void SetField(Type declaringType, object target, string fieldName, object value)

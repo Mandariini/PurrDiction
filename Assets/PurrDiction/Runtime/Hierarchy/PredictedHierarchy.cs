@@ -28,6 +28,11 @@ namespace PurrNet.Prediction
         readonly List<PooledPiece> _memberPiecesScratch = new ();
         readonly List<InstanceDetails> _recordBuildScratch = new ();
         readonly List<GameObject> _collectScratch = new ();
+        readonly HashSet<uint> _wantedPieceScratch = new ();
+        readonly HashSet<uint> _donorNeededIndexScratch = new ();
+        readonly HashSet<PredictedObjectID> _removedRecordScratch = new ();
+        readonly Dictionary<PredictedObjectID, PredictedObjectID> _cascadeParentScratch = new ();
+        readonly Dictionary<PredictedObjectID, bool> _cascadeReachScratch = new ();
 
         private uint _nextInstanceId = 2;
 
@@ -426,22 +431,33 @@ namespace PurrNet.Prediction
                 pieceGo.SetActive(pp.activeSelf);
             }
 
+            _wantedPieceScratch.Clear();
+            for (var r = 0; r < records.Count; r++)
+                _wantedPieceScratch.Add(records[r].pieceIndex.value);
+
             for (var k = proto.pieceCount - 1; k >= 0; k--)
             {
                 uint pieceIndex = (uint)k;
 
+                if (_wantedPieceScratch.Contains(pieceIndex))
+                    continue;
+
                 if (!_pieceGoScratch.TryGetValue(pieceIndex, out var extraGo) || !extraGo)
                     continue;
 
-                bool wanted = false;
-                for (var r = 0; r < records.Count && !wanted; r++)
-                    wanted = records[r].pieceIndex.value == pieceIndex;
+                var extraTrs = extraGo.transform;
 
-                if (wanted)
-                    continue;
+                for (var r = 0; r < records.Count; r++)
+                {
+                    if (_pieceGoScratch.TryGetValue(records[r].pieceIndex.value, out var wantedGo) && wantedGo &&
+                        wantedGo != extraGo && wantedGo.transform.IsChildOf(extraTrs))
+                    {
+                        wantedGo.transform.SetParent(null, true);
+                    }
+                }
 
                 var extraId = new PredictedObjectID(rootId.instanceId.value + pieceIndex);
-                extraGo.transform.SetParent(null, true);
+                extraTrs.SetParent(null, true);
                 extraGo.SetActive(false);
                 _pool.PutPiece(prefabId, extraId, pieceIndex, extraGo, predictionManager.localTick);
                 _pieceGoScratch.Remove(pieceIndex);
@@ -500,11 +516,13 @@ namespace PurrNet.Prediction
             for (var k = donorPieces.Count - 1; k >= 1; k--)
                 donorPieces[k].transform.SetParent(null, false);
 
+            _donorNeededIndexScratch.Clear();
+            for (var n = 0; n < needed.Count; n++)
+                _donorNeededIndexScratch.Add(needed[n].pieceIndex.value);
+
             for (var k = 0; k < donorPieces.Count; k++)
             {
-                bool isNeeded = false;
-                for (var n = 0; n < needed.Count && !isNeeded; n++)
-                    isNeeded = needed[n].pieceIndex.value == (uint)k;
+                bool isNeeded = _donorNeededIndexScratch.Contains((uint)k);
 
                 if (isNeeded)
                 {
@@ -593,14 +611,24 @@ namespace PurrNet.Prediction
 
         private bool _suppressParentWarnings;
 
+        readonly Dictionary<GameObject, (int frame, Transform parent)> _policyRefreshStamp = new ();
+        readonly HashSet<GameObject> _parentingWarned = new ();
+
         internal void NotifyInstanceParentChanged(GameObject go)
         {
             if (!_goToId.TryGetValue(go, out var instanceId))
                 return;
 
-            RefreshDescendantPolicies(go);
+            int frame = Time.frameCount;
+            var currentParent = go.transform.parent;
 
-            if (_isRollingBack || _suppressParentWarnings)
+            if (!_policyRefreshStamp.TryGetValue(go, out var stamp) || stamp.frame != frame || stamp.parent != currentParent)
+            {
+                _policyRefreshStamp[go] = (frame, currentParent);
+                RefreshDescendantPolicies(go);
+            }
+
+            if (_isRollingBack || _suppressParentWarnings || predictionManager.isReplaying)
                 return;
 
             if (!_recordsById.TryGetValue(instanceId, out var record))
@@ -611,6 +639,9 @@ namespace PurrNet.Prediction
                 : null;
 
             if (SameAttach(resolved, GetDefaultParent(record)))
+                return;
+
+            if (!_parentingWarned.Add(go))
                 return;
 
             if (!go.TryGetComponent<PredictedParent>(out _))
@@ -639,6 +670,30 @@ namespace PurrNet.Prediction
                 ref var state = ref currentState;
                 GetUnityState(ref state);
             }
+        }
+
+        internal void CollectInstanceIdentities(GameObject root, PredictedObjectID anyPieceId, List<PredictedIdentity> result)
+        {
+            var instanceRoot = TryGetRootId(anyPieceId, out var resolvedRoot) ? resolvedRoot : anyPieceId;
+            CollectInstanceIdentitiesRecursive(root.transform, instanceRoot, result);
+        }
+
+        private void CollectInstanceIdentitiesRecursive(Transform current, PredictedObjectID instanceRoot, List<PredictedIdentity> result)
+        {
+            if (_goToId.TryGetValue(current.gameObject, out var pieceId) &&
+                _recordsById.TryGetValue(pieceId, out var record) && !record.rootId.Equals(instanceRoot))
+            {
+                return;
+            }
+
+            var identities = ListPool<PredictedIdentity>.Instantiate();
+            current.GetComponents(identities);
+            result.AddRange(identities);
+            ListPool<PredictedIdentity>.Destroy(identities);
+
+            int childCount = current.childCount;
+            for (var i = 0; i < childCount; i++)
+                CollectInstanceIdentitiesRecursive(current.GetChild(i), instanceRoot, result);
         }
 
         internal bool TryRestoreAttach(PredictedObjectID pieceId, PredictedComponentID? target)
@@ -970,7 +1025,12 @@ namespace PurrNet.Prediction
                 return;
 
             if (!_instanceMap.TryGetValue(id, out var instance) || !instance)
+            {
+                PurrLogger.LogError($"Deleting {id} which has a record but no live instance; removing the stale record.");
+                _instanceMap.Remove(id);
+                RemoveRecord(id);
                 return;
+            }
 
             _removalScratch.Clear();
             _removalSetScratch.Clear();
@@ -997,6 +1057,9 @@ namespace PurrNet.Prediction
         {
             var rootId = target.rootId;
 
+            _cascadeParentScratch.Clear();
+            _cascadeReachScratch.Clear();
+
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
             {
                 var record = _spawnedPrefabs[i];
@@ -1004,7 +1067,23 @@ namespace PurrNet.Prediction
                 if (!record.rootId.Equals(rootId))
                     continue;
 
-                if (ChainReaches(record, target.instanceId, rootId))
+                var parentObj = EffectiveParentObject(record);
+
+                if (parentObj.HasValue && _recordsById.TryGetValue(parentObj.Value, out var parentRecord) &&
+                    parentRecord.rootId.Equals(rootId))
+                {
+                    _cascadeParentScratch[record.instanceId] = parentObj.Value;
+                }
+            }
+
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+            {
+                var record = _spawnedPrefabs[i];
+
+                if (!record.rootId.Equals(rootId))
+                    continue;
+
+                if (ChainReaches(record.instanceId, target.instanceId))
                 {
                     _removalScratch.Add(record);
                     _removalSetScratch.Add(record.instanceId);
@@ -1012,29 +1091,34 @@ namespace PurrNet.Prediction
             }
         }
 
-        private bool ChainReaches(InstanceDetails record, PredictedObjectID targetId, PredictedObjectID rootId)
+        private bool ChainReaches(PredictedObjectID start, PredictedObjectID targetId)
         {
-            var proto = GetPrototype(record.prefabId);
-            int maxHops = proto != null ? proto.pieceCount + 1 : 64;
-            var current = record;
+            var current = start;
+            int maxHops = _cascadeParentScratch.Count + 1;
+            bool result = false;
 
-            for (var hop = 0; hop < maxHops; hop++)
+            for (var hop = 0; hop <= maxHops; hop++)
             {
-                if (current.instanceId.Equals(targetId))
-                    return true;
+                if (current.Equals(targetId))
+                {
+                    result = true;
+                    break;
+                }
 
-                var parentObj = EffectiveParentObject(current);
+                if (_cascadeReachScratch.TryGetValue(current, out var known))
+                {
+                    result = known;
+                    break;
+                }
 
-                if (!parentObj.HasValue)
-                    return false;
+                if (!_cascadeParentScratch.TryGetValue(current, out var parent))
+                    break;
 
-                if (!_recordsById.TryGetValue(parentObj.Value, out var parentRecord) || !parentRecord.rootId.Equals(rootId))
-                    return false;
-
-                current = parentRecord;
+                current = parent;
             }
 
-            return false;
+            _cascadeReachScratch[start] = result;
+            return result;
         }
 
         private PredictedObjectID? EffectiveParentObject(in InstanceDetails record)
@@ -1075,6 +1159,7 @@ namespace PurrNet.Prediction
         private void RemovePieceSet(List<InstanceDetails> records, HashSet<PredictedObjectID> memberSet,
             bool canPool, bool triggerDestroyEvent, bool removeRecords)
         {
+            _removedRecordScratch.Clear();
             bool progress = true;
 
             while (progress)
@@ -1092,7 +1177,10 @@ namespace PurrNet.Prediction
                     {
                         _instanceMap.Remove(record.instanceId);
                         if (removeRecords)
-                            RemoveRecord(record.instanceId);
+                        {
+                            _recordsById.Remove(record.instanceId);
+                            _removedRecordScratch.Add(record.instanceId);
+                        }
                         memberSet.Remove(record.instanceId);
                         progress = true;
                         continue;
@@ -1119,6 +1207,20 @@ namespace PurrNet.Prediction
                     progress = true;
                 }
             }
+
+            if (removeRecords && _removedRecordScratch.Count > 0)
+            {
+                int w = 0;
+
+                for (var i = 0; i < _spawnedPrefabs.Count; i++)
+                {
+                    if (!_removedRecordScratch.Contains(_spawnedPrefabs[i].instanceId))
+                        _spawnedPrefabs[w++] = _spawnedPrefabs[i];
+                }
+
+                _spawnedPrefabs.RemoveRange(w, _spawnedPrefabs.Count - w);
+                _removedRecordScratch.Clear();
+            }
         }
 
         private void RemoveSubtree(InstanceDetails topRecord, GameObject topGo, HashSet<PredictedObjectID> memberSet,
@@ -1138,7 +1240,10 @@ namespace PurrNet.Prediction
                 memberSet.Remove(piece.id);
 
                 if (removeRecords)
-                    RemoveRecord(piece.id);
+                {
+                    _recordsById.Remove(piece.id);
+                    _removedRecordScratch.Add(piece.id);
+                }
             }
 
             var proto = GetPrototype(topRecord.prefabId);
@@ -1283,6 +1388,8 @@ namespace PurrNet.Prediction
             _isSceneObject.Clear();
             _reservedSceneObjects.Clear();
             _pendingSceneReservations.Clear();
+            _policyRefreshStamp.Clear();
+            _parentingWarned.Clear();
             _pool.Clear(predictionManager);
         }
 

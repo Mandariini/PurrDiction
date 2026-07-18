@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using PurrNet.Modules;
 using PurrNet.Packing;
+using PurrNet.Pooling;
 using PurrNet.Utils;
 using Unity.Profiling;
 using UnityEngine;
@@ -572,11 +573,31 @@ namespace PurrNet.Prediction
 
             if (predictionManager)
             {
-                if (predictionManager.hierarchy)
+                if (predictionManager.hierarchy && gameObject.scene.isLoaded && IsLastLiveIdentityOnGameObject())
                     predictionManager.hierarchy.NotifyPieceDestroyed(gameObject);
 
                 predictionManager.UnregisterInstance(this);
             }
+        }
+
+        private bool IsLastLiveIdentityOnGameObject()
+        {
+            var identities = ListPool<PredictedIdentity>.Instantiate();
+            gameObject.GetComponents(identities);
+
+            bool last = true;
+
+            for (var i = 0; i < identities.Count; i++)
+            {
+                if (identities[i] && !ReferenceEquals(identities[i], this))
+                {
+                    last = false;
+                    break;
+                }
+            }
+
+            ListPool<PredictedIdentity>.Destroy(identities);
+            return last;
         }
 
         public bool isOwner => IsOwner();
