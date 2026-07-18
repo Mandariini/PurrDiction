@@ -400,7 +400,7 @@ namespace PurrNet.Prediction
             if (!go) return;
 
             var components = ListPool<PredictedIdentity>.Instantiate();
-            go.GetComponents(components);
+            go.GetComponentsInChildren(true, components);
 
             for (var i = 0; i < components.Count; i++)
             {

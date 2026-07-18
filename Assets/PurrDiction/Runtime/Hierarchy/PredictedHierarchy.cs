@@ -81,7 +81,8 @@ namespace PurrNet.Prediction
                 if (_targetIdsScratch.TryGetValue(record.instanceId, out var targetIndex))
                 {
                     var targetRecord = target[targetIndex];
-                    if (targetRecord.prefabId == record.prefabId && targetRecord.pieceIndex.value == record.pieceIndex.value)
+                    if (targetRecord.prefabId == record.prefabId && targetRecord.pieceIndex.value == record.pieceIndex.value &&
+                        System.Nullable.Equals(targetRecord.parent, record.parent))
                         continue;
                 }
 
