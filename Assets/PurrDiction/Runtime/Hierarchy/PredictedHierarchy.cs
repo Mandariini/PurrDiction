@@ -674,11 +674,35 @@ namespace PurrNet.Prediction
             var def = GetDefaultParent(record);
 
             if (SameAttach(resolved, def))
+            {
                 _runtimeParents.Remove(instanceId);
+            }
             else
+            {
                 _runtimeParents[instanceId] = resolved;
 
+                if (!_isRollingBack && resolved.HasValue)
+                    ValidateRuntimeParenting(go);
+            }
+
             RefreshDescendantPolicies(go);
+        }
+
+        private void ValidateRuntimeParenting(GameObject go)
+        {
+            if (go.TryGetComponent(out Rigidbody rb) && !rb.isKinematic)
+                PurrLogger.LogWarning($"'{go.name}' has a non-kinematic Rigidbody and was parented under a predicted object; physics simulates in world space, so the attachment will fight the rigidbody. Make it kinematic while attached.", go);
+            else if (go.TryGetComponent(out Rigidbody2D rb2d) && rb2d.bodyType == RigidbodyType2D.Dynamic)
+                PurrLogger.LogWarning($"'{go.name}' has a dynamic Rigidbody2D and was parented under a predicted object; physics simulates in world space, so the attachment will fight the rigidbody. Make it kinematic while attached.", go);
+
+            var parent = go.transform.parent;
+
+            if (parent != null)
+            {
+                var scale = parent.lossyScale;
+                if (Mathf.Abs(scale.x - 1f) > 0.001f || Mathf.Abs(scale.y - 1f) > 0.001f || Mathf.Abs(scale.z - 1f) > 0.001f)
+                    PurrLogger.LogWarning($"'{go.name}' was parented under '{parent.name}' which has non-unit scale {scale}; predicted view interpolation ignores scale, expect visual drift.", parent);
+            }
         }
 
         private void RefreshDescendantPolicies(GameObject go)
