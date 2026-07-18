@@ -650,7 +650,6 @@ namespace PurrNet.Prediction
                 {
                     if (_pendingFullSync.Count > 0)
                         FlushPendingFullSyncs();
-                    ResetAllPackers();
                     WriteInitialFrameToOthers();
                 }
             }
@@ -796,39 +795,34 @@ namespace PurrNet.Prediction
             }
         }
 
-        private void ResetAllPackers()
-        {
-            for (var i = 0; i < _clientFrames.Count; i++)
-            {
-                var packer = _clientFrames[i];
-                packer.packer.ResetPositionAndMode(false);
-            }
-        }
-
         private void WriteInitialFrameToOthers()
         {
             var fCount = _clientFrames.Count;
 
+            PackedInt packedSysCount = _systemsCount;
+            PackedInt packedTickRate = tickRate;
+
             for (var j = 0; j < fCount; j++)
             {
                 var clientFrame = _clientFrames[j];
+                clientFrame.packer.ResetPositionAndMode(false);
+
                 var frame = clientFrame.packer;
                 var player = clientFrame.player;
                 var fullFrame = clientFrame.fullFrame;
 
                 if (fullFrame)
                 {
-                    Packer<PackedInt>.Write(frame, tickRate);
+                    Packer<PackedInt>.Write(frame, packedTickRate);
                     Packer<float>.Write(frame, tickDelta);
                     Packer<uint>.Write(frame, _sessionSeed);
-
-                    Packer<PackedInt>.Write(frame, _systemsCount);
+                    Packer<PackedInt>.Write(frame, packedSysCount);
 
                     for (var i = 0; i < _systemsCount; i++)
                     {
-                        if (_systems[i].isEventHandler)
-                            continue;
-                        _systems[i].RunWriteFirstState(localTick, frame);
+                        var sys = _systems[i];
+                        if (!sys.isEventHandler)
+                            sys.RunWriteFirstState(localTick, frame);
                     }
 
                     for (var i = 0; i < _systemsCount; i++)
@@ -836,13 +830,13 @@ namespace PurrNet.Prediction
                 }
                 else
                 {
-                    Packer<PackedInt>.Write(frame, _systemsCount);
+                    Packer<PackedInt>.Write(frame, packedSysCount);
 
                     for (var i = 0; i < _systemsCount; i++)
                     {
-                        if (_systems[i].isEventHandler)
-                            continue;
-                        _systems[i].RunWriteCurrentState(player, frame, _deltaModuleState);
+                        var sys = _systems[i];
+                        if (!sys.isEventHandler)
+                            sys.RunWriteCurrentState(player, frame, _deltaModuleState);
                     }
 
                     for (var i = 0; i < _systemsCount; i++)
