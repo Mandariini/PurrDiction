@@ -340,30 +340,10 @@ namespace PurrNet.Prediction
             return system;
         }
 
-        private static readonly List<PredictedIdentity> _perObjectIdentityCache = new ();
-
-        internal void CollectOwnedIdentities(GameObject root, List<PredictedIdentity> result)
-        {
-            CollectOwnedIdentities(root.transform, true, result);
-        }
-
-        private void CollectOwnedIdentities(Transform current, bool isRoot, List<PredictedIdentity> result)
-        {
-            if (!isRoot && hierarchy && hierarchy.IsInstanceRoot(current.gameObject))
-                return;
-
-            current.GetComponents(_perObjectIdentityCache);
-            result.AddRange(_perObjectIdentityCache);
-
-            int count = current.childCount;
-            for (int i = 0; i < count; i++)
-                CollectOwnedIdentities(current.GetChild(i), false, result);
-        }
-
         public void RegisterInstance(GameObject go, PredictedObjectID objectID, PlayerID? owner, bool reset, bool triggedOnRemovedFromPool)
         {
             var components = ListPool<PredictedIdentity>.Instantiate();
-            CollectOwnedIdentities(go, components);
+            go.GetComponents(components);
             int count = components.Count;
 
             for (uint i = 0; i < count; i++)
@@ -398,7 +378,7 @@ namespace PurrNet.Prediction
                 return;
 
             var components = ListPool<PredictedIdentity>.Instantiate();
-            CollectOwnedIdentities(go, components);
+            go.GetComponents(components);
 
             for (var i = 0; i < components.Count; i++)
             {
@@ -420,7 +400,7 @@ namespace PurrNet.Prediction
             if (!go) return;
 
             var components = ListPool<PredictedIdentity>.Instantiate();
-            CollectOwnedIdentities(go, components);
+            go.GetComponents(components);
 
             for (var i = 0; i < components.Count; i++)
             {
@@ -1768,7 +1748,7 @@ namespace PurrNet.Prediction
             transform.SetPositionAndRotation(position, rotation);
         }
 
-        internal GameObject InternalCreate(GameObject prefab, Vector3 position, Quaternion rotation, PredictedObjectID objectId, PlayerID? owner)
+        internal GameObject InternalCreate(GameObject prefab, Vector3 position, Quaternion rotation, out bool fromPool)
         {
             if (_pools.TryGetPool(prefab, out var pool))
             {
@@ -1778,7 +1758,7 @@ namespace PurrNet.Prediction
                 trs.SetParent(null);
                 if (!go.activeSelf)
                     go.SetActive(true);
-                RegisterInstance(go, objectId, owner, true, true);
+                fromPool = true;
                 return go;
             }
             else
@@ -1786,7 +1766,7 @@ namespace PurrNet.Prediction
                 var go = UnityProxy.InstantiateDirectly(prefab, position, rotation, gameObject.scene);
                 if (!go.activeSelf)
                     go.SetActive(true);
-                RegisterInstance(go, objectId, owner, false, false);
+                fromPool = false;
                 return go;
             }
         }
@@ -1823,14 +1803,17 @@ namespace PurrNet.Prediction
             }
         }
 
-        public void SetOwnership(PredictedObjectID? root, PlayerID? player)
+        public void SetOwnership(PredictedObjectID? root, PlayerID? player, bool cascade = true)
         {
             if (!hierarchy.TryGetGameObject(root, out var rootGo))
                 return;
 
             var children = ListPool<PredictedIdentity>.Instantiate();
 
-            CollectOwnedIdentities(rootGo, children);
+            if (cascade)
+                rootGo.GetComponentsInChildren(true, children);
+            else
+                rootGo.GetComponents(children);
 
             for (var i = 0; i < children.Count; i++)
             {
