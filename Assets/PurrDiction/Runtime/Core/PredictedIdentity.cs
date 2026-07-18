@@ -571,7 +571,12 @@ namespace PurrNet.Prediction
             TearDownAllModules();
 
             if (predictionManager)
+            {
+                if (predictionManager.hierarchy)
+                    predictionManager.hierarchy.NotifyPieceDestroyed(gameObject);
+
                 predictionManager.UnregisterInstance(this);
+            }
         }
 
         public bool isOwner => IsOwner();

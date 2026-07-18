@@ -620,6 +620,27 @@ namespace PurrNet.Prediction
                 ValidateRuntimeParenting(go);
         }
 
+        private bool _isCleaningUp;
+
+        internal void NotifyPieceDestroyed(GameObject go)
+        {
+            if (_isCleaningUp || !_goToId.TryGetValue(go, out var instanceId))
+                return;
+
+            _goToId.Remove(go);
+            _instanceMap.Remove(instanceId);
+            _isSceneObject.Remove(instanceId);
+            RemoveRecord(instanceId);
+
+            PurrLogger.LogWarning($"'{go.name}' ({instanceId}) was destroyed directly; treating it as a hard delete. Use hierarchy.Delete so the piece can be pooled and resurrected by rollbacks.");
+
+            if (!_isRollingBack && predictionManager && !predictionManager.isSimulating)
+            {
+                ref var state = ref currentState;
+                GetUnityState(ref state);
+            }
+        }
+
         internal bool TryRestoreAttach(PredictedObjectID pieceId, PredictedComponentID? target)
         {
             if (!_instanceMap.TryGetValue(pieceId, out var go) || !go)
@@ -721,6 +742,7 @@ namespace PurrNet.Prediction
 
         protected override void OnDestroy()
         {
+            _isCleaningUp = true;
             base.OnDestroy();
             ClearPool();
         }
@@ -1212,6 +1234,19 @@ namespace PurrNet.Prediction
         }
 
         public void Cleanup()
+        {
+            _isCleaningUp = true;
+            try
+            {
+                CleanupInternal();
+            }
+            finally
+            {
+                _isCleaningUp = false;
+            }
+        }
+
+        private void CleanupInternal()
         {
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
             {

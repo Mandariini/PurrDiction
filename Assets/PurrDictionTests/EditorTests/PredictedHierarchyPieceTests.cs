@@ -1,6 +1,10 @@
+using System;
 using System.Collections.Generic;
+using System.Reflection;
 using NUnit.Framework;
+using PurrNet.Modules;
 using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace PurrNet.Prediction.Tests.Editor
 {
@@ -205,6 +209,63 @@ namespace PurrNet.Prediction.Tests.Editor
 
             Assert.That(pool.TryTakePiece(new PredictedObjectID(22), 1, out var takenLeaf), Is.True);
             Assert.That(takenLeaf, Is.EqualTo(leaf));
+        }
+
+        [Test]
+        public void DirectDestroyOfAPieceDegradesToAHardDelete()
+        {
+            var networkObject = Track(new GameObject("NetworkManager"));
+            var managerObject = Track(new GameObject("PredictionManager"));
+
+            var networkManager = networkObject.AddComponent<NetworkManager>();
+            var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+            var hierarchy = manager.RegisterSystem<PredictedHierarchy>();
+            SetField(typeof(PredictionManager), manager, "<hierarchy>k__BackingField", hierarchy);
+
+            var rigRoot = BuildCompoundRig();
+            hierarchy.ReserveSceneObject(rigRoot, -1);
+            hierarchy.RegisterReservedSceneObjects();
+
+            var pieceAId = new PredictedObjectID(3);
+            var pieceAChildId = new PredictedObjectID(4);
+            var pieceBId = new PredictedObjectID(5);
+
+            Assert.That(hierarchy.TryGetGameObject(pieceAId, out var pieceAGo), Is.True);
+
+            UnityEngine.TestTools.LogAssert.ignoreFailingMessages = true;
+            Object.DestroyImmediate(pieceAGo);
+            UnityEngine.TestTools.LogAssert.ignoreFailingMessages = false;
+
+            Assert.That(hierarchy.TryGetGameObject(pieceAId, out _), Is.False,
+                "the destroyed piece must leave the instance map");
+            Assert.That(hierarchy.TryGetRootId(pieceAId, out _), Is.False,
+                "the destroyed piece's record must be removed");
+            Assert.That(hierarchy.TryGetRootId(pieceAChildId, out _), Is.False,
+                "pieces destroyed with their parent must be removed too");
+            Assert.That(hierarchy.TryGetRootId(pieceBId, out _), Is.True,
+                "unrelated pieces of the same instance must survive");
+            Assert.That(hierarchy.TryGetGameObject(new PredictedObjectID(2), out _), Is.True);
+        }
+
+        private const BindingFlags InstanceFields = BindingFlags.Instance | BindingFlags.NonPublic;
+
+        private static PredictionManager CreateSpawnedPredictionManager(GameObject managerObject, NetworkManager networkManager)
+        {
+            var tickManager = new TickManager(20, networkManager, null, false);
+            SetField(typeof(NetworkManager), networkManager, "_clientTickManager", tickManager);
+
+            var manager = managerObject.AddComponent<PredictionManager>();
+            SetField(typeof(NetworkIdentity), manager, "<networkManager>k__BackingField", networkManager);
+            SetField(typeof(PredictionManager), manager, "<tickRate>k__BackingField", 20);
+            manager.SetIsSpawned(true, false);
+            return manager;
+        }
+
+        private static void SetField(Type declaringType, object target, string fieldName, object value)
+        {
+            var field = declaringType.GetField(fieldName, InstanceFields);
+            Assert.That(field, Is.Not.Null, $"Missing field {declaringType.FullName}.{fieldName}");
+            field.SetValue(target, value);
         }
 
         [Test]
