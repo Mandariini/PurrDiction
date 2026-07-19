@@ -325,6 +325,9 @@ namespace PurrNet.Prediction
             localTick = 1;
             _lastVerifiedTick = 1;
             localTickInContext = 1;
+            _hasServerTickBaseline = false;
+            _serverTickBaseline = 0;
+            _deterministicTimeBaseline = 0;
             _deltas.Clear();
         }
 
@@ -739,12 +742,37 @@ namespace PurrNet.Prediction
             {
                 if (queue.Count == 0)
                 {
+                    if (!queue.waitForInput && _validateDeterministicData)
+                        PurrLogger.Log($"[InputQueue] {player} dry at server tick {localTick}, waiting for input");
                     queue.waitForInput = true;
+                    queue.ticksAboveMin = 0;
                     continue;
                 }
 
                 if (queue.waitForInput)
+                {
+                    queue.ticksAboveMin = 0;
                     continue;
+                }
+
+                if (queue.Count > _inputQueueSettings.minInputs && queue.Count > 1)
+                {
+                    queue.ticksAboveMin += 1;
+
+                    if (queue.ticksAboveMin >= tickRate)
+                    {
+                        var dropped = queue.inputQueue.Dequeue();
+                        dropped.inputPacket.Dispose();
+                        queue.ticksAboveMin = 0;
+
+                        if (_validateDeterministicData)
+                        {
+                            PurrLogger.Log(
+                                $"[InputQueue] {player} regulated at server tick {localTick}: dropped tick {dropped.clientTick}, depth {queue.Count}");
+                        }
+                    }
+                }
+                else queue.ticksAboveMin = 0;
 
                 var dequeued = queue.inputQueue.Peek();
                 HandleIncomingInput(dequeued.inputPacket, dequeued.count, player);
@@ -881,7 +909,7 @@ namespace PurrNet.Prediction
 
                 if (!_clientTicks.TryGetValue(player, out var queue))
                 {
-                    SendFrameToRemote(player, 0, fullFrame, new BitPackerWithLength(deltaLen, packer));
+                    SendFrameToRemote(player, 0, localTick, fullFrame, new BitPackerWithLength(deltaLen, packer));
                     if (fullFrame)
                     {
                         clientFrame.fullFrame = false;
@@ -899,7 +927,7 @@ namespace PurrNet.Prediction
                     dequeued.inputPacket.Dispose();
                 }
 
-                SendFrameToRemote(player, tick, fullFrame, new BitPackerWithLength(deltaLen, packer));
+                SendFrameToRemote(player, tick, localTick, fullFrame, new BitPackerWithLength(deltaLen, packer));
                 if (fullFrame)
                 {
                     clientFrame.fullFrame = false;
@@ -1046,6 +1074,7 @@ namespace PurrNet.Prediction
         {
             public BitPacker packer;
             public ulong clientTick;
+            public ulong serverTick;
             public bool fullFrame;
 
             public void Dispose()
@@ -1057,7 +1086,7 @@ namespace PurrNet.Prediction
         readonly Queue<FrameDelta> _deltas = new ();
 
         [TargetRpc(compressionLevel: CompressionLevel.Best)]
-        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong localTick, bool fullFrame, BitPackerWithLength delta)
+        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong localTick, ulong serverTick, bool fullFrame, BitPackerWithLength delta)
         {
             delta.packer.SkipBytes(delta.originalLength);
 
@@ -1072,6 +1101,7 @@ namespace PurrNet.Prediction
             {
                 packer = delta.packer,
                 clientTick = localTick,
+                serverTick = serverTick,
                 fullFrame = fullFrame
             });
         }
@@ -1147,6 +1177,9 @@ namespace PurrNet.Prediction
         public event Action onRollbackFinished;
 
         private ulong _lastVerifiedTick = 1;
+        private ulong _serverTickBaseline;
+        private ulong _deterministicTimeBaseline;
+        private bool _hasServerTickBaseline;
 
         private void OnPostTick()
         {
@@ -1192,8 +1225,31 @@ namespace PurrNet.Prediction
                     }
 
                     if (previousFrame.fullFrame)
+                    {
                         ReadFullFrame(previousFrame.packer, inPlaceTick, verifiedTick);
-                    else RollbackToFrame(previousFrame.packer, inPlaceTick, verifiedTick);
+
+                        _serverTickBaseline = previousFrame.serverTick;
+                        _deterministicTimeBaseline = time ? time.tick : 0;
+                        _hasServerTickBaseline = time;
+                    }
+                    else
+                    {
+                        RollbackToFrame(previousFrame.packer, inPlaceTick, verifiedTick);
+
+                        if (_hasServerTickBaseline && time)
+                        {
+                            ulong expected = _deterministicTimeBaseline + (previousFrame.serverTick - _serverTickBaseline);
+                            long deficit = (long)expected - (long)time.tick;
+
+                            if (deficit > 0)
+                                SimulateDeterministicDeficit(deficit, inPlaceTick);
+                            else if (deficit < 0 && _validateDeterministicData)
+                            {
+                                PurrLogger.LogWarning(
+                                    $"Deterministic timeline ahead of server clock by {-deficit} ticks at frame tag {previousFrame.clientTick}");
+                            }
+                        }
+                    }
 
                     SimulateFrame(verifiedTick, HistorySaveMode.VerifiedFrame);
                     isVerified = false;
@@ -1390,6 +1446,71 @@ namespace PurrNet.Prediction
                 SimulateFrame(simTick, saveMode);
         }
 
+        private void SimulateDeterministicDeficit(long deficit, ulong contextTick)
+        {
+            long cap = tickRate * 30L;
+            if (deficit > cap)
+            {
+                PurrLogger.LogWarning(
+                    $"Deterministic timeline behind server clock by {deficit} ticks; clamping catch-up to {cap}");
+                deficit = cap;
+            }
+
+            var delta = tickDelta;
+            if (time)
+                delta *= time.timeScale;
+
+            bool wasCatchingUp = isCatchingUpFrames;
+            isCatchingUpFrames = true;
+            localTickInContext = contextTick;
+
+            try
+            {
+                for (long step = 0; step < deficit; step++)
+                {
+                    for (var i = 0; i < _systemsCount; i++)
+                    {
+                        var system = _systems[i];
+                        if (system.isDeterministic)
+                            system.RunPrepareSimulationInputs(contextTick, delta);
+                    }
+
+                    for (var i = 0; i < _systemsCount; i++)
+                    {
+                        var system = _systems[i];
+                        if (system.isDeterministic)
+                            system.RunSimulateTick(contextTick, delta);
+                    }
+
+                    for (var i = 0; i < _systemsCount; i++)
+                    {
+                        var system = _systems[i];
+                        if (system.isDeterministic)
+                            system.RunLateSimulateTick(delta);
+                    }
+
+                    for (var i = 0; i < _systemsCount; i++)
+                    {
+                        var system = _systems[i];
+                        if (system.isDeterministic)
+                            system.RunPostSimulate();
+                    }
+
+                    for (var i = 0; i < _systemsCount; i++)
+                    {
+                        var system = _systems[i];
+                        if (system.isDeterministic)
+                            system.RunGetLatestUnityState();
+                    }
+                }
+            }
+            finally
+            {
+                isCatchingUpFrames = wasCatchingUp;
+                localTickInContext = localTick;
+            }
+        }
+
         private void SimulateFrameInPlace(ulong verifiedTick)
         {
             var delta = tickDelta;
@@ -1548,6 +1669,7 @@ namespace PurrNet.Prediction
         public class InputQueue
         {
             public bool waitForInput;
+            public int ticksAboveMin;
             public readonly Queue<InputQueueValue> inputQueue = new ();
             public int Count => inputQueue.Count;
         }
@@ -1579,11 +1701,15 @@ namespace PurrNet.Prediction
 
             if (ticks.Count > _inputQueueSettings.maxInputs)
             {
+                int before = ticks.Count;
                 while (ticks.Count > _inputQueueSettings.minInputs)
                 {
                     var oldInput = ticks.inputQueue.Dequeue();
                     oldInput.inputPacket.Dispose();
                 }
+
+                if (_validateDeterministicData)
+                    PurrLogger.Log($"[InputQueue] {info.sender} trimmed at server tick {localTick}: {before} -> {ticks.Count}");
             }
 
             ticks.inputQueue.Enqueue(new InputQueueValue
@@ -1594,7 +1720,11 @@ namespace PurrNet.Prediction
             });
 
             if (ticks.waitForInput && ticks.inputQueue.Count >= _inputQueueSettings.minInputs)
+            {
                 ticks.waitForInput = false;
+                if (_validateDeterministicData)
+                    PurrLogger.Log($"[InputQueue] {info.sender} refilled at server tick {localTick}: depth {ticks.Count}, first tick {tick}");
+            }
         }
 
         private void HandleIncomingInput(BitPacker inputPacket, PackedUInt count, PlayerID sender)
