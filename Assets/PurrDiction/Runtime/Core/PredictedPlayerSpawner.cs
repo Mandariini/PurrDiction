@@ -91,7 +91,7 @@ namespace PurrNet.Prediction
         }
     }
 
-    public class PredictedPlayerSpawner : DeterministicIdentity<PlayerSpawnerState>
+    public class PredictedPlayerSpawner : PredictedIdentity<PlayerSpawnerState>
     {
         [SerializeField] private GameObject _playerPrefab;
         [SerializeField, PurrLock] private bool _destroyOnDisconnect;

@@ -742,8 +742,6 @@ namespace PurrNet.Prediction
             {
                 if (queue.Count == 0)
                 {
-                    if (!queue.waitForInput && _validateDeterministicData)
-                        PurrLogger.Log($"[InputQueue] {player} dry at server tick {localTick}, waiting for input");
                     queue.waitForInput = true;
                     queue.ticksAboveMin = 0;
                     continue;
@@ -764,12 +762,6 @@ namespace PurrNet.Prediction
                         var dropped = queue.inputQueue.Dequeue();
                         dropped.inputPacket.Dispose();
                         queue.ticksAboveMin = 0;
-
-                        if (_validateDeterministicData)
-                        {
-                            PurrLogger.Log(
-                                $"[InputQueue] {player} regulated at server tick {localTick}: dropped tick {dropped.clientTick}, depth {queue.Count}");
-                        }
                     }
                 }
                 else queue.ticksAboveMin = 0;
@@ -1711,15 +1703,11 @@ namespace PurrNet.Prediction
 
             if (ticks.Count > _inputQueueSettings.maxInputs)
             {
-                int before = ticks.Count;
                 while (ticks.Count > _inputQueueSettings.minInputs)
                 {
                     var oldInput = ticks.inputQueue.Dequeue();
                     oldInput.inputPacket.Dispose();
                 }
-
-                if (_validateDeterministicData)
-                    PurrLogger.Log($"[InputQueue] {info.sender} trimmed at server tick {localTick}: {before} -> {ticks.Count}");
             }
 
             ticks.inputQueue.Enqueue(new InputQueueValue
@@ -1730,11 +1718,7 @@ namespace PurrNet.Prediction
             });
 
             if (ticks.waitForInput && ticks.inputQueue.Count >= _inputQueueSettings.minInputs)
-            {
                 ticks.waitForInput = false;
-                if (_validateDeterministicData)
-                    PurrLogger.Log($"[InputQueue] {info.sender} refilled at server tick {localTick}: depth {ticks.Count}, first tick {tick}");
-            }
         }
 
         private void HandleIncomingInput(BitPacker inputPacket, PackedUInt count, PlayerID sender)
