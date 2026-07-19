@@ -726,5 +726,7 @@ namespace PurrNet.Prediction
         public abstract void ReadFirstInput(ulong localTick, BitPacker packer);
 
         internal abstract void ClearFuture(ulong stateTick);
+
+        internal virtual void ValidateDeterministicState(ulong serverTick) { }
     }
 }

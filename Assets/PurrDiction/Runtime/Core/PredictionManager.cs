@@ -1249,9 +1249,19 @@ namespace PurrNet.Prediction
                                     $"Deterministic timeline ahead of server clock by {-deficit} ticks at frame tag {previousFrame.clientTick}");
                             }
                         }
+
+                        if (_validateDeterministicData)
+                        {
+                            for (var i = 0; i < _systemsCount; i++)
+                            {
+                                if (_systems[i].isDeterministic)
+                                    _systems[i].ValidateDeterministicState(previousFrame.serverTick);
+                            }
+                        }
                     }
 
                     SimulateFrame(verifiedTick, HistorySaveMode.VerifiedFrame);
+
                     isVerified = false;
                 }
 
