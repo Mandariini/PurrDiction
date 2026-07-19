@@ -41,14 +41,11 @@ namespace PurrNet.Prediction
                 STATE read = default;
                 Packer<STATE>.Read(packer, ref read);
 
-                if (!Packer.AreEqual(read, fullPredictedState.state))
-                {
-                    Debug.LogError(
-                        $"State mismatch (tick: {predictionManager.time.tick}), should be:\n{read.ToString()}\nBut its:\n{fullPredictedState.state.ToString()}");
-                    Debug.Break();
-                }
+                if (_hasPendingValidation)
+                    _pendingValidationState.Dispose();
 
-                read.Dispose();
+                _pendingValidationState = read;
+                _hasPendingValidation = true;
             }
 
             if (_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
@@ -62,6 +59,27 @@ namespace PurrNet.Prediction
                 fullPredictedState.prediction = prediction;
                 SetOwner(prediction.owner);
             }
+        }
+
+        private STATE _pendingValidationState;
+        private bool _hasPendingValidation;
+
+        internal override void ValidateDeterministicState(ulong serverTick)
+        {
+            if (!_hasPendingValidation)
+                return;
+
+            _hasPendingValidation = false;
+
+            if (!Packer.AreEqual(_pendingValidationState, fullPredictedState.state))
+            {
+                Debug.LogError(
+                    $"State mismatch (server tick: {serverTick}), should be:\n{_pendingValidationState.ToString()}\nBut its:\n{fullPredictedState.state.ToString()}");
+                Debug.Break();
+            }
+
+            _pendingValidationState.Dispose();
+            _pendingValidationState = default;
         }
 
         public PredictedHierarchy hierarchy { get; private set; }
@@ -107,6 +125,13 @@ namespace PurrNet.Prediction
 
         private void DisposeStateStorage()
         {
+            if (_hasPendingValidation)
+            {
+                _pendingValidationState.Dispose();
+                _pendingValidationState = default;
+                _hasPendingValidation = false;
+            }
+
             _viewState?.Dispose();
             _viewState = null;
 
@@ -214,9 +239,7 @@ namespace PurrNet.Prediction
 
         internal override void SaveStateInHistory(ulong tick)
         {
-            if (LatestHistoryMatches(tick, ref fullPredictedState))
-                return;
-
+            _stateHistory.PruneByTickWindow(tick);
             _stateHistory.Write(tick, fullPredictedState.DeepCopy());
         }
 

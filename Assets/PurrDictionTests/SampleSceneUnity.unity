@@ -151,6 +151,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6a482565f52c4fab88d674fc0d130573, type: 3}
   m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction::PurrNet.Prediction.StaticPredictedIdentity
+  _predictionPolicySource: 0
+  _predictionPolicy: 0
 --- !u!65 &227476747
 BoxCollider:
   m_ObjectHideFlags: 0
@@ -219,6 +221,7 @@ MeshRenderer:
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
+  m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
 --- !u!33 &227476749
 MeshFilter:
@@ -280,6 +283,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6a482565f52c4fab88d674fc0d130573, type: 3}
   m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction::PurrNet.Prediction.StaticPredictedIdentity
+  _predictionPolicySource: 0
+  _predictionPolicy: 0
 --- !u!65 &238752377
 BoxCollider:
   m_ObjectHideFlags: 0
@@ -348,6 +353,7 @@ MeshRenderer:
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
+  m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
 --- !u!33 &238752379
 MeshFilter:
@@ -537,6 +543,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f14e0e7bb0217cc418ed3e3a4678eb3d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction.Tests::PurrNet.Prediction.Tests.SimpleRotatingPlatform
+  _predictionPolicySource: 0
+  _predictionPolicy: 0
   _renderer: {fileID: 238590725}
   _predictedRigidbody: {fileID: 355645954}
 --- !u!1 &367461689
@@ -548,6 +556,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 367461690}
+  - component: {fileID: 367461691}
   m_Layer: 0
   m_Name: SpawnPoint
   m_TagString: Untagged
@@ -570,6 +579,20 @@ Transform:
   m_Children: []
   m_Father: {fileID: 457991333}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &367461691
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 367461689}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6a482565f52c4fab88d674fc0d130573, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: PurrNet.Prediction::PurrNet.Prediction.StaticPredictedIdentity
+  _predictionPolicySource: 0
+  _predictionPolicy: 0
 --- !u!1 &410087039
 GameObject:
   m_ObjectHideFlags: 0
@@ -596,14 +619,14 @@ Light:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 410087039}
   m_Enabled: 1
-  serializedVersion: 11
+  serializedVersion: 12
   m_Type: 1
   m_Color: {r: 1, g: 1, b: 1, a: 1}
   m_Intensity: 2
   m_Range: 10
   m_SpotAngle: 30
   m_InnerSpotAngle: 21.80208
-  m_CookieSize: 10
+  m_CookieSize2D: {x: 10, y: 10}
   m_Shadows:
     m_Type: 2
     m_Resolution: -1
@@ -726,6 +749,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1a1392aa1bc3d3b4a9ef31b6e6d8d4b5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _predictionPolicySource: 0
+  _predictionPolicy: 0
   _playerPrefab: {fileID: 2990978637306053845, guid: 14ef4fb9c3d76ce4686663df0c0f2555, type: 3}
   _destroyOnDisconnect: 1
   spawnPoints:
@@ -811,6 +836,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3731f5aa7cadc794c8b48e0e2ad8f5a0, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _predictionPolicySource: 0
+  _predictionPolicy: 0
 --- !u!4 &686675258
 Transform:
   m_ObjectHideFlags: 0
@@ -886,6 +913,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 21d13622c5da2b14384a1c1abe0ea087, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _predictionPolicySource: 0
+  _predictionPolicy: 0
   _predictedMachine: {fileID: 1871079014}
 --- !u!4 &1179252127
 Transform:
@@ -1044,6 +1073,14 @@ MonoBehaviour:
   _displayTarget: 6
   fontSize: 13
   textColor: {r: 1, g: 1, b: 1, a: 1}
+  _highPingThreshold: 250
+  _highPingRecoveryThreshold: 180
+  _highJitterThreshold: 80
+  _highJitterRecoveryThreshold: 50
+  _highPacketLossThreshold: 10
+  _highPacketLossRecoveryThreshold: 5
+  _qualityChangeDuration: 2
+  _connectionStallThreshold: 2
 --- !u!114 &1793795281
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1087,6 +1124,8 @@ MonoBehaviour:
   _host: purrtransport-france.purrservers.com
   _timeoutInSeconds: 5
   _pollEventsInUpdate: 0
+  _useNat: 0
+  _natResolveTimeout: 8
   _networkSimulation:
     includeInBuild: 0
     simulateLatency: 0
@@ -1149,6 +1188,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3d5fadb47a9f2134db85c4ffed35eae5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _predictionPolicySource: 0
+  _predictionPolicy: 0
+  _defaultStateIndex: 0
   _wrappedStates:
   - _object: {fileID: 1179252125}
   - _object: {fileID: 686675256}
@@ -1235,6 +1277,7 @@ MeshRenderer:
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
+  m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
 --- !u!33 &1997087628
 MeshFilter:

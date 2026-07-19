@@ -113,13 +113,19 @@ namespace PurrNet.Prediction
         {
             if (predictionManager.players)
             {
-                var players = predictionManager.players.players;
-                for (var i = 0; i < players.Count; i++)
-                    OnPlayerLoadedScene(players[i]);
-
                 predictionManager.players.onPlayerAdded += OnPlayerLoadedScene;
                 predictionManager.players.onPlayerRemoved += OnPlayerUnloadedScene;
             }
+        }
+
+        protected override void SimulationStart()
+        {
+            if (!predictionManager.players)
+                return;
+
+            var players = predictionManager.players.players;
+            for (var i = 0; i < players.Count; i++)
+                OnPlayerLoadedScene(players[i]);
         }
 
         protected override PlayerSpawnerState GetInitialState()

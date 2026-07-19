@@ -70,11 +70,29 @@ public static class PredictionTestUtils
         foreach (var details in entries)
         {
             ulong owner = details.owner.HasValue ? details.owner.Value.id.value : 0;
-            sb.Append($"[{(int)details.prefabId}:{details.instanceId.instanceId.value}:{owner}");
+            sb.Append($"[{(int)details.prefabId}:{details.pieceIndex.value}:{details.instanceId.instanceId.value}:{owner}");
 
             if (details.instanceId.TryGetComponent<PawnIdentity>(pm, out var pawn))
                 sb.Append($":sum={pawn.currentState.sum}:proj={pawn.currentState.projectiles}");
 
+            sb.Append(']');
+        }
+
+        bool any = false;
+        foreach (var details in entries)
+        {
+            if (!details.instanceId.TryGetComponent<PredictedParent>(pm, out var carrier))
+                continue;
+
+            if (!any)
+            {
+                sb.Append("|parents=");
+                any = true;
+            }
+
+            var link = carrier.currentState.parent;
+            sb.Append('[').Append(details.instanceId.instanceId.value).Append("->");
+            sb.Append(link.HasValue ? link.Value.objectId.instanceId.value.ToString() : "root");
             sb.Append(']');
         }
 

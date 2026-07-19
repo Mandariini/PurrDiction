@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using PurrNet.Modules;
 using PurrNet.Packing;
+using PurrNet.Pooling;
 using PurrNet.Utils;
 using Unity.Profiling;
 using UnityEngine;
@@ -68,6 +69,23 @@ namespace PurrNet.Prediction
         /// Can be used to identify the object across the network.
         /// </summary>
         public PredictedComponentID id;
+
+        /// <summary>
+        /// Id of the root piece of the spawn instance this component belongs to.
+        /// Use this instead of id.objectId when comparing whether two components
+        /// come from the same spawned prefab: id.objectId identifies the piece
+        /// (the GameObject carrying this component), not the whole instance.
+        /// </summary>
+        public PredictedObjectID rootObjectId
+        {
+            get
+            {
+                var manager = predictionManager;
+                if (manager && manager.hierarchy && manager.hierarchy.TryGetRootId(id.objectId, out var rootId))
+                    return rootId;
+                return id.objectId;
+            }
+        }
 
         internal bool isFreshSpawn = true;
         internal bool preservesStateOnSetup { get; private set; }
@@ -239,6 +257,10 @@ namespace PurrNet.Prediction
         protected virtual void OnTransformParentChanged()
         {
             RefreshResolvedPredictionPolicy();
+
+            var manager = predictionManager;
+            if (manager && manager.hierarchy)
+                manager.hierarchy.NotifyInstanceParentChanged(gameObject);
         }
 
         /// <summary>
@@ -550,7 +572,32 @@ namespace PurrNet.Prediction
             TearDownAllModules();
 
             if (predictionManager)
+            {
+                if (predictionManager.hierarchy && gameObject.scene.isLoaded && IsLastLiveIdentityOnGameObject())
+                    predictionManager.hierarchy.NotifyPieceDestroyed(gameObject);
+
                 predictionManager.UnregisterInstance(this);
+            }
+        }
+
+        private bool IsLastLiveIdentityOnGameObject()
+        {
+            var identities = ListPool<PredictedIdentity>.Instantiate();
+            gameObject.GetComponents(identities);
+
+            bool last = true;
+
+            for (var i = 0; i < identities.Count; i++)
+            {
+                if (identities[i] && !ReferenceEquals(identities[i], this))
+                {
+                    last = false;
+                    break;
+                }
+            }
+
+            ListPool<PredictedIdentity>.Destroy(identities);
+            return last;
         }
 
         public bool isOwner => IsOwner();
@@ -679,5 +726,7 @@ namespace PurrNet.Prediction
         public abstract void ReadFirstInput(ulong localTick, BitPacker packer);
 
         internal abstract void ClearFuture(ulong stateTick);
+
+        internal virtual void ValidateDeterministicState(ulong serverTick) { }
     }
 }

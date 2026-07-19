@@ -5,7 +5,6 @@ using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
-using PurrNet;
 using PurrNet.Packing;
 using PurrNet.Pooling;
 using PurrNet.Prediction.Tests;
@@ -21,8 +20,6 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         private const int WarmupIterations = 8;
         private const string DefaultOutputDirectory = "Temp/PurrDictionHistoryBenchmarks";
 
-        private static bool _boolSink;
-        private static int _intSink;
         private static string _currentTypeName;
 
         [MenuItem("Tools/PurrDiction/Analysis/Run History Benchmarks", false, -90)]
@@ -97,22 +94,6 @@ namespace PurrNet.Prediction.Benchmarks.Editor
 
             BenchmarkTypeWithDuplicate(
                 report,
-                "PredictedPhysicsData",
-                () => CreatePredictedPhysicsData(16),
-                () => CreatePredictedPhysicsData(17),
-                500);
-            WriteReports(report);
-
-            BenchmarkTypeWithDuplicate(
-                report,
-                "ProjectileState3D",
-                () => CreateProjectileState(8),
-                () => CreateProjectileState(9),
-                1000);
-            WriteReports(report);
-
-            BenchmarkTypeWithDuplicate(
-                report,
                 "FallingSandState_10",
                 () => CreateFallingSandState(10, 10),
                 () => CreateFallingSandState(10, 11),
@@ -179,7 +160,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             Debug.Log($"PurrDiction history benchmark: starting {name} ({iterations} iterations).");
             var result = CreateTypeResult<T>(name);
             AddCommonOperations(result, create, createDifferent, iterations);
-            result.operations.Insert(1, MeasureDirectDuplicate(name, iterations, create));
+            result.operations.Insert(1, MeasureDirectDuplicate(iterations, create));
             report.types.Add(result);
             Debug.Log($"PurrDiction history benchmark: finished {name}.");
         }
@@ -206,23 +187,21 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             Func<T> createDifferent,
             int iterations) where T : struct, IPredictedData<T>
         {
-            result.operations.Add(MeasurePurrCopy(result.name, iterations, create));
-            result.operations.Add(MeasureExplicitPackerCopy(result.name, iterations, create));
-            result.operations.Add(MeasureFullStateDeepCopy(result.name, iterations, create));
-            result.operations.Add(MeasureAreEqualRef(result.name, iterations, create));
-            result.operations.Add(MeasureHistoryWritePreCopied(result.name, iterations, create));
-            result.operations.Add(MeasureStatefulSaveUnchanged(result.name, iterations, create));
-            result.operations.Add(MeasureStatefulSavePredictionChanged(result.name, iterations, create));
-            result.operations.Add(MeasureStatefulSaveStateChanged(result.name, iterations, create, createDifferent));
-            result.operations.Add(MeasureDeterministicSave(result.name, iterations, create));
-            result.operations.Add(MeasurePackerWriteRead(result.name, iterations, create));
-            result.operations.Add(MeasureDeltaWriteRead(result.name, "DeltaPacker.WriteRead.Equal", iterations, create, create));
-            result.operations.Add(MeasureDeltaWriteRead(result.name, "DeltaPacker.WriteRead.Changed", iterations, create, createDifferent));
+            result.operations.Add(MeasurePurrCopy(iterations, create));
+            result.operations.Add(MeasureExplicitPackerCopy(iterations, create));
+            result.operations.Add(MeasureFullStateDeepCopy(iterations, create));
+            result.operations.Add(MeasureAreEqualRef(iterations, create));
+            result.operations.Add(MeasureHistoryWritePreCopied(iterations, create));
+            result.operations.Add(MeasureStatefulSaveUnchanged(iterations, create));
+            result.operations.Add(MeasureStatefulSavePredictionChanged(iterations, create));
+            result.operations.Add(MeasureStatefulSaveStateChanged(iterations, create, createDifferent));
+            result.operations.Add(MeasureDeterministicSave(iterations, create));
+            result.operations.Add(MeasurePackerWriteRead(iterations, create));
+            result.operations.Add(MeasureDeltaWriteRead("DeltaPacker.WriteRead.Equal", iterations, create, create));
+            result.operations.Add(MeasureDeltaWriteRead("DeltaPacker.WriteRead.Changed", iterations, create, createDifferent));
         }
 
-        private static OperationResult MeasurePurrCopy<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasurePurrCopy<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -238,9 +217,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 note: $"Delegate: {FormatMethod(PurrCopy<T>.Copy?.Method)}");
         }
 
-        private static OperationResult MeasureDirectDuplicate<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureDirectDuplicate<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>, IDuplicate<T>
         {
             return MeasureOperation(
@@ -255,9 +232,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 ctx => ctx.Dispose());
         }
 
-        private static OperationResult MeasureExplicitPackerCopy<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureExplicitPackerCopy<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -273,9 +248,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 MeasurePackerBits(create));
         }
 
-        private static OperationResult MeasureFullStateDeepCopy<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureFullStateDeepCopy<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -290,9 +263,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 ctx => ctx.Dispose());
         }
 
-        private static OperationResult MeasureAreEqualRef<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureAreEqualRef<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -304,13 +275,11 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     var right = PurrCopy<T>.Copy(left);
                     return new EqualityContext<T>(left, right);
                 },
-                (ctx, _) => _boolSink ^= Packer.AreEqualRef(ref ctx.left, ref ctx.right),
+                (ctx, _) => Packer.AreEqualRef(ref ctx.left, ref ctx.right),
                 ctx => ctx.Dispose());
         }
 
-        private static OperationResult MeasureHistoryWritePreCopied<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureHistoryWritePreCopied<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -321,9 +290,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 ctx => ctx.Dispose());
         }
 
-        private static OperationResult MeasureStatefulSaveUnchanged<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureStatefulSaveUnchanged<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -345,9 +312,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 ctx => ctx.Dispose());
         }
 
-        private static OperationResult MeasureStatefulSavePredictionChanged<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureStatefulSavePredictionChanged<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -372,9 +337,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 ctx => ctx.Dispose());
         }
 
-        private static OperationResult MeasureStatefulSaveStateChanged<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureStatefulSaveStateChanged<T>(int iterations,
             Func<T> create,
             Func<T> createDifferent) where T : struct, IPredictedData<T>
         {
@@ -399,9 +362,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 ctx => ctx.Dispose());
         }
 
-        private static OperationResult MeasureDeterministicSave<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasureDeterministicSave<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -412,9 +373,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 ctx => ctx.Dispose());
         }
 
-        private static OperationResult MeasurePackerWriteRead<T>(
-            string typeName,
-            int iterations,
+        private static OperationResult MeasurePackerWriteRead<T>(int iterations,
             Func<T> create) where T : struct, IPredictedData<T>
         {
             return MeasureOperation(
@@ -425,7 +384,6 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 {
                     using var packer = BitPackerPool.Get();
                     Packer<T>.Write(packer, ctx.value);
-                    _intSink ^= packer.positionInBits;
                     packer.ResetPositionAndMode(true);
 
                     T read = default;
@@ -436,9 +394,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 MeasurePackerBits(create));
         }
 
-        private static OperationResult MeasureDeltaWriteRead<T>(
-            string typeName,
-            string operationName,
+        private static OperationResult MeasureDeltaWriteRead<T>(string operationName,
             int iterations,
             Func<T> createOld,
             Func<T> createNew) where T : struct, IPredictedData<T>
@@ -459,7 +415,6 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 {
                     using var packer = BitPackerPool.Get();
                     DeltaPacker<T>.Write(packer, ctx.oldValue, ctx.newValue);
-                    _intSink ^= packer.positionInBits;
                     packer.ResetPositionAndMode(true);
 
                     T read = default;
@@ -672,65 +627,6 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 toDelete.Add(new PredictedObjectID((uint)i + 1000));
 
             return new PredictedHierarchyState(spawned, toDelete, (uint)(spawnedCount + 2));
-        }
-
-        private static PredictedPhysicsData CreatePredictedPhysicsData(int eventCount)
-        {
-            var events = DisposableList<PhysicsEvent>.Create(eventCount);
-            for (int i = 0; i < eventCount; i++)
-                events.Add(CreatePhysicsEvent(i));
-
-            return new PredictedPhysicsData
-            {
-                events = events
-            };
-        }
-
-        private static PhysicsEvent CreatePhysicsEvent(int index)
-        {
-            var collision = new PhysicsCollision();
-#if UNITY_PHYSICS_3D
-            collision.contacts = DisposableList<PhysicsContactPoint>.Create(4);
-            for (int i = 0; i < 4; i++)
-            {
-                collision.contacts.Add(new PhysicsContactPoint
-                {
-                    point = new Vector3(index, i, index + i),
-                    normal = Vector3.up,
-                    separation = -0.01f * i
-                });
-            }
-
-            collision.impulse = new Vector3(index * 0.1f, index * 0.2f, index * 0.3f);
-            collision.relativeVelocity = new Vector3(index * 0.4f, index * 0.5f, index * 0.6f);
-#endif
-
-            return new PhysicsEvent
-            {
-                isTrigger = (index & 1) == 0,
-                type = (PhysicsEventType)(index % 3),
-                me = new PredictedComponentID(new PredictedObjectID((uint)index + 10), 1),
-                other = new PredictedComponentID(new PredictedObjectID((uint)index + 20), 2),
-                collision = collision
-            };
-        }
-
-        private static ProjectileState3D CreateProjectileState(int overlapCount)
-        {
-            var overlaps = DisposableList<PredictedComponentID>.Create(overlapCount);
-            for (int i = 0; i < overlapCount; i++)
-                overlaps.Add(new PredictedComponentID(new PredictedObjectID((uint)i + 50), 3));
-
-            return new ProjectileState3D
-            {
-                velocity = new Vector3(5f + overlapCount, 2f, 1f),
-                gravity = -9.81f,
-                radius = 0.25f,
-                isTrigger = true,
-                overlappingTriggers = overlaps,
-                lastSolidContact = new PredictedComponentID(new PredictedObjectID(77), 4),
-                hasLastSolidContact = overlapCount > 8
-            };
         }
 
         private static FallingSandState CreateFallingSandState(int gridSize, int variant)

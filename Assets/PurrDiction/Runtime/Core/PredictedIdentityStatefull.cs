@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Runtime.CompilerServices;
 using JetBrains.Annotations;
 using PurrNet.Modules;
 using PurrNet.Packing;
@@ -178,9 +177,13 @@ namespace PurrNet.Prediction
             {
                 _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(
                     FULLInterpolate, 1f / world.tickRate, fullPredictedState.DeepCopy(), interpolationBuffer);
+                OnViewInterpolationReset();
             }
             else if (!preserveInterpolation)
+            {
                 _interpolatedState.Teleport(fullPredictedState.DeepCopy());
+                OnViewInterpolationReset();
+            }
 
             _viewState?.Dispose();
             _viewState = null;
@@ -266,6 +269,37 @@ namespace PurrNet.Prediction
         }
 
         protected virtual void ModifyRollbackViewState(ref STATE state, float delta, bool accumulateError) { }
+
+        /// <summary>
+        /// Called whenever setup restarts the view interpolation buffer from the current
+        /// predicted state. Implementations that feed the buffer in a transformed space via
+        /// <see cref="ModifyRollbackViewState"/> must reset that space here, since the buffer
+        /// now holds the untransformed state.
+        /// </summary>
+        protected virtual void OnViewInterpolationReset() { }
+
+        /// <summary>
+        /// Clears the view interpolation buffer and restarts it from the given state.
+        /// The given state is expressed in whatever space the implementation feeds to the
+        /// buffer via <see cref="ModifyRollbackViewState"/>; ownership transfers to the buffer.
+        /// </summary>
+        protected void TeleportViewState(STATE state)
+        {
+            if (_interpolatedState == null)
+            {
+                state.Dispose();
+                return;
+            }
+
+            _viewState?.Dispose();
+            _viewState = null;
+
+            _interpolatedState.Teleport(new FULL_STATE<STATE>
+            {
+                state = state,
+                prediction = fullPredictedState.prediction
+            });
+        }
 
         protected virtual STATE GetInitialState() => default;
 
