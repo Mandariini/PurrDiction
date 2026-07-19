@@ -232,7 +232,7 @@ namespace PurrNet.Prediction
         /// The position and rotation are local to that parent. The parent link is part of
         /// predicted state: rollbacks, replays and late joins restore it automatically.
         /// </summary>
-        public PredictedObjectID? CreateChild(int prefabId, Vector3 localPosition, Quaternion localRotation, PredictedComponentID parent, PlayerID? owner = null)
+        public PredictedObjectID? Create(int prefabId, Vector3 localPosition, Quaternion localRotation, PredictedComponentID parent, PlayerID? owner = null)
         {
             return CreateInstance(prefabId, localPosition, localRotation, owner, parent);
         }
@@ -242,12 +242,12 @@ namespace PurrNet.Prediction
         /// The position and rotation are local to that parent. The parent link is part of
         /// predicted state: rollbacks, replays and late joins restore it automatically.
         /// </summary>
-        public PredictedObjectID? CreateChild(GameObject prefab, Vector3 localPosition, Quaternion localRotation, PredictedComponentID parent, PlayerID? owner = null)
+        public PredictedObjectID? Create(GameObject prefab, Vector3 localPosition, Quaternion localRotation, PredictedComponentID parent, PlayerID? owner = null)
         {
             if (!predictionManager.TryGetPrefab(prefab, out var pid))
                 return default;
 
-            return CreateChild(pid, localPosition, localRotation, parent, owner);
+            return Create(pid, localPosition, localRotation, parent, owner);
         }
 
         /// <summary>
@@ -255,12 +255,45 @@ namespace PurrNet.Prediction
         /// The position and rotation are local to that parent. The parent link is part of
         /// predicted state: rollbacks, replays and late joins restore it automatically.
         /// </summary>
-        public PredictedObjectID? CreateChild(GameObject prefab, Vector3 localPosition, Quaternion localRotation, PredictedIdentity parent, PlayerID? owner = null)
+        public PredictedObjectID? Create(GameObject prefab, Vector3 localPosition, Quaternion localRotation, PredictedIdentity parent, PlayerID? owner = null)
         {
             if (!parent)
                 return Create(prefab, localPosition, localRotation, owner);
 
-            return CreateChild(prefab, localPosition, localRotation, parent.id, owner);
+            return Create(prefab, localPosition, localRotation, parent.id, owner);
+        }
+
+        /// <summary>
+        /// Spawns a prefab parented under the predicted object the given transform belongs to.
+        /// The transform must be on a GameObject carrying a PredictedIdentity; attaching at
+        /// plain nested transforms is not supported and logs an error.
+        /// </summary>
+        public PredictedObjectID? Create(GameObject prefab, Vector3 localPosition, Quaternion localRotation, Transform parent, PlayerID? owner = null)
+        {
+            if (!predictionManager.TryGetPrefab(prefab, out var pid))
+                return default;
+
+            return Create(pid, localPosition, localRotation, parent, owner);
+        }
+
+        /// <summary>
+        /// Spawns a prefab parented under the predicted object the given transform belongs to.
+        /// The transform must be on a GameObject carrying a PredictedIdentity; attaching at
+        /// plain nested transforms is not supported and logs an error.
+        /// </summary>
+        public PredictedObjectID? Create(int prefabId, Vector3 localPosition, Quaternion localRotation, Transform parent, PlayerID? owner = null)
+        {
+            if (!parent)
+                return Create(prefabId, localPosition, localRotation, owner);
+
+            if (!TryGetId(parent.gameObject, out var parentId))
+            {
+                PurrLogger.LogError(
+                    $"'{parent.name}' is not a predicted object. Parent transforms must be on a GameObject with a PredictedIdentity; attaching at plain nested transforms is not supported.", parent);
+                return default;
+            }
+
+            return Create(prefabId, localPosition, localRotation, new PredictedComponentID(parentId, 0), owner);
         }
 
         private PredictedObjectID? CreateInstance(int prefabId, Vector3 position, Quaternion rotation, PlayerID? owner, PredictedComponentID? parent)
