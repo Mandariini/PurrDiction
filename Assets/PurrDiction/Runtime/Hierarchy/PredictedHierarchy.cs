@@ -656,10 +656,9 @@ namespace PurrNet.Prediction
 
         internal void NotifyPieceDestroyed(GameObject go)
         {
-            if (_isCleaningUp || !_goToId.TryGetValue(go, out var instanceId))
+            if (_isCleaningUp || !_goToId.Remove(go, out var instanceId))
                 return;
 
-            _goToId.Remove(go);
             _instanceMap.Remove(instanceId);
             _isSceneObject.Remove(instanceId);
             RemoveRecord(instanceId);
@@ -852,7 +851,7 @@ namespace PurrNet.Prediction
 
                 PredictedComponentID? authoredParent = TryResolveParentLink(root, out var authoredLink)
                     ? authoredLink
-                    : (PredictedComponentID?)null;
+                    : null;
 
                 for (var k = 0; k < proto.pieceCount; k++)
                 {
