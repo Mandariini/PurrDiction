@@ -1937,7 +1937,7 @@ namespace PurrNet.Prediction
             var children = ListPool<PredictedIdentity>.Instantiate();
 
             if (cascade)
-                hierarchy.CollectInstanceIdentities(rootGo, root.Value, children);
+                hierarchy.CollectInstanceIdentities(rootGo, root!.Value, children);
             else
                 rootGo.GetComponents(children);
 
