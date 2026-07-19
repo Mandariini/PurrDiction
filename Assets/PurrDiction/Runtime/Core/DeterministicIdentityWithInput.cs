@@ -290,16 +290,13 @@ namespace PurrNet.Prediction
         /// <param name="input"></param>
         protected virtual void SanitizeInput(ref INPUT input) { }
 
-        internal override void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable)
+        internal override void QueueInput(BitPacker packer, PlayerID sender)
         {
             int pos = packer.positionInBits;
             if (Packer<bool>.Read(packer))
             {
                 INPUT input = default;
-
-                if (reliable)
-                    deltaModule.ReadReliable(packer, key, ref input);
-                else deltaModule.Read(packer, key, sender, ref input);
+                Packer<INPUT>.Read(packer, ref input);
 
                 var sanitizedInput = input;
                 SanitizeInput(ref sanitizedInput);

@@ -227,6 +227,7 @@ namespace PurrNet.Prediction
             if (LatestHistoryMatches(tick, ref fullPredictedState))
                 return;
 
+            lastChangedStateTick = tick;
             _stateHistory.Write(tick, fullPredictedState.DeepCopy());
         }
 
@@ -357,6 +358,18 @@ namespace PurrNet.Prediction
             WriteOwnedStateIfChanged(tick, ref newState);
         }
 
+        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule, bool allowSkip)
+        {
+            if (allowSkip && lastChangedStateTick < predictionManager.localTick)
+            {
+                Packer<bool>.Write(packer, false);
+                TickBandwidthProfiler.OnWroteState(myType, 1, this);
+                return false;
+            }
+
+            return WriteCurrentState(target, packer, deltaModule);
+        }
+
         internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
         {
             int pos = packer.positionInBits;
@@ -431,7 +444,7 @@ namespace PurrNet.Prediction
 
         internal override void ReadInput(ulong tick,  PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable) { }
 
-        internal override void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable) { }
+        internal override void QueueInput(BitPacker packer, PlayerID sender) { }
 
         public STATE viewState;
 

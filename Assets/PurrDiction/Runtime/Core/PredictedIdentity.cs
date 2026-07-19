@@ -534,6 +534,8 @@ namespace PurrNet.Prediction
 
         public SceneID sceneId { get; private set; }
 
+        internal ulong lastChangedStateTick;
+
         internal virtual void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
             isServer = manager.isServer;
@@ -541,6 +543,7 @@ namespace PurrNet.Prediction
             _destroyedFired = false;
             predictionManager = world;
             sceneId = world.sceneId;
+            lastChangedStateTick = world.localTick + 1;
             SetOwner(owner, false);
             PreparePredictionPolicyForSetup(ResolvePredictionPolicyForSetup());
 
@@ -685,6 +688,11 @@ namespace PurrNet.Prediction
 
         internal abstract bool WriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule);
 
+        internal virtual bool WriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule, bool allowSkip)
+        {
+            return WriteCurrentState(receiver, packer, deltaModule);
+        }
+
         internal abstract void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable);
 
         internal abstract void ReadFirstState(ulong tick, BitPacker packer);
@@ -693,7 +701,7 @@ namespace PurrNet.Prediction
 
         internal abstract void ReadInput(ulong tick, PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable);
 
-        internal abstract void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable);
+        internal abstract void QueueInput(BitPacker packer, PlayerID sender);
 
         public GameObject GetRoot()
         {

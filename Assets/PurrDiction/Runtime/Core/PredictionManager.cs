@@ -328,6 +328,7 @@ namespace PurrNet.Prediction
             _hasServerTickBaseline = false;
             _serverTickBaseline = 0;
             _deterministicTimeBaseline = 0;
+            _inputAckTick = 0;
             _deltas.Clear();
         }
 
@@ -541,6 +542,7 @@ namespace PurrNet.Prediction
                         continue;
 
                     clientFrame.fullFrame = true;
+                    clientFrame.primed = false;
                     _clientFrames[i] = clientFrame;
                     found = true;
                     break;
@@ -771,30 +773,56 @@ namespace PurrNet.Prediction
             }
         }
 
+        private const int InputMtu = 1024;
+        private const ulong MaxInputWindow = 32;
+
+        private ulong _inputAckTick;
+
         private void FinalizeInputOnClient(DisposableList<PredictedIdentity> ownedIdentities)
         {
-            const int MTU = 1024;
-
-            using var frame = BitPackerPool.Get();
-            uint writtenCount = 0;
             for (var systemIdx = 0; systemIdx < _systemsCount; systemIdx++)
                 _systems[systemIdx].RunGetLatestUnityState();
 
+            ulong firstTick = _inputAckTick + 1;
+
+            if (localTick >= MaxInputWindow && firstTick < localTick - MaxInputWindow + 1)
+                firstTick = localTick - MaxInputWindow + 1;
+
+            if (firstTick > localTick)
+                firstTick = localTick;
+
+            using var payload = BitPackerPool.Get();
+            using var block = BitPackerPool.Get();
+
+            uint tickCount = 0;
             var count = ownedIdentities.Count;
-            for (var ownedIdx = 0; ownedIdx < count; ownedIdx++)
+
+            for (ulong tick = firstTick; tick <= localTick; tick++)
             {
-                var owned = ownedIdentities[ownedIdx];
-                if (owned && owned.hasInput)
+                block.ResetPositionAndMode(false);
+                uint writtenCount = 0;
+
+                for (var ownedIdx = 0; ownedIdx < count; ownedIdx++)
                 {
-                    Packer<PredictedComponentID>.Write(frame, owned.id);
-                    owned.WriteInput(localTick, default, frame, _deltaModuleState, false);
-                    writtenCount += 1;
+                    var owned = ownedIdentities[ownedIdx];
+                    if (owned && owned.hasInput)
+                    {
+                        Packer<PredictedComponentID>.Write(block, owned.id);
+                        owned.WriteFirstInput(tick, block);
+                        writtenCount += 1;
+                    }
                 }
+
+                int blockBits = block.positionInBits;
+                Packer<PackedUInt>.Write(payload, (PackedUInt)(uint)blockBits);
+                Packer<PackedUInt>.Write(payload, (PackedUInt)writtenCount);
+                payload.WriteBitsWithoutConsumingIt(block, blockBits);
+                tickCount += 1;
             }
 
-            if (frame.positionInBytes >= MTU)
-                SendInputToServerReliable(localTick, writtenCount, frame);
-            else SendInputToServer(localTick,writtenCount, frame);
+            if (payload.positionInBytes >= InputMtu)
+                SendInputToServerReliable(firstTick, tickCount, payload);
+            else SendInputToServer(firstTick, tickCount, payload);
         }
 
         private void FinalizeTickOnServer(bool cachedIsClient)
@@ -856,11 +884,17 @@ namespace PurrNet.Prediction
                     {
                         var sys = _systems[i];
                         if (!sys.isEventHandler)
-                            sys.RunWriteCurrentState(player, frame, _deltaModuleState);
+                            sys.RunWriteCurrentState(player, frame, _deltaModuleState, clientFrame.primed);
                     }
 
                     for (var i = 0; i < _systemsCount; i++)
                         _systems[i].WriteInput(localTick, player, frame, _deltaModuleState, true);
+
+                    if (!clientFrame.primed)
+                    {
+                        clientFrame.primed = true;
+                        _clientFrames[j] = clientFrame;
+                    }
                 }
             }
         }
@@ -1081,6 +1115,9 @@ namespace PurrNet.Prediction
         private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong localTick, ulong serverTick, bool fullFrame, BitPackerWithLength delta)
         {
             delta.packer.SkipBytes(delta.originalLength);
+
+            if (localTick > _inputAckTick)
+                _inputAckTick = localTick;
 
             if (fullFrame)
             {
@@ -1672,6 +1709,7 @@ namespace PurrNet.Prediction
         {
             public bool waitForInput;
             public int ticksAboveMin;
+            public ulong highestReceivedTick;
             public readonly Queue<InputQueueValue> inputQueue = new ();
             public int Count => inputQueue.Count;
         }
@@ -1679,46 +1717,71 @@ namespace PurrNet.Prediction
         readonly Dictionary<PlayerID, InputQueue> _clientTicks = new ();
 
         [ServerRpc(requireOwnership: false)]
-        private void SendInputToServerReliable(ulong tick, PackedUInt count, BitPacker inputPacket, RPCInfo info = default)
+        private void SendInputToServerReliable(ulong firstTick, uint tickCount, BitPacker payload, RPCInfo info = default)
         {
-            ReceivedInput(tick, count, inputPacket, info);
+            ReceivedInput(firstTick, tickCount, payload, info);
         }
 
         [ServerRpc(requireOwnership: false, channel: Channel.UnreliableSequenced)]
-        private void SendInputToServer(ulong tick, PackedUInt count, BitPacker inputPacket, RPCInfo info = default)
+        private void SendInputToServer(ulong firstTick, uint tickCount, BitPacker payload, RPCInfo info = default)
         {
-            ReceivedInput(tick, count, inputPacket, info);
+            ReceivedInput(firstTick, tickCount, payload, info);
         }
 
-        private void ReceivedInput(ulong tick, PackedUInt count, BitPacker inputPacket, RPCInfo info)
+        private void ReceivedInput(ulong firstTick, uint tickCount, BitPacker payload, RPCInfo info)
         {
-            if (!_clientTicks.TryGetValue(info.sender, out var ticks))
+            using (payload)
             {
-                ticks = new InputQueue
+                if (!_clientTicks.TryGetValue(info.sender, out var ticks))
                 {
-                    waitForInput = true
-                };
-                _clientTicks[info.sender] = ticks;
-            }
-
-            if (ticks.Count > _inputQueueSettings.maxInputs)
-            {
-                while (ticks.Count > _inputQueueSettings.minInputs)
-                {
-                    var oldInput = ticks.inputQueue.Dequeue();
-                    oldInput.inputPacket.Dispose();
+                    ticks = new InputQueue
+                    {
+                        waitForInput = true
+                    };
+                    _clientTicks[info.sender] = ticks;
                 }
+
+                for (uint i = 0; i < tickCount; i++)
+                {
+                    PackedUInt blockBits = default;
+                    Packer<PackedUInt>.Read(payload, ref blockBits);
+                    PackedUInt count = default;
+                    Packer<PackedUInt>.Read(payload, ref count);
+
+                    ulong tick = firstTick + i;
+
+                    if (tick <= ticks.highestReceivedTick)
+                    {
+                        payload.SkipBits((int)blockBits.value);
+                        continue;
+                    }
+
+                    var slice = BitPackerPool.Get();
+                    slice.WriteBits(payload, (int)blockBits.value);
+                    slice.ResetPositionAndMode(true);
+
+                    ticks.highestReceivedTick = tick;
+
+                    if (ticks.Count > _inputQueueSettings.maxInputs)
+                    {
+                        while (ticks.Count > _inputQueueSettings.minInputs)
+                        {
+                            var oldInput = ticks.inputQueue.Dequeue();
+                            oldInput.inputPacket.Dispose();
+                        }
+                    }
+
+                    ticks.inputQueue.Enqueue(new InputQueueValue
+                    {
+                        count = count,
+                        inputPacket = slice,
+                        clientTick = tick
+                    });
+                }
+
+                if (ticks.waitForInput && ticks.inputQueue.Count >= _inputQueueSettings.minInputs)
+                    ticks.waitForInput = false;
             }
-
-            ticks.inputQueue.Enqueue(new InputQueueValue
-            {
-                count = count,
-                inputPacket = inputPacket,
-                clientTick = tick
-            });
-
-            if (ticks.waitForInput && ticks.inputQueue.Count >= _inputQueueSettings.minInputs)
-                ticks.waitForInput = false;
         }
 
         private void HandleIncomingInput(BitPacker inputPacket, PackedUInt count, PlayerID sender)
@@ -1734,7 +1797,7 @@ namespace PurrNet.Prediction
 
                     if (_instanceMap.TryGetValue(pid, out var system) && system.IsOwner(sender, senderIsServer))
                     {
-                        system.QueueInput(inputPacket, sender, _deltaModuleState, false);
+                        system.QueueInput(inputPacket, sender);
                     }
                     else break;
                 }

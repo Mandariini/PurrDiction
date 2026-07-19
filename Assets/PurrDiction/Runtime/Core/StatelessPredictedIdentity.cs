@@ -93,7 +93,7 @@ namespace PurrNet.Prediction
 
         internal override void ReadInput(ulong tick, PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable) { }
 
-        internal override void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable) { }
+        internal override void QueueInput(BitPacker packer, PlayerID sender) { }
 
         public override void WriteFirstInput(ulong localTick, BitPacker packer) { }
 

@@ -77,7 +77,7 @@ namespace PurrNet.Prediction
         {
         }
 
-        internal override void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable)
+        internal override void QueueInput(BitPacker packer, PlayerID sender)
         {
         }
     }

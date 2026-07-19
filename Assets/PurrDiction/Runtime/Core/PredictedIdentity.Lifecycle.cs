@@ -96,11 +96,11 @@ namespace PurrNet.Prediction
             ResetInterpolation();
         }
 
-        internal bool RunWriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
+        internal bool RunWriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule, bool allowSkip = false)
         {
             bool moduleSetChanged = WriteDynamicModuleSnapshot(receiver, packer, deltaModule);
             bool modulesChanged = WriteModules(receiver, packer, deltaModule);
-            bool identityChanged = WriteCurrentState(receiver, packer, deltaModule);
+            bool identityChanged = WriteCurrentState(receiver, packer, deltaModule, allowSkip);
 
             return moduleSetChanged || modulesChanged || identityChanged;
         }
