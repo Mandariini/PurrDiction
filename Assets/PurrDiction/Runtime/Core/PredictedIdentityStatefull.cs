@@ -11,55 +11,6 @@ namespace PurrNet.Prediction
 {
     public abstract class PredictedIdentity<STATE> : PredictedIdentity where STATE : struct, IPredictedData<STATE>
     {
-        protected readonly struct DeltaKey<T, S> : IStableHashable
-        {
-            private readonly PredictedComponentID id;
-            private readonly SceneID scene;
-
-            public DeltaKey(SceneID scene, PredictedComponentID id)
-            {
-                this.id = id;
-                this.scene = scene;
-            }
-
-            public uint GetStableHash()
-            {
-                const uint Off = 2166136261u;
-                const uint Pri = 16777619u;
-                uint h = Off;
-                h = (h ^ Hasher<T>.stableHash) * Pri;
-                h = (h ^ Hasher<S>.stableHash) * Pri;
-                h = (h ^ id.componentId.value) * Pri;
-                h = (h ^ id.objectId.instanceId.value) * Pri;
-                h = (h ^ scene.id.value) * Pri;
-                return h;
-            }
-        }
-
-        protected readonly struct DeltaKey<T> : IStableHashable
-        {
-            private readonly PredictedComponentID id;
-            private readonly SceneID scene;
-
-            public DeltaKey(SceneID scene, PredictedComponentID id)
-            {
-                this.id = id;
-                this.scene = scene;
-            }
-
-            public uint GetStableHash()
-            {
-                const uint Off = 2166136261u;
-                const uint Pri = 16777619u;
-                uint h = Off;
-                h = (h ^ Hasher<T>.stableHash) * Pri;
-                h = (h ^ id.componentId.value) * Pri;
-                h = (h ^ id.objectId.instanceId.value) * Pri;
-                h = (h ^ scene.id.value) * Pri;
-                return h;
-            }
-        }
-
         public PredictedHierarchy hierarchy { get; private set; }
 
         public override string ToString()
@@ -168,6 +119,7 @@ namespace PurrNet.Prediction
             if (preserveSoftCorrection)
             {
                 fullPredictedState.prediction.owner = owner;
+                _verifiedHistory = world.GetVerifiedHistory<FULL_STATE<STATE>>(id, out _);
                 return;
             }
 
@@ -332,8 +284,6 @@ namespace PurrNet.Prediction
             SetOwner(prediction.owner);
         }
 
-        protected DeltaKey<STATE> stateKey => new (sceneId, id);
-
         internal override void WriteFirstState(ulong tick, BitPacker packer)
         {
             RefreshVerifiedFromLive(tick);
@@ -367,7 +317,7 @@ namespace PurrNet.Prediction
             WriteOwnedStateIfChanged(tick, ref newState);
         }
 
-        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule, ulong baselineTick)
+        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, ulong baselineTick)
         {
             RefreshVerifiedFromLive(predictionManager.localTick);
 
@@ -397,7 +347,7 @@ namespace PurrNet.Prediction
         }
 
         [UsedImplicitly]
-        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule, ulong baselineTick, ulong serverTick)
+        internal override void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
         {
             int pos = packer.positionInBits;
 

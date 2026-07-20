@@ -18,8 +18,21 @@ namespace PurrNet.Prediction
     [Serializable]
     public struct InputQueueSettings
     {
+        [Tooltip("When a client's input for the current tick has not arrived, reuse its last known input instead of simulating with default input.")]
         public bool extrapolateForMissing;
+
+        /// <summary>
+        /// Legacy setting with no effect. The server consumes the input stamped for its exact tick;
+        /// buffering depth is governed by the client's prediction lead.
+        /// </summary>
+        [HideInInspector, Obsolete("No longer used. The server consumes the input stamped for its exact tick; buffering depth is governed by the client's prediction lead.")]
         public int minInputs;
+
+        /// <summary>
+        /// Legacy setting with no effect. The server consumes the input stamped for its exact tick;
+        /// buffering depth is governed by the client's prediction lead.
+        /// </summary>
+        [HideInInspector, Obsolete("No longer used. The server consumes the input stamped for its exact tick; buffering depth is governed by the client's prediction lead.")]
         public int maxInputs;
     }
 
@@ -54,9 +67,7 @@ namespace PurrNet.Prediction
         [SerializeField] private PredictedPrefabs _predictedPrefabs;
         [SerializeField] private InputQueueSettings _inputQueueSettings = new()
         {
-            extrapolateForMissing = true,
-            minInputs = 1,
-            maxInputs = 2
+            extrapolateForMissing = true
         };
 
         [Header("Debugging")]
@@ -186,8 +197,6 @@ namespace PurrNet.Prediction
 
         public PredictedRandomSystem random { get; private set; }
 
-        private DeltaModule _deltaModuleState;
-
         internal interface IVerifiedStateStore
         {
             void Clear();
@@ -205,11 +214,16 @@ namespace PurrNet.Prediction
             public void Clear() => history.Clear();
         }
 
-        readonly Dictionary<(uint, PredictedComponentID), IVerifiedStateStore> _verifiedStores = new ();
+        readonly Dictionary<(uint, PredictedComponentID, int), IVerifiedStateStore> _verifiedStores = new ();
 
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, out bool created) where T : struct, IDisposable
         {
-            var key = (Hasher<T>.stableHash, componentId);
+            return GetVerifiedHistory<T>(componentId, 0, out created);
+        }
+
+        internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, int subKey, out bool created) where T : struct, IDisposable
+        {
+            var key = (Hasher<T>.stableHash, componentId, subKey);
 
             if (_verifiedStores.TryGetValue(key, out var store))
             {
@@ -237,9 +251,6 @@ namespace PurrNet.Prediction
 
         protected override void OnEarlySpawn()
         {
-            var deltaModule = networkManager.GetModule<DeltaModule>(isServer);
-            _deltaModuleState = deltaModule;
-
             RegisterScene();
 
             tickRate = networkManager.tickModule.tickRate;
@@ -948,7 +959,7 @@ namespace PurrNet.Prediction
                     {
                         var sys = _systems[i];
                         if (!sys.isEventHandler)
-                            sys.RunWriteCurrentState(player, frame, _deltaModuleState, baselineTick);
+                            sys.RunWriteCurrentState(player, frame, baselineTick);
                     }
                 }
             }
@@ -1056,7 +1067,7 @@ namespace PurrNet.Prediction
                         ulong baselineTick = 0;
                         if (_clientTicks.TryGetValue(frame.player, out var ackQueue))
                             baselineTick = ackQueue.ackedServerTick;
-                        system.RunWriteCurrentState(frame.player, packer, _deltaModuleState, baselineTick);
+                        system.RunWriteCurrentState(frame.player, packer, baselineTick);
                     }
                 }
             }
@@ -1268,8 +1279,14 @@ namespace PurrNet.Prediction
 
             if (fullFrame)
             {
-                while (_deltas.Count > 0)
-                    _deltas.Dequeue().Dispose();
+                int queued = _deltas.Count;
+                for (int i = 0; i < queued; i++)
+                {
+                    var pending = _deltas.Dequeue();
+                    if (pending.serverTick > serverTick)
+                        _deltas.Enqueue(pending);
+                    else pending.Dispose();
+                }
             }
 
             _deltas.Enqueue(new FrameDelta
@@ -1310,7 +1327,7 @@ namespace PurrNet.Prediction
                 bool softCorrected = system.UsesSoftCorrectionTimeline();
                 if (!softCorrected)
                     system.RunClearFuture(stateTick);
-                system.RunReadState(stateTick, frame, _deltaModuleState, baselineTick, serverTick);
+                system.RunReadState(stateTick, frame, baselineTick, serverTick);
                 if (!softCorrected)
                     system.RunRollback(stateTick);
                 system.lastVerifiedTick = stateTick;
@@ -1324,7 +1341,7 @@ namespace PurrNet.Prediction
                 bool softCorrected = system.UsesSoftCorrectionTimeline();
                 if (!softCorrected)
                     system.RunClearFuture(stateTick);
-                system.RunReadState(stateTick, frame, _deltaModuleState, baselineTick, serverTick);
+                system.RunReadState(stateTick, frame, baselineTick, serverTick);
                 if (!softCorrected)
                     system.RunRollback(stateTick);
                 system.lastVerifiedTick = stateTick;
@@ -1391,6 +1408,7 @@ namespace PurrNet.Prediction
             try
             {
                 bool applied = false;
+                bool firstContact = _latestFrameServerTick == 0;
 
                 while (_deltas.Count > 0)
                 {
@@ -1402,7 +1420,7 @@ namespace PurrNet.Prediction
                         _inputStarved = frame.serverTick > frame.inputAck + MaxInputWindow;
                     }
 
-                    if (!frame.fullFrame && frame.serverTick <= _verifiedServerTick)
+                    if (frame.serverTick <= _verifiedServerTick)
                         continue;
 
                     isVerified = true;
@@ -1443,7 +1461,8 @@ namespace PurrNet.Prediction
                         localTick = _latestFrameServerTick + TargetLead + 4;
                         localTickInContext = localTick;
                         _pauseAdvanceTicks = 0;
-                        PurrLogger.LogWarning($"Input starvation detected; jumping prediction head to {localTick} (server at {_latestFrameServerTick}).");
+                        if (!firstContact)
+                            PurrLogger.LogWarning($"Input starvation detected; jumping prediction head to {localTick} (server at {_latestFrameServerTick}).");
                     }
 
                     ulong lead = localTick > _verifiedServerTick ? localTick - _verifiedServerTick : 0;

@@ -13,6 +13,27 @@ namespace PurrNet.Prediction
     {
         private readonly List<PredictedModule> _modules = new();
 
+        private History<DisposableList<uint>> _moduleSetVerified;
+
+        private History<DisposableList<uint>> moduleSetVerified
+            => _moduleSetVerified ??= predictionManager.GetVerifiedHistory<DisposableList<uint>>(id, out _);
+
+        private void StoreVerifiedModuleSet(ulong serverTick, in DisposableList<uint> snapshot)
+        {
+            var store = moduleSetVerified;
+            store.PruneByTickWindow(serverTick);
+
+            int lastIndex = store.Count - 1;
+            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            {
+                var latest = store[lastIndex];
+                if (latest.Equals(snapshot))
+                    return;
+            }
+
+            store.Write(serverTick, snapshot.isDisposed ? DisposableList<uint>.Create(0) : snapshot.Duplicate());
+        }
+
         /// <summary>
         /// The live, ordered list of modules attached to this identity.
         /// Static modules come first, followed by dynamic modules in registration order.
@@ -54,32 +75,6 @@ namespace PurrNet.Prediction
         private History<DisposableList<uint>> _moduleHistory;
         private List<PredictedModule> _softCorrectionLiveModules;
         private List<PredictedModule> _softCorrectionTemporaryModules;
-
-        private readonly struct DynamicModulesKey : IStableHashable
-        {
-            private readonly SceneID _scene;
-            private readonly PredictedComponentID _id;
-
-            public DynamicModulesKey(SceneID scene, PredictedComponentID id)
-            {
-                _scene = scene;
-                _id = id;
-            }
-
-            public uint GetStableHash()
-            {
-                const uint Off = 2166136261u;
-                const uint Pri = 16777619u;
-                uint h = Off;
-                h = (h ^ 0xD9B61EA1u) * Pri;
-                h = (h ^ _id.componentId.value) * Pri;
-                h = (h ^ _id.objectId.instanceId.value) * Pri;
-                h = (h ^ _scene.id.value) * Pri;
-                return h;
-            }
-        }
-
-        private DynamicModulesKey DynamicKey => new(sceneId, id);
 
         private void BeginInitialModuleSetup()
         {
@@ -206,7 +201,7 @@ namespace PurrNet.Prediction
             ApplyDynamicHashList(target);
         }
 
-        internal void ReadDynamicModuleSnapshot(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        internal void ReadDynamicModuleSnapshot(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
         {
             _moduleHistory?.PruneByTickWindow(tick);
 
@@ -217,22 +212,27 @@ namespace PurrNet.Prediction
                 return;
             }
 
+            if (!moduleSetVerified.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
+
             DisposableList<uint> incoming = default;
-            deltaModule.ReadReliable(packer, DynamicKey, ref incoming);
+            DeltaPacker<DisposableList<uint>>.Read(packer, baseline, ref incoming);
+
+            StoreVerifiedModuleSet(serverTick, in incoming);
 
             if (_moduleHistory == null)
             {
-                if (incoming.list != null)
+                if (!incoming.isDisposed)
                     incoming.Dispose();
                 return;
             }
 
-            var owned = incoming.list != null ? incoming : DisposableList<uint>.Create(0);
+            var owned = !incoming.isDisposed ? incoming : DisposableList<uint>.Create(0);
             _moduleHistory.Write(tick, owned);
             ApplyDynamicModuleSnapshotForRead(tick, owned, UsesSoftCorrectionTimeline());
         }
 
-        internal bool WriteDynamicModuleSnapshot(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
+        internal bool WriteDynamicModuleSnapshot(PlayerID receiver, BitPacker packer, ulong baselineTick)
         {
             if (!HasDynamicModulesOrHistory())
             {
@@ -249,7 +249,21 @@ namespace PurrNet.Prediction
                 for (int i = 0; i < dynamicCount; i++)
                     snapshot.Add(_modules[_staticModuleCount + i].typeHash);
 
-                return deltaModule.WriteReliable(packer, receiver, DynamicKey, snapshot);
+                var store = moduleSetVerified;
+                ulong tick = predictionManager.localTick;
+                if (store.Count == 0 || store.MostRecentTick < tick)
+                    StoreVerifiedModuleSet(tick, in snapshot);
+
+                if (baselineTick > 0 && store.MostRecentTick <= baselineTick)
+                {
+                    Packer<bool>.Write(packer, false);
+                    return false;
+                }
+
+                if (!store.ReadOrPrevious(baselineTick, out var baseline))
+                    baseline = default;
+
+                return DeltaPacker<DisposableList<uint>>.Write(packer, baseline, snapshot);
             }
             finally
             {
@@ -269,6 +283,9 @@ namespace PurrNet.Prediction
 
             if (_moduleHistory != null && tick > 0 && _moduleHistory.ReadOrPrevious(tick, out var historical))
             {
+                var seedStore = moduleSetVerified;
+                if (seedStore.Count == 0 || seedStore.MostRecentTick < tick)
+                    StoreVerifiedModuleSet(tick, in historical);
                 Packer<DisposableList<uint>>.Write(packer, historical);
                 return;
             }
@@ -279,6 +296,11 @@ namespace PurrNet.Prediction
             {
                 for (int i = 0; i < dynamicCount; i++)
                     snapshot.Add(_modules[_staticModuleCount + i].typeHash);
+
+                var store = moduleSetVerified;
+                if (store.Count == 0 || store.MostRecentTick < tick)
+                    StoreVerifiedModuleSet(tick, in snapshot);
+
                 Packer<DisposableList<uint>>.Write(packer, snapshot);
             }
             finally
@@ -287,7 +309,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        internal void ReadFirstDynamicModuleSnapshot(ulong tick, BitPacker packer)
+        internal void ReadFirstDynamicModuleSnapshot(ulong tick, BitPacker packer, ulong serverTick)
         {
             _moduleHistory?.PruneByTickWindow(tick);
 
@@ -300,6 +322,8 @@ namespace PurrNet.Prediction
 
             DisposableList<uint> incoming = default;
             Packer<DisposableList<uint>>.Read(packer, ref incoming);
+
+            StoreVerifiedModuleSet(serverTick, in incoming);
 
             if (_moduleHistory == null)
             {
@@ -737,23 +761,23 @@ namespace PurrNet.Prediction
             for (int i = 0; i < _modules.Count; i++) _modules[i].SaveStateInternal(tick);
         }
 
-        protected bool WriteModules(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
+        protected bool WriteModules(PlayerID receiver, BitPacker packer, ulong baselineTick)
         {
             bool didWriteAny = false;
             for (int i = 0; i < _modules.Count; i++)
             {
-                didWriteAny |= _modules[i].WriteStateInternal(receiver, packer, deltaModule);
+                didWriteAny |= _modules[i].WriteStateInternal(receiver, packer, baselineTick);
             }
             return didWriteAny;
         }
 
-        protected void ReadModules(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        protected void ReadModules(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
         {
             try
             {
                 for (int i = 0; i < _modules.Count; i++)
                 {
-                    _modules[i].ReadStateInternal(tick, packer, deltaModule);
+                    _modules[i].ReadStateInternal(tick, packer, baselineTick, serverTick);
                 }
             }
             finally
@@ -780,11 +804,11 @@ namespace PurrNet.Prediction
             }
         }
 
-        protected void ReadFirstStateModules(ulong tick, BitPacker packer)
+        protected void ReadFirstStateModules(ulong tick, BitPacker packer, ulong serverTick)
         {
             for (int i = 0; i < _modules.Count; i++)
             {
-                _modules[i].ReadFirstStateInternal(tick, packer);
+                _modules[i].ReadFirstStateInternal(tick, packer, serverTick);
             }
         }
 
