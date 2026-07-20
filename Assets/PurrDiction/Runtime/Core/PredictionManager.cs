@@ -20,20 +20,6 @@ namespace PurrNet.Prediction
     {
         [Tooltip("When a client's input for the current tick has not arrived, reuse its last known input instead of simulating with default input.")]
         public bool extrapolateForMissing;
-
-        /// <summary>
-        /// Legacy setting with no effect. The server consumes the input stamped for its exact tick;
-        /// buffering depth is governed by the client's prediction lead.
-        /// </summary>
-        [HideInInspector, Obsolete("No longer used. The server consumes the input stamped for its exact tick; buffering depth is governed by the client's prediction lead.")]
-        public int minInputs;
-
-        /// <summary>
-        /// Legacy setting with no effect. The server consumes the input stamped for its exact tick;
-        /// buffering depth is governed by the client's prediction lead.
-        /// </summary>
-        [HideInInspector, Obsolete("No longer used. The server consumes the input stamped for its exact tick; buffering depth is governed by the client's prediction lead.")]
-        public int maxInputs;
     }
 
     [DefaultExecutionOrder(1000)]
