@@ -871,7 +871,7 @@ namespace PurrNet.Prediction
             }
 
             if (payload.positionInBytes >= InputMtu)
-                SendInputToServerReliable(firstTick, tickCount, _verifiedServerTick, payload);
+                SendInputToServerFragmented(firstTick, tickCount, _verifiedServerTick, payload);
             else SendInputToServer(firstTick, tickCount, _verifiedServerTick, payload);
         }
 
@@ -1086,7 +1086,7 @@ namespace PurrNet.Prediction
                     baselineTick = queue.ackedServerTick;
                 }
 
-                if (fullFrame || deltaLen >= SafeFrameMtu)
+                if (fullFrame)
                     SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, new BitPackerWithLength(deltaLen, packer));
                 else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, new BitPackerWithLength(deltaLen, packer));
                 if (fullFrame)
@@ -1247,9 +1247,7 @@ namespace PurrNet.Prediction
 
         readonly Queue<FrameDelta> _deltas = new ();
 
-        private const int SafeFrameMtu = 1000;
-
-        [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Best)]
+        [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Best, mtuExceeded: MTUBehaviour.Fragment)]
         private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, BitPackerWithLength delta)
         {
             HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, delta);
@@ -1770,8 +1768,8 @@ namespace PurrNet.Prediction
 
         readonly Dictionary<PlayerID, InputQueue> _clientTicks = new ();
 
-        [ServerRpc(requireOwnership: false)]
-        private void SendInputToServerReliable(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)
+        [ServerRpc(requireOwnership: false, channel: Channel.Unreliable, mtuExceeded: MTUBehaviour.Fragment)]
+        private void SendInputToServerFragmented(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)
         {
             ReceivedInput(firstTick, tickCount, frameAck, payload, info);
         }
