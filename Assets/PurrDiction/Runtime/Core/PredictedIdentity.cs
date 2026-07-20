@@ -9,30 +9,6 @@ using UnityEngine;
 
 namespace PurrNet.Prediction
 {
-    internal readonly struct PredictionMetadataDeltaKey : IStableHashable
-    {
-        private readonly SceneID _scene;
-        private readonly PredictedComponentID _id;
-
-        public PredictionMetadataDeltaKey(SceneID scene, PredictedComponentID id)
-        {
-            _scene = scene;
-            _id = id;
-        }
-
-        public uint GetStableHash()
-        {
-            const uint offset = 2166136261u;
-            const uint prime = 16777619u;
-            uint hash = offset;
-            hash = (hash ^ Hasher<PredictedIdentityState>.stableHash) * prime;
-            hash = (hash ^ _id.componentId.value) * prime;
-            hash = (hash ^ _id.objectId.instanceId.value) * prime;
-            hash = (hash ^ _scene.id.value) * prime;
-            return hash;
-        }
-    }
-
     public abstract partial class PredictedIdentity : MonoBehaviour
     {
         public ulong? lastVerifiedTick { get; internal set; }
@@ -486,23 +462,69 @@ namespace PurrNet.Prediction
 
         protected virtual void OnOwnerAssigned(PlayerID? player) { }
 
-        internal bool WritePredictionMetadata(
-            PlayerID receiver,
-            BitPacker packer,
-            DeltaModule deltaModule,
-            PredictedIdentityState metadata)
+        private History<PredictedIdentityState> _metadataVerified;
+
+        private History<PredictedIdentityState> metadataVerified
+            => _metadataVerified ??= predictionManager.GetVerifiedHistory<PredictedIdentityState>(id, out _);
+
+        internal void RefreshMetadataLedger(ulong tick, in PredictedIdentityState metadata)
         {
-            var key = new PredictionMetadataDeltaKey(sceneId, id);
-            return deltaModule.WriteReliable(packer, receiver, key, metadata);
+            var store = metadataVerified;
+            if (store.Count > 0 && store.MostRecentTick >= tick)
+                return;
+
+            StoreVerifiedMetadata(tick, in metadata);
         }
 
-        internal void ReadPredictionMetadata(
-            BitPacker packer,
-            DeltaModule deltaModule,
-            ref PredictedIdentityState metadata)
+        internal void StoreVerifiedMetadata(ulong serverTick, in PredictedIdentityState metadata)
         {
-            var key = new PredictionMetadataDeltaKey(sceneId, id);
-            deltaModule.ReadReliable(packer, key, ref metadata);
+            var store = metadataVerified;
+            store.PruneByTickWindow(serverTick);
+
+            int lastIndex = store.Count - 1;
+            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            {
+                var latest = store[lastIndex];
+                var current = metadata;
+                if (Packer.AreEqualRef(ref latest, ref current))
+                    return;
+            }
+
+            store.Write(serverTick, metadata);
+        }
+
+        internal bool WritePredictionMetadata(BitPacker packer, ulong baselineTick, in PredictedIdentityState metadata)
+        {
+            RefreshMetadataLedger(predictionManager.localTick, in metadata);
+            var store = metadataVerified;
+
+            if (baselineTick > 0 && store.MostRecentTick <= baselineTick)
+            {
+                Packer<bool>.Write(packer, false);
+                return false;
+            }
+
+            if (!store.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
+
+            Packer<bool>.Write(packer, true);
+            DeltaPacker<PredictedIdentityState>.Write(packer, baseline, metadata);
+            return true;
+        }
+
+        internal void ReadPredictionMetadata(BitPacker packer, ulong baselineTick, ulong serverTick, ref PredictedIdentityState metadata)
+        {
+            bool changed = Packer<bool>.Read(packer);
+
+            if (!metadataVerified.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
+
+            if (changed)
+            {
+                DeltaPacker<PredictedIdentityState>.Read(packer, baseline, ref metadata);
+                StoreVerifiedMetadata(serverTick, in metadata);
+            }
+            else metadata = baseline;
         }
 
         internal void TriggerOnRemovedFromPool()
@@ -534,6 +556,8 @@ namespace PurrNet.Prediction
 
         public SceneID sceneId { get; private set; }
 
+        internal ulong lastChangedStateTick;
+
         internal virtual void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
             isServer = manager.isServer;
@@ -541,6 +565,9 @@ namespace PurrNet.Prediction
             _destroyedFired = false;
             predictionManager = world;
             sceneId = world.sceneId;
+            lastChangedStateTick = world.localTick + 1;
+            _metadataVerified = null;
+            _moduleSetVerified = null;
             SetOwner(owner, false);
             PreparePredictionPolicyForSetup(ResolvePredictionPolicyForSetup());
 
@@ -683,17 +710,13 @@ namespace PurrNet.Prediction
 
         internal abstract void WriteFirstState(ulong tick, BitPacker packer);
 
-        internal abstract bool WriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule);
+        internal abstract bool WriteCurrentState(PlayerID receiver, BitPacker packer, ulong baselineTick);
 
-        internal abstract void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable);
+        internal abstract void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick);
 
-        internal abstract void ReadFirstState(ulong tick, BitPacker packer);
+        internal abstract void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick);
 
-        internal abstract void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule);
-
-        internal abstract void ReadInput(ulong tick, PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable);
-
-        internal abstract void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable);
+        internal abstract void QueueInput(BitPacker packer, PlayerID sender);
 
         public GameObject GetRoot()
         {
@@ -726,6 +749,8 @@ namespace PurrNet.Prediction
         public abstract void ReadFirstInput(ulong localTick, BitPacker packer);
 
         internal abstract void ClearFuture(ulong stateTick);
+
+        internal virtual bool HasInputAt(ulong tick) => false;
 
         internal virtual void ValidateDeterministicState(ulong serverTick) { }
     }

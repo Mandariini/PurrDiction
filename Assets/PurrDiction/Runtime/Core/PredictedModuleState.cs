@@ -84,9 +84,54 @@ namespace PurrNet.Prediction
             );
         }
 
+        private History<MODULE_STATE<TState>> _verifiedHistory;
+        private int _verifiedHistoryIndex = -1;
+
+        private History<MODULE_STATE<TState>> verifiedHistory
+        {
+            get
+            {
+                if (_verifiedHistory == null || _verifiedHistoryIndex != moduleIndex)
+                {
+                    _verifiedHistory = predictionManager.GetVerifiedHistory<MODULE_STATE<TState>>(identity.id, 1 + moduleIndex, out _);
+                    _verifiedHistoryIndex = moduleIndex;
+                }
+
+                return _verifiedHistory;
+            }
+        }
+
+        private void RefreshVerifiedFromLive(ulong tick)
+        {
+            var store = verifiedHistory;
+            if (store.Count > 0 && store.MostRecentTick >= tick)
+                return;
+
+            StoreVerified(tick, ref fullPredictedState);
+        }
+
+        private void StoreVerified(ulong serverTick, ref MODULE_STATE<TState> state)
+        {
+            var store = verifiedHistory;
+            store.PruneByTickWindow(serverTick);
+
+            int lastIndex = store.Count - 1;
+            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            {
+                var latest = store[lastIndex];
+                if (latest.HasSameContents(ref state))
+                    return;
+            }
+
+            store.Write(serverTick, state.DeepCopy());
+        }
+
         protected override void Setup(PredictedIdentity parent, PredictionManager world)
         {
             base.Setup(parent, world);
+
+            _verifiedHistory = null;
+            _verifiedHistoryIndex = -1;
 
             bool preserveSoftCorrection = parent.preservesStateOnSetup &&
                                           parent.UsesSoftCorrectionTimeline() &&
@@ -219,39 +264,46 @@ namespace PurrNet.Prediction
             _history.Write(tick, state);
         }
 
-        protected override bool WriteState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
+        protected override bool WriteState(PlayerID receiver, BitPacker packer, ulong baselineTick)
         {
-            int flagPos = packer.AdvanceBits(1);
+            RefreshVerifiedFromLive(predictionManager.localTick);
+            var store = verifiedHistory;
 
-            bool changed = deltaModule.WriteReliable(packer, receiver, modulePredictionKey, fullPredictedState.prediction);
-            changed |= deltaModule.WriteReliable(packer, receiver, stateKey, fullPredictedState.state);
+            if (baselineTick > 0 && store.MostRecentTick <= baselineTick)
+            {
+                Packer<bool>.Write(packer, false);
+                return false;
+            }
 
-            packer.WriteAt(flagPos, changed);
+            if (!store.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
 
-            if (!changed)
-                packer.SetBitPosition(flagPos + 1);
-
-            return changed;
+            Packer<bool>.Write(packer, true);
+            DeltaPacker<ModulePredictedState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
+            DeltaPacker<TState>.Write(packer, baseline.state, fullPredictedState.state);
+            return true;
         }
 
-        protected override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        protected override void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
         {
-            int pos = packer.positionInBits;
             bool changed = Packer<bool>.Read(packer);
-            MODULE_STATE<TState> newState = default;
+
+            if (!verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
+
+            MODULE_STATE<TState> newState;
 
             if (changed)
             {
-                deltaModule.ReadReliable(packer, modulePredictionKey, ref newState.prediction);
+                newState = default;
+                DeltaPacker<ModulePredictedState>.Read(packer, baseline.prediction, ref newState.prediction);
+                DeltaPacker<TState>.Read(packer, baseline.state, ref newState.state);
+                StoreVerified(serverTick, ref newState);
             }
             else
             {
-                packer.SetBitPosition(pos);
-                deltaModule.ReadReliable(packer, modulePredictionKey, ref newState.prediction);
-                packer.SetBitPosition(pos);
+                newState = baseline.DeepCopy();
             }
-
-            deltaModule.ReadReliable(packer, stateKey, ref newState.state);
 
             if (identity.UsesSoftCorrectionTimeline())
             {
@@ -285,15 +337,20 @@ namespace PurrNet.Prediction
             if (tick > 0 && _history.ReadOrPrevious(tick, out var historyState))
                 savedState = historyState;
 
+            var store = verifiedHistory;
+            if (store.Count == 0 || store.MostRecentTick < tick)
+                StoreVerified(tick, ref savedState);
+
             Packer<ModulePredictedState>.Write(packer, savedState.prediction);
             Packer<TState>.Write(packer, savedState.state);
         }
 
-        protected override void ReadFirstState(ulong tick, BitPacker packer)
+        protected override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
         {
             MODULE_STATE<TState> newState = default;
             Packer<ModulePredictedState>.Read(packer, ref newState.prediction);
             Packer<TState>.Read(packer, ref newState.state);
+            StoreVerified(serverTick, ref newState);
             fullPredictedState.Dispose();
             fullPredictedState = newState;
             if (!LatestHistoryMatches(tick, ref fullPredictedState))
@@ -323,6 +380,8 @@ namespace PurrNet.Prediction
             _viewState?.Dispose();
             _viewState = null;
             _interpolatedState?.Teleport(default);
+            _verifiedHistory = null;
+            _verifiedHistoryIndex = -1;
             fullPredictedState.Dispose();
             fullPredictedState = default;
             viewState = default;

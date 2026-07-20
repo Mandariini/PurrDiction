@@ -43,10 +43,14 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             var senderObject = new GameObject("StatelessOwnerSender");
             var receiverObject = new GameObject("StatelessOwnerReceiver");
+            var senderManagerObject = new GameObject("StatelessOwnerSenderManager");
+            var receiverManagerObject = new GameObject("StatelessOwnerReceiverManager");
             try
             {
                 var sender = senderObject.AddComponent<StatelessOwnerProbe>();
                 var receiver = receiverObject.AddComponent<StatelessOwnerProbe>();
+                AttachManager(sender, senderManagerObject.AddComponent<PredictionManager>());
+                AttachManager(receiver, receiverManagerObject.AddComponent<PredictionManager>());
                 var expected = new PlayerID(new PackedULong(42), false);
                 sender.AssignOwner(expected);
 
@@ -61,6 +65,8 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 Object.DestroyImmediate(senderObject);
                 Object.DestroyImmediate(receiverObject);
+                Object.DestroyImmediate(senderManagerObject);
+                Object.DestroyImmediate(receiverManagerObject);
             }
         }
 
@@ -69,17 +75,21 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             var senderObject = new GameObject("StaticOwnerSender");
             var receiverObject = new GameObject("StaticOwnerReceiver");
+            var senderManagerObject = new GameObject("StaticOwnerSenderManager");
+            var receiverManagerObject = new GameObject("StaticOwnerReceiverManager");
             try
             {
                 var sender = senderObject.AddComponent<StaticPredictedIdentity>();
                 var receiver = receiverObject.AddComponent<StaticPredictedIdentity>();
+                AttachManager(sender, senderManagerObject.AddComponent<PredictionManager>());
+                AttachManager(receiver, receiverManagerObject.AddComponent<PredictionManager>());
                 var expected = new PlayerID(new PackedULong(84), false);
                 sender.SetOwner(expected);
 
                 using var packer = BitPackerPool.Get();
                 sender.WriteFirstState(0, packer);
                 packer.ResetPositionAndMode(true);
-                receiver.ReadFirstState(0, packer);
+                receiver.ReadFirstState(0, packer, 0);
 
                 Assert.That(receiver.owner, Is.EqualTo(expected));
             }
@@ -87,6 +97,8 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 Object.DestroyImmediate(senderObject);
                 Object.DestroyImmediate(receiverObject);
+                Object.DestroyImmediate(senderManagerObject);
+                Object.DestroyImmediate(receiverManagerObject);
             }
         }
 
@@ -95,35 +107,53 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             var senderObject = new GameObject("StaticOwnerDeltaSender");
             var receiverObject = new GameObject("StaticOwnerDeltaReceiver");
+            var senderManagerObject = new GameObject("StaticOwnerDeltaSenderManager");
+            var receiverManagerObject = new GameObject("StaticOwnerDeltaReceiverManager");
             try
             {
                 var sender = senderObject.AddComponent<StaticPredictedIdentity>();
                 var receiver = receiverObject.AddComponent<StaticPredictedIdentity>();
+                var senderManager = senderManagerObject.AddComponent<PredictionManager>();
+                AttachManager(sender, senderManager);
+                AttachManager(receiver, receiverManagerObject.AddComponent<PredictionManager>());
                 var receiverPlayer = new PlayerID(new PackedULong(7), false);
                 var expectedOwner = new PlayerID(new PackedULong(126), false);
-                CreateDeltaModules(receiverPlayer, out var sendingDeltas, out var receivingDeltas);
 
                 using (var initialPacker = BitPackerPool.Get())
                 {
-                    Assert.That(sender.WriteCurrentState(receiverPlayer, initialPacker, sendingDeltas), Is.False);
+                    Assert.That(sender.WriteCurrentState(receiverPlayer, initialPacker, 0), Is.True);
                     initialPacker.ResetPositionAndMode(true);
-                    receiver.ReadState(9, initialPacker, receivingDeltas);
+                    receiver.ReadState(1, initialPacker, 0, 1);
                     Assert.That(receiver.owner, Is.Null);
                 }
 
+                SetLocalTick(senderManager, 10);
                 sender.SetOwner(expectedOwner);
 
-                using var packer = BitPackerPool.Get();
-                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas), Is.True);
-                packer.ResetPositionAndMode(true);
-                receiver.ReadState(10, packer, receivingDeltas);
+                using (var packer = BitPackerPool.Get())
+                {
+                    Assert.That(sender.WriteCurrentState(receiverPlayer, packer, 1), Is.True);
+                    packer.ResetPositionAndMode(true);
+                    receiver.ReadState(10, packer, 1, 10);
 
-                Assert.That(receiver.owner, Is.EqualTo(expectedOwner));
+                    Assert.That(receiver.owner, Is.EqualTo(expectedOwner));
+                }
+
+                using (var unchangedPacker = BitPackerPool.Get())
+                {
+                    Assert.That(sender.WriteCurrentState(receiverPlayer, unchangedPacker, 10), Is.False);
+                    unchangedPacker.ResetPositionAndMode(true);
+                    receiver.ReadState(11, unchangedPacker, 10, 11);
+
+                    Assert.That(receiver.owner, Is.EqualTo(expectedOwner));
+                }
             }
             finally
             {
                 Object.DestroyImmediate(senderObject);
                 Object.DestroyImmediate(receiverObject);
+                Object.DestroyImmediate(senderManagerObject);
+                Object.DestroyImmediate(receiverManagerObject);
             }
         }
 
@@ -132,20 +162,23 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             var senderObject = new GameObject("StatelessOwnerDeltaSender");
             var receiverObject = new GameObject("StatelessOwnerDeltaReceiver");
+            var senderManagerObject = new GameObject("StatelessOwnerDeltaSenderManager");
+            var receiverManagerObject = new GameObject("StatelessOwnerDeltaReceiverManager");
             try
             {
                 var sender = senderObject.AddComponent<StatelessOwnerProbe>();
                 var receiver = receiverObject.AddComponent<StatelessOwnerProbe>();
+                AttachManager(sender, senderManagerObject.AddComponent<PredictionManager>());
+                AttachManager(receiver, receiverManagerObject.AddComponent<PredictionManager>());
                 var receiverPlayer = new PlayerID(new PackedULong(8), false);
                 var expectedOwner = new PlayerID(new PackedULong(127), false);
-                CreateDeltaModules(receiverPlayer, out var sendingDeltas, out var receivingDeltas);
 
                 sender.AssignOwner(expectedOwner);
 
                 using var packer = BitPackerPool.Get();
-                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas), Is.True);
+                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, 0), Is.True);
                 packer.ResetPositionAndMode(true);
-                receiver.ReadState(10, packer, receivingDeltas);
+                receiver.ReadState(10, packer, 0, 10);
 
                 Assert.That(receiver.assignedOwner, Is.EqualTo(expectedOwner));
             }
@@ -153,35 +186,38 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 Object.DestroyImmediate(senderObject);
                 Object.DestroyImmediate(receiverObject);
+                Object.DestroyImmediate(senderManagerObject);
+                Object.DestroyImmediate(receiverManagerObject);
             }
         }
 
         [Test]
         public void DeterministicCurrentStateAppliesPostSpawnOwnerAtVerifiedRollback()
         {
-            var managerObject = new GameObject("DeterministicOwnerManager");
+            var senderManagerObject = new GameObject("DeterministicOwnerSenderManager");
+            var receiverManagerObject = new GameObject("DeterministicOwnerReceiverManager");
             var senderObject = new GameObject("DeterministicOwnerDeltaSender");
             var receiverObject = new GameObject("DeterministicOwnerDeltaReceiver");
             try
             {
                 const ulong verifiedTick = 10;
-                var manager = managerObject.AddComponent<PredictionManager>();
+                var senderManager = senderManagerObject.AddComponent<PredictionManager>();
+                var receiverManager = receiverManagerObject.AddComponent<PredictionManager>();
                 var sender = senderObject.AddComponent<DeterministicOwnerProbe>();
                 var receiver = receiverObject.AddComponent<DeterministicOwnerProbe>();
                 var receiverPlayer = new PlayerID(new PackedULong(9), false);
                 var expectedOwner = new PlayerID(new PackedULong(128), false);
-                CreateDeltaModules(receiverPlayer, out var sendingDeltas, out var receivingDeltas);
-                sender.AttachForTest(manager);
-                receiver.AttachForTest(manager);
+                sender.AttachForTest(senderManager);
+                receiver.AttachForTest(receiverManager);
                 SeedDeterministicHistory(receiver, verifiedTick - 1);
                 sender.AssignOwner(expectedOwner);
 
                 using var packer = BitPackerPool.Get();
-                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas), Is.True);
+                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, 0), Is.True);
                 packer.ResetPositionAndMode(true);
 
                 receiver.ClearFuture(verifiedTick);
-                receiver.ReadState(verifiedTick, packer, receivingDeltas);
+                receiver.ReadState(verifiedTick, packer, 0, verifiedTick);
 
                 Assert.That(receiver.assignedOwner, Is.Null,
                     "Verified deterministic metadata must remain in history until rollback applies its tick");
@@ -194,7 +230,8 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 Object.DestroyImmediate(senderObject);
                 Object.DestroyImmediate(receiverObject);
-                Object.DestroyImmediate(managerObject);
+                Object.DestroyImmediate(senderManagerObject);
+                Object.DestroyImmediate(receiverManagerObject);
             }
         }
 
@@ -205,23 +242,22 @@ namespace PurrNet.Prediction.Tests.Editor
                 nameof(LegacyPredictionKeyModule.legacyPredictionKey)), Is.Not.Null);
         }
 
-        private static void CreateDeltaModules(
-            PlayerID localPlayer,
-            out DeltaModule sending,
-            out DeltaModule receiving)
+        private static void AttachManager(PredictedIdentity identity, PredictionManager manager)
         {
-#pragma warning disable SYSLIB0050
-            var players = (PlayersManager)FormatterServices.GetUninitializedObject(typeof(PlayersManager));
-#pragma warning restore SYSLIB0050
-            var localPlayerField = typeof(PlayersManager).GetField(
-                "<localPlayerId>k__BackingField",
+            var managerField = typeof(PredictedIdentity).GetField(
+                "<predictionManager>k__BackingField",
                 BindingFlags.Instance | BindingFlags.NonPublic);
-            Assert.That(localPlayerField, Is.Not.Null);
-            localPlayerField.SetValue(players, (PlayerID?)localPlayer);
+            Assert.That(managerField, Is.Not.Null);
+            managerField.SetValue(identity, manager);
+        }
 
-            var broadcaster = new PlayersBroadcaster(null, players);
-            sending = new DeltaModule(players, broadcaster);
-            receiving = new DeltaModule(players, broadcaster);
+        private static void SetLocalTick(PredictionManager manager, ulong tick)
+        {
+            var tickField = typeof(PredictionManager).GetField(
+                "<localTick>k__BackingField",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.That(tickField, Is.Not.Null);
+            tickField.SetValue(manager, tick);
         }
 
         private static void SeedDeterministicHistory(DeterministicOwnerProbe identity, ulong tick)
@@ -263,7 +299,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
         public void WriteFirstStateForTest(BitPacker packer) => WriteFirstState(0, packer);
 
-        public void ReadFirstStateForTest(BitPacker packer) => ReadFirstState(0, packer);
+        public void ReadFirstStateForTest(BitPacker packer) => ReadFirstState(0, packer, 0);
     }
 
     public sealed class LegacyPredictionKeyModule : PredictedModule<PolicyContractState>

@@ -147,20 +147,13 @@ namespace PurrNet.Prediction.Tests.Editor
                 MarkAllModulesDynamic(receiver);
                 InitializeModuleHistory(receiver);
 
-                var writerDelta = new DeltaModule(null, null);
-#pragma warning disable SYSLIB0050
-                var receiverPlayers = (PlayersManager)FormatterServices.GetUninitializedObject(
-                    typeof(PlayersManager));
-#pragma warning restore SYSLIB0050
-                var readerDelta = new DeltaModule(receiverPlayers, null);
-
                 using var packer = BitPackerPool.Get();
-                sender.WriteModulePayloadForTest(packer, writerDelta);
+                sender.WriteModulePayloadForTest(packer);
                 Packer<int>.Write(packer, 123456789);
                 int writtenBits = packer.positionInBits;
 
                 packer.ResetPositionAndMode(true);
-                receiver.ReadModulePayloadForTest(10, packer, readerDelta);
+                receiver.ReadModulePayloadForTest(10, packer);
                 int tailValue = Packer<int>.Read(packer);
 
                 Assert.That(packer.positionInBits, Is.EqualTo(writtenBits),
@@ -208,20 +201,13 @@ namespace PurrNet.Prediction.Tests.Editor
                 MarkAllModulesDynamic(receiver);
                 InitializeModuleHistory(receiver);
 
-                var writerDelta = new DeltaModule(null, null);
-#pragma warning disable SYSLIB0050
-                var receiverPlayers = (PlayersManager)FormatterServices.GetUninitializedObject(
-                    typeof(PlayersManager));
-#pragma warning restore SYSLIB0050
-                var readerDelta = new DeltaModule(receiverPlayers, null);
-
                 using var packer = BitPackerPool.Get();
-                sender.WriteModulePayloadForTest(packer, writerDelta);
+                sender.WriteModulePayloadForTest(packer);
                 Packer<int>.Write(packer, 987654321);
                 int writtenBits = packer.positionInBits;
 
                 packer.ResetPositionAndMode(true);
-                receiver.ReadModulePayloadForTest(10, packer, readerDelta);
+                receiver.ReadModulePayloadForTest(10, packer);
                 int tailValue = Packer<int>.Read(packer);
 
                 Assert.That(packer.positionInBits, Is.EqualTo(writtenBits));
@@ -480,16 +466,16 @@ namespace PurrNet.Prediction.Tests.Editor
             predictionManager = manager;
         }
 
-        public void WriteModulePayloadForTest(BitPacker packer, DeltaModule deltaModule)
+        public void WriteModulePayloadForTest(BitPacker packer)
         {
-            WriteDynamicModuleSnapshot(default, packer, deltaModule);
-            WriteModules(default, packer, deltaModule);
+            WriteDynamicModuleSnapshot(default, packer, 0);
+            WriteModules(default, packer, 0);
         }
 
-        public void ReadModulePayloadForTest(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        public void ReadModulePayloadForTest(ulong tick, BitPacker packer)
         {
-            ReadDynamicModuleSnapshot(tick, packer, deltaModule);
-            ReadModules(tick, packer, deltaModule);
+            ReadDynamicModuleSnapshot(tick, packer, 0, tick);
+            ReadModules(tick, packer, 0, tick);
         }
     }
 

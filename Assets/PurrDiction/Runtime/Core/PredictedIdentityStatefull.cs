@@ -1,5 +1,6 @@
 ﻿using System;
 using JetBrains.Annotations;
+using PurrNet.Logging;
 using PurrNet.Modules;
 using PurrNet.Packing;
 using PurrNet.Prediction.Profiler;
@@ -10,55 +11,6 @@ namespace PurrNet.Prediction
 {
     public abstract class PredictedIdentity<STATE> : PredictedIdentity where STATE : struct, IPredictedData<STATE>
     {
-        protected readonly struct DeltaKey<T, S> : IStableHashable
-        {
-            private readonly PredictedComponentID id;
-            private readonly SceneID scene;
-
-            public DeltaKey(SceneID scene, PredictedComponentID id)
-            {
-                this.id = id;
-                this.scene = scene;
-            }
-
-            public uint GetStableHash()
-            {
-                const uint Off = 2166136261u;
-                const uint Pri = 16777619u;
-                uint h = Off;
-                h = (h ^ Hasher<T>.stableHash) * Pri;
-                h = (h ^ Hasher<S>.stableHash) * Pri;
-                h = (h ^ id.componentId.value) * Pri;
-                h = (h ^ id.objectId.instanceId.value) * Pri;
-                h = (h ^ scene.id.value) * Pri;
-                return h;
-            }
-        }
-
-        protected readonly struct DeltaKey<T> : IStableHashable
-        {
-            private readonly PredictedComponentID id;
-            private readonly SceneID scene;
-
-            public DeltaKey(SceneID scene, PredictedComponentID id)
-            {
-                this.id = id;
-                this.scene = scene;
-            }
-
-            public uint GetStableHash()
-            {
-                const uint Off = 2166136261u;
-                const uint Pri = 16777619u;
-                uint h = Off;
-                h = (h ^ Hasher<T>.stableHash) * Pri;
-                h = (h ^ id.componentId.value) * Pri;
-                h = (h ^ id.objectId.instanceId.value) * Pri;
-                h = (h ^ scene.id.value) * Pri;
-                return h;
-            }
-        }
-
         public PredictedHierarchy hierarchy { get; private set; }
 
         public override string ToString()
@@ -68,6 +20,7 @@ namespace PurrNet.Prediction
 
         private InterpolatedWithDispose<FULL_STATE<STATE>> _interpolatedState;
         private History<FULL_STATE<STATE>> _stateHistory;
+        private History<FULL_STATE<STATE>> _verifiedHistory;
 
         protected TickManager tickModule { get; private set; }
         private bool _firstViewUpdate = true;
@@ -104,6 +57,7 @@ namespace PurrNet.Prediction
 
             _interpolatedState?.Teleport(default);
             _stateHistory?.Clear();
+            _verifiedHistory = null;
 
             fullPredictedState.Dispose();
             fullPredictedState = default;
@@ -165,6 +119,7 @@ namespace PurrNet.Prediction
             if (preserveSoftCorrection)
             {
                 fullPredictedState.prediction.owner = owner;
+                _verifiedHistory = world.GetVerifiedHistory<FULL_STATE<STATE>>(id, out _);
                 return;
             }
 
@@ -193,6 +148,8 @@ namespace PurrNet.Prediction
             else _stateHistory.Clear();
 
             _stateHistory.Write(0, fullPredictedState.DeepCopy());
+
+            _verifiedHistory = world.GetVerifiedHistory<FULL_STATE<STATE>>(id, out _);
         }
 
         protected virtual void GetUnityState(ref STATE state) {}
@@ -227,6 +184,7 @@ namespace PurrNet.Prediction
             if (LatestHistoryMatches(tick, ref fullPredictedState))
                 return;
 
+            lastChangedStateTick = tick;
             _stateHistory.Write(tick, fullPredictedState.DeepCopy());
         }
 
@@ -326,22 +284,23 @@ namespace PurrNet.Prediction
             SetOwner(prediction.owner);
         }
 
-        protected DeltaKey<STATE> stateKey => new (sceneId, id);
-
-        private DeltaKey<PredictedIdentityState, STATE> internalKey => new (sceneId, id);
-
         internal override void WriteFirstState(ulong tick, BitPacker packer)
         {
-            var savedState = fullPredictedState;
+            RefreshVerifiedFromLive(tick);
 
-            if (tick > 0 && _stateHistory.ReadOrPrevious(tick, out var state))
-                savedState = state;
-
-            Packer<PredictedIdentityState>.Write(packer, savedState.prediction);
-            Packer<STATE>.Write(packer, savedState.state);
+            Packer<PredictedIdentityState>.Write(packer, fullPredictedState.prediction);
+            Packer<STATE>.Write(packer, fullPredictedState.state);
         }
 
-        internal override void ReadFirstState(ulong tick, BitPacker packer)
+        private void RefreshVerifiedFromLive(ulong tick)
+        {
+            if (_verifiedHistory.Count > 0 && _verifiedHistory.MostRecentTick >= tick)
+                return;
+
+            StoreVerified(tick, ref fullPredictedState);
+        }
+
+        internal override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
         {
             PredictedIdentityState prediction = default;
             STATE state = default;
@@ -354,50 +313,62 @@ namespace PurrNet.Prediction
                 state = state,
                 prediction = prediction
             };
+            StoreVerified(serverTick, ref newState);
             WriteOwnedStateIfChanged(tick, ref newState);
         }
 
-        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
+        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, ulong baselineTick)
         {
+            RefreshVerifiedFromLive(predictionManager.localTick);
+
+            if (baselineTick > 0 && _verifiedHistory.MostRecentTick <= baselineTick)
+            {
+                Packer<bool>.Write(packer, false);
+                TickBandwidthProfiler.OnWroteState(myType, 1, this);
+                return false;
+            }
+
             int pos = packer.positionInBits;
-            int flagPos = packer.AdvanceBits(1);
 
-            bool changed = deltaModule.WriteReliable(packer, target, internalKey, fullPredictedState.prediction);
-            changed = WriteDeltaState(target, packer, deltaModule) || changed;
+            if (!_verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
 
-            packer.WriteAt(flagPos, changed);
-            if (!changed)
-                packer.SetBitPosition(flagPos + 1);
+            Packer<bool>.Write(packer, true);
+            DeltaPacker<PredictedIdentityState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
+            WriteDeltaState(packer, in baseline.state, in fullPredictedState.state);
 
             TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
-            return changed;
+            return true;
         }
 
-        protected virtual bool WriteDeltaState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
+        protected virtual void WriteDeltaState(BitPacker packer, in STATE baseline, in STATE current)
         {
-            return deltaModule.WriteReliable(packer, target, stateKey, fullPredictedState.state);
+            DeltaPacker<STATE>.Write(packer, baseline, current);
         }
 
         [UsedImplicitly]
-        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        internal override void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
         {
             int pos = packer.positionInBits;
 
             bool changed = Packer<bool>.Read(packer);
-            FULL_STATE<STATE> newState = default;
+
+            if (!_verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
+
+            FULL_STATE<STATE> newState;
 
             if (changed)
             {
-                deltaModule.ReadReliable(packer, internalKey, ref newState.prediction);
+                newState = default;
+                DeltaPacker<PredictedIdentityState>.Read(packer, baseline.prediction, ref newState.prediction);
+                ReadDeltaState(packer, in baseline.state, ref newState.state);
+                StoreVerified(serverTick, ref newState);
             }
             else
             {
-                packer.SetBitPosition(pos);
-                deltaModule.ReadReliable(packer, internalKey, ref newState.prediction);
-                packer.SetBitPosition(pos);
+                newState = baseline.DeepCopy();
             }
-
-            ReadDeltaState(packer, deltaModule, ref newState.state);
 
             if (UsesSoftCorrectionTimeline())
             {
@@ -420,18 +391,29 @@ namespace PurrNet.Prediction
             TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
         }
 
-        protected virtual void OnVerifiedStateReceived(ulong tick, in STATE predicted, in STATE verified) { }
-
-        protected virtual void ReadDeltaState(BitPacker packer, DeltaModule deltaModule, ref STATE state)
+        private void StoreVerified(ulong serverTick, ref FULL_STATE<STATE> state)
         {
-            deltaModule.ReadReliable(packer, stateKey, ref state);
+            _verifiedHistory.PruneByTickWindow(serverTick);
+
+            int lastIndex = _verifiedHistory.Count - 1;
+            if (lastIndex >= 0 && _verifiedHistory.GetEntryTick(lastIndex) <= serverTick)
+            {
+                var latest = _verifiedHistory[lastIndex];
+                if (latest.HasSameContents(ref state))
+                    return;
+            }
+
+            _verifiedHistory.Write(serverTick, state.DeepCopy());
         }
 
-        internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable) { }
+        protected virtual void OnVerifiedStateReceived(ulong tick, in STATE predicted, in STATE verified) { }
 
-        internal override void ReadInput(ulong tick,  PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable) { }
+        protected virtual void ReadDeltaState(BitPacker packer, in STATE baseline, ref STATE state)
+        {
+            DeltaPacker<STATE>.Read(packer, baseline, ref state);
+        }
 
-        internal override void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable) { }
+        internal override void QueueInput(BitPacker packer, PlayerID sender) { }
 
         public STATE viewState;
 

@@ -137,6 +137,8 @@ if [ $# -gt 0 ]; then
             default)     run_profile default 37001 -latencyMin 40 -latencyMax 80 ;;
             no-latency)  run_profile no-latency 37002 -latencyMax 0 ;;
             high-jitter) run_profile high-jitter 37003 -latencyMin 120 -latencyMax 250 ;;
+            loss)        run_profile loss 37004 -latencyMin 40 -latencyMax 80 -packetLoss 5 ;;
+            heavy-loss)  run_profile heavy-loss 37005 -latencyMin 80 -latencyMax 160 -packetLoss 15 ;;
             *) echo "unknown profile $p"; FAIL=1 ;;
         esac
     done

@@ -14,13 +14,9 @@ namespace PurrNet.Prediction
 
         protected virtual void LateSimulate(ref STATE state, sfloat delta) { }
 
-        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
+        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, ulong baselineTick)
         {
-            bool metadataChanged = WritePredictionMetadata(
-                target,
-                packer,
-                deltaModule,
-                fullPredictedState.prediction);
+            bool metadataChanged = WritePredictionMetadata(packer, baselineTick, in fullPredictedState.prediction);
 
             if (predictionManager.validateDeterministicData)
             {
@@ -31,10 +27,10 @@ namespace PurrNet.Prediction
             return metadataChanged;
         }
 
-        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        internal override void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
         {
             PredictedIdentityState prediction = default;
-            ReadPredictionMetadata(packer, deltaModule, ref prediction);
+            ReadPredictionMetadata(packer, baselineTick, serverTick, ref prediction);
 
             if (predictionManager.validateDeterministicData)
             {
@@ -307,17 +303,19 @@ namespace PurrNet.Prediction
                 return;
             }
 
+            RefreshMetadataLedger(tick, in state.prediction);
             Packer<PredictedIdentityState>.Write(packer, state.prediction);
             Packer<STATE>.Write(packer, state.state);
         }
 
-        internal override void ReadFirstState(ulong tick, BitPacker packer)
+        internal override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
         {
             PredictedIdentityState prediction = default;
             STATE state = default;
 
             Packer<PredictedIdentityState>.Read(packer, ref prediction);
             Packer<STATE>.Read(packer, ref state);
+            StoreVerifiedMetadata(serverTick, in prediction);
 
             FULL_STATE<STATE> newState = new FULL_STATE<STATE>
             {
@@ -327,11 +325,7 @@ namespace PurrNet.Prediction
             WriteOwnedStateIfChanged(tick, ref newState);
         }
 
-        internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable) { }
-
-        internal override void ReadInput(ulong tick,  PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable) { }
-
-        internal override void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable) { }
+        internal override void QueueInput(BitPacker packer, PlayerID sender) { }
 
         public STATE viewState;
 
