@@ -29,6 +29,7 @@ public class PredictionBootstrap : Scenario
 
     [Header("Network simulation (overridden by -latencyMin / -latencyMax)")]
     [SerializeField] private bool _simulateLatency = true;
+    [SerializeField] private int _packetLossChance;
     [SerializeField] private int _minLatencyMs = 40;
     [SerializeField] private int _maxLatencyMs = 80;
 
@@ -216,6 +217,10 @@ public class PredictionBootstrap : Scenario
             _simulateLatency = parsedLatencyMax > 0;
         }
 
+        if (CommandLineUtils.TryGetArgument("-packetLoss", out var packetLoss)
+            && int.TryParse(packetLoss, out var parsedPacketLoss))
+            _packetLossChance = parsedPacketLoss;
+
         _profileScenarios = CommandLineUtils.HasFlag("-profileScenarios");
     }
 
@@ -239,8 +244,8 @@ public class PredictionBootstrap : Scenario
             simulateLatency = _simulateLatency && _maxLatencyMs > 0,
             minLatency = _minLatencyMs,
             maxLatency = _maxLatencyMs,
-            simulatePacketLoss = false,
-            packetLossChance = 1
+            simulatePacketLoss = _packetLossChance > 0,
+            packetLossChance = Mathf.Max(1, _packetLossChance)
         };
     }
 

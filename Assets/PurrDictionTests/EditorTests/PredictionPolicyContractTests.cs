@@ -79,7 +79,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 using var packer = BitPackerPool.Get();
                 sender.WriteFirstState(0, packer);
                 packer.ResetPositionAndMode(true);
-                receiver.ReadFirstState(0, packer);
+                receiver.ReadFirstState(0, packer, 0);
 
                 Assert.That(receiver.owner, Is.EqualTo(expected));
             }
@@ -105,18 +105,18 @@ namespace PurrNet.Prediction.Tests.Editor
 
                 using (var initialPacker = BitPackerPool.Get())
                 {
-                    Assert.That(sender.WriteCurrentState(receiverPlayer, initialPacker, sendingDeltas), Is.False);
+                    Assert.That(sender.WriteCurrentState(receiverPlayer, initialPacker, sendingDeltas, 0), Is.False);
                     initialPacker.ResetPositionAndMode(true);
-                    receiver.ReadState(9, initialPacker, receivingDeltas);
+                    receiver.ReadState(9, initialPacker, receivingDeltas, 0, 9);
                     Assert.That(receiver.owner, Is.Null);
                 }
 
                 sender.SetOwner(expectedOwner);
 
                 using var packer = BitPackerPool.Get();
-                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas), Is.True);
+                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas, 0), Is.True);
                 packer.ResetPositionAndMode(true);
-                receiver.ReadState(10, packer, receivingDeltas);
+                receiver.ReadState(10, packer, receivingDeltas, 0, 10);
 
                 Assert.That(receiver.owner, Is.EqualTo(expectedOwner));
             }
@@ -143,9 +143,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 sender.AssignOwner(expectedOwner);
 
                 using var packer = BitPackerPool.Get();
-                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas), Is.True);
+                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas, 0), Is.True);
                 packer.ResetPositionAndMode(true);
-                receiver.ReadState(10, packer, receivingDeltas);
+                receiver.ReadState(10, packer, receivingDeltas, 0, 10);
 
                 Assert.That(receiver.assignedOwner, Is.EqualTo(expectedOwner));
             }
@@ -177,11 +177,11 @@ namespace PurrNet.Prediction.Tests.Editor
                 sender.AssignOwner(expectedOwner);
 
                 using var packer = BitPackerPool.Get();
-                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas), Is.True);
+                Assert.That(sender.WriteCurrentState(receiverPlayer, packer, sendingDeltas, 0), Is.True);
                 packer.ResetPositionAndMode(true);
 
                 receiver.ClearFuture(verifiedTick);
-                receiver.ReadState(verifiedTick, packer, receivingDeltas);
+                receiver.ReadState(verifiedTick, packer, receivingDeltas, 0, verifiedTick);
 
                 Assert.That(receiver.assignedOwner, Is.Null,
                     "Verified deterministic metadata must remain in history until rollback applies its tick");
@@ -263,7 +263,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
         public void WriteFirstStateForTest(BitPacker packer) => WriteFirstState(0, packer);
 
-        public void ReadFirstStateForTest(BitPacker packer) => ReadFirstState(0, packer);
+        public void ReadFirstStateForTest(BitPacker packer) => ReadFirstState(0, packer, 0);
     }
 
     public sealed class LegacyPredictionKeyModule : PredictedModule<PolicyContractState>

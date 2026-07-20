@@ -10,31 +10,6 @@ namespace PurrNet.Prediction
         where STATE : struct, IPredictedData<STATE>
         where INPUT : struct, IPredictedData
     {
-        readonly struct DeltaKey<T, S> : IStableHashable
-        {
-            private readonly PredictedComponentID id;
-            private readonly SceneID scene;
-
-            public DeltaKey(SceneID scene, PredictedComponentID id)
-            {
-                this.id = id;
-                this.scene = scene;
-            }
-
-            public uint GetStableHash()
-            {
-                const uint Off = 2166136261u;
-                const uint Pri = 16777619u;
-                uint h = Off;
-                h = (h ^ Hasher<T>.stableHash) * Pri;
-                h = (h ^ Hasher<S>.stableHash) * Pri;
-                h = (h ^ id.componentId.value) * Pri;
-                h = (h ^ id.objectId.instanceId.value) * Pri;
-                h = (h ^ scene.id.value) * Pri;
-                return h;
-            }
-        }
-
         [Header("Predicted Input")]
         [SerializeField] protected float _repeatInputFactor = 0.8f;
         [SerializeField] protected bool _extrapolateInput = true;
@@ -214,6 +189,11 @@ namespace PurrNet.Prediction
             throw new System.NotImplementedException();
         }
 
+        internal override bool HasInputAt(ulong tick)
+        {
+            return _inputHistory != null && _inputHistory.TryGet(tick, out _);
+        }
+
         public override void WriteFirstInput(ulong localTick, BitPacker packer)
         {
             int pos = packer.positionInBits;
@@ -238,45 +218,6 @@ namespace PurrNet.Prediction
                 _inputHistory.Write(localTick, input);
             }
             else _inputHistory.Remove(localTick);
-
-            TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);
-        }
-
-        DeltaKey<INPUT, STATE> key => new DeltaKey<INPUT, STATE>(sceneId, id);
-
-        internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable)
-        {
-            int pos = input.positionInBits;
-
-            if (_inputHistory.TryGet(localTick, out var savedInput))
-            {
-                Packer<bool>.Write(input, true);
-
-                if (reliable)
-                    deltaModule.WriteReliable(input, receiver, key, savedInput);
-                else deltaModule.Write(input, receiver, key, savedInput);
-            }
-            else
-            {
-                Packer<bool>.Write(input, false);
-            }
-
-            TickBandwidthProfiler.OnWroteInput(myType, input.positionInBits - pos, this);
-        }
-
-        internal override void ReadInput(ulong tick, PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable)
-        {
-            var pos = packer.positionInBits;
-
-            if (Packer<bool>.Read(packer))
-            {
-                INPUT input = default;
-                if (reliable)
-                    deltaModule.ReadReliable(packer, key, ref input);
-                else deltaModule.Read(packer, key, sender, ref input);
-                _inputHistory.Write(tick, input);
-            }
-            else _inputHistory.Remove(tick);
 
             TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);
         }

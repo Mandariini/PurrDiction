@@ -188,6 +188,48 @@ namespace PurrNet.Prediction
 
         private DeltaModule _deltaModuleState;
 
+        internal interface IVerifiedStateStore
+        {
+            void Clear();
+        }
+
+        private sealed class VerifiedStateStore<T> : IVerifiedStateStore where T : struct, IDisposable
+        {
+            public readonly History<T> history;
+
+            public VerifiedStateStore(int capacity)
+            {
+                history = new History<T>(capacity);
+            }
+
+            public void Clear() => history.Clear();
+        }
+
+        readonly Dictionary<(uint, PredictedComponentID), IVerifiedStateStore> _verifiedStores = new ();
+
+        internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, out bool created) where T : struct, IDisposable
+        {
+            var key = (Hasher<T>.stableHash, componentId);
+
+            if (_verifiedStores.TryGetValue(key, out var store))
+            {
+                created = false;
+                return ((VerifiedStateStore<T>)store).history;
+            }
+
+            var newStore = new VerifiedStateStore<T>(tickRate * 10);
+            _verifiedStores[key] = newStore;
+            created = true;
+            return newStore.history;
+        }
+
+        private void ClearVerifiedStores()
+        {
+            foreach (var store in _verifiedStores.Values)
+                store.Clear();
+            _verifiedStores.Clear();
+        }
+
         bool ShouldRegisterSystem(BuiltInSystems system)
         {
             return (_builtInSystems & system) != 0;
@@ -320,15 +362,18 @@ namespace PurrNet.Prediction
             _speculativeRelayLocks.Clear();
             _systemsCount = 0;
             _nextSystemId = 0;
+            foreach (var queue in _clientTicks.Values)
+                queue.Clear();
             _clientTicks.Clear();
             _clientFrames.Clear();
             localTick = 1;
-            _lastVerifiedTick = 1;
             localTickInContext = 1;
-            _hasServerTickBaseline = false;
-            _serverTickBaseline = 0;
-            _deterministicTimeBaseline = 0;
+            _verifiedServerTick = 0;
+            _pauseAdvanceTicks = 0;
+            _latestFrameServerTick = 0;
+            _inputStarved = false;
             _inputAckTick = 0;
+            ClearVerifiedStores();
             _deltas.Clear();
         }
 
@@ -542,7 +587,6 @@ namespace PurrNet.Prediction
                         continue;
 
                     clientFrame.fullFrame = true;
-                    clientFrame.primed = false;
                     _clientFrames[i] = clientFrame;
                     found = true;
                     break;
@@ -562,7 +606,7 @@ namespace PurrNet.Prediction
             _pendingFullSync.Clear();
         }
 
-        private void ReadFullFrame(BitPacker frame, ulong stateTick, ulong inputTick)
+        private void ReadFullFrame(BitPacker frame, ulong stateTick, ulong inputTick, ulong serverTick)
         {
             frame.ResetPositionAndMode(true);
 
@@ -578,7 +622,7 @@ namespace PurrNet.Prediction
                 if (system.isEventHandler)
                     continue;
                 system.RunClearFuture(stateTick);
-                system.RunReadFirstState(stateTick, frame);
+                system.RunReadFirstState(stateTick, frame, serverTick);
                 system.RunRollback(stateTick);
                 system.RunResetInterpolation();
                 system.lastVerifiedTick = stateTick;
@@ -593,7 +637,7 @@ namespace PurrNet.Prediction
                 if (!system.isEventHandler)
                     continue;
                 system.RunClearFuture(stateTick);
-                system.RunReadFirstState(stateTick, frame);
+                system.RunReadFirstState(stateTick, frame, serverTick);
                 system.RunRollback(stateTick);
                 system.lastVerifiedTick = stateTick;
             }
@@ -609,6 +653,12 @@ namespace PurrNet.Prediction
         {
             cachedIsServer = isServer;
             localTickInContext = localTick;
+
+            if (!cachedIsServer && _pauseAdvanceTicks > 0)
+            {
+                _pauseAdvanceTicks--;
+                return;
+            }
 
             var myPlayer = isSpawned ? localPlayer ?? default : default;
             var cachedIsClient = isClient;
@@ -742,34 +792,34 @@ namespace PurrNet.Prediction
         {
             foreach (var (player, queue) in _clientTicks)
             {
-                if (queue.Count == 0)
+                if (queue.byTick.Remove(localTick, out var entry))
                 {
-                    queue.waitForInput = true;
-                    queue.ticksAboveMin = 0;
-                    continue;
+                    HandleIncomingInput(entry.inputPacket, entry.count, player);
+                    entry.inputPacket.Dispose();
+                    queue.lastConsumedTick = localTick;
                 }
 
-                if (queue.waitForInput)
-                {
-                    queue.ticksAboveMin = 0;
-                    continue;
-                }
+                if (queue.Count > 0)
+                    PruneStaleInputs(queue);
+            }
+        }
 
-                if (queue.Count > _inputQueueSettings.minInputs && queue.Count > 1)
-                {
-                    queue.ticksAboveMin += 1;
+        private static readonly List<ulong> _staleInputScratch = new ();
 
-                    if (queue.ticksAboveMin >= tickRate)
-                    {
-                        var dropped = queue.inputQueue.Dequeue();
-                        dropped.inputPacket.Dispose();
-                        queue.ticksAboveMin = 0;
-                    }
-                }
-                else queue.ticksAboveMin = 0;
+        private void PruneStaleInputs(InputQueue queue)
+        {
+            _staleInputScratch.Clear();
 
-                var dequeued = queue.inputQueue.Peek();
-                HandleIncomingInput(dequeued.inputPacket, dequeued.count, player);
+            foreach (var tick in queue.byTick.Keys)
+            {
+                if (tick <= localTick)
+                    _staleInputScratch.Add(tick);
+            }
+
+            for (var i = 0; i < _staleInputScratch.Count; i++)
+            {
+                if (queue.byTick.Remove(_staleInputScratch[i], out var stale))
+                    stale.inputPacket.Dispose();
             }
         }
 
@@ -821,8 +871,8 @@ namespace PurrNet.Prediction
             }
 
             if (payload.positionInBytes >= InputMtu)
-                SendInputToServerReliable(firstTick, tickCount, payload);
-            else SendInputToServer(firstTick, tickCount, payload);
+                SendInputToServerReliable(firstTick, tickCount, _verifiedServerTick, payload);
+            else SendInputToServer(firstTick, tickCount, _verifiedServerTick, payload);
         }
 
         private void FinalizeTickOnServer(bool cachedIsClient)
@@ -857,6 +907,18 @@ namespace PurrNet.Prediction
 
                 var frame = clientFrame.packer;
                 var player = clientFrame.player;
+
+                ulong baselineTick = 0;
+                if (_clientTicks.TryGetValue(player, out var ackQueue))
+                    baselineTick = ackQueue.ackedServerTick;
+
+                if (!clientFrame.fullFrame && baselineTick > 0 &&
+                    localTick > baselineTick && localTick - baselineTick > (ulong)(tickRate * 8))
+                {
+                    clientFrame.fullFrame = true;
+                    _clientFrames[j] = clientFrame;
+                }
+
                 var fullFrame = clientFrame.fullFrame;
 
                 if (fullFrame)
@@ -880,23 +942,96 @@ namespace PurrNet.Prediction
                 {
                     Packer<PackedInt>.Write(frame, packedSysCount);
 
+                    WriteInputHistory(frame, baselineTick);
+
                     for (var i = 0; i < _systemsCount; i++)
                     {
                         var sys = _systems[i];
                         if (!sys.isEventHandler)
-                            sys.RunWriteCurrentState(player, frame, _deltaModuleState, clientFrame.primed);
-                    }
-
-                    for (var i = 0; i < _systemsCount; i++)
-                        _systems[i].WriteInput(localTick, player, frame, _deltaModuleState, true);
-
-                    if (!clientFrame.primed)
-                    {
-                        clientFrame.primed = true;
-                        _clientFrames[j] = clientFrame;
+                            sys.RunWriteCurrentState(player, frame, _deltaModuleState, baselineTick);
                     }
                 }
             }
+        }
+
+        private void WriteInputHistory(BitPacker frame, ulong baselineTick)
+        {
+            ulong from = baselineTick;
+            if (localTick > MaxInputWindow && from < localTick - MaxInputWindow)
+                from = localTick - MaxInputWindow;
+            if (from > localTick)
+                from = localTick;
+
+            Packer<PackedUInt>.Write(frame, (PackedUInt)(uint)(localTick - from));
+
+            using var entryScratch = BitPackerPool.Get();
+
+            for (ulong t = from + 1; t <= localTick; t++)
+            {
+                uint entryCount = 0;
+                for (var i = 0; i < _systemsCount; i++)
+                {
+                    var sys = _systems[i];
+                    if (sys.hasInput && sys.HasInputAt(t))
+                        entryCount++;
+                }
+
+                Packer<PackedUInt>.Write(frame, (PackedUInt)entryCount);
+
+                for (var i = 0; i < _systemsCount; i++)
+                {
+                    var sys = _systems[i];
+                    if (!sys.hasInput || !sys.HasInputAt(t))
+                        continue;
+
+                    Packer<PredictedComponentID>.Write(frame, sys.id);
+                    entryScratch.ResetPositionAndMode(false);
+                    sys.WriteFirstInput(t, entryScratch);
+                    int bits = entryScratch.positionInBits;
+                    Packer<PackedUInt>.Write(frame, (PackedUInt)(uint)bits);
+                    frame.WriteBitsWithoutConsumingIt(entryScratch, bits);
+                }
+            }
+        }
+
+        private void ReadInputHistory(BitPacker frame, ulong serverTick)
+        {
+            PackedUInt tickCount = default;
+            Packer<PackedUInt>.Read(frame, ref tickCount);
+
+            ulong from = serverTick - tickCount.value;
+
+            for (uint k = 0; k < tickCount.value; k++)
+            {
+                ulong t = from + 1 + k;
+
+                PackedUInt entryCount = default;
+                Packer<PackedUInt>.Read(frame, ref entryCount);
+
+                for (uint e = 0; e < entryCount.value; e++)
+                {
+                    PredictedComponentID pid = default;
+                    Packer<PredictedComponentID>.Read(frame, ref pid);
+                    PackedUInt bits = default;
+                    Packer<PackedUInt>.Read(frame, ref bits);
+
+                    if (_instanceMap.TryGetValue(pid, out var system))
+                        system.ReadFirstInput(t, frame);
+                    else
+                        frame.SkipBits((int)bits.value);
+                }
+            }
+        }
+
+        private void RollbackAllToVerified(ulong tick)
+        {
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                var system = _systems[i];
+                if (!system.UsesSoftCorrectionTimeline())
+                    system.RunRollback(tick);
+            }
+            SyncTransforms();
         }
 
         private void WriteEventHandles()
@@ -916,7 +1051,13 @@ namespace PurrNet.Prediction
                     var packer = frame.packer;
                     if (frame.fullFrame)
                         system.RunWriteFirstState(localTick, packer);
-                    else system.RunWriteCurrentState(frame.player, packer, _deltaModuleState);
+                    else
+                    {
+                        ulong baselineTick = 0;
+                        if (_clientTicks.TryGetValue(frame.player, out var ackQueue))
+                            baselineTick = ackQueue.ackedServerTick;
+                        system.RunWriteCurrentState(frame.player, packer, _deltaModuleState, baselineTick);
+                    }
                 }
             }
         }
@@ -933,27 +1074,21 @@ namespace PurrNet.Prediction
                 var deltaLen = packer.ToByteData().length;
                 var fullFrame = clientFrame.fullFrame;
 
-                if (!_clientTicks.TryGetValue(player, out var queue))
+                ulong inputAck = 0;
+                ulong baselineTick = 0;
+
+                if (_clientTicks.TryGetValue(player, out var queue))
                 {
-                    SendFrameToRemote(player, 0, localTick, fullFrame, new BitPackerWithLength(deltaLen, packer));
-                    if (fullFrame)
-                    {
-                        clientFrame.fullFrame = false;
-                        _clientFrames[j] = clientFrame;
-                    }
-                    continue;
+                    ulong contiguous = queue.lastConsumedTick;
+                    while (queue.byTick.ContainsKey(contiguous + 1))
+                        contiguous++;
+                    inputAck = contiguous;
+                    baselineTick = queue.ackedServerTick;
                 }
 
-                ulong tick = 0;
-
-                if (queue.Count > 0 && !queue.waitForInput)
-                {
-                    var dequeued = queue.inputQueue.Dequeue();
-                    tick = dequeued.clientTick;
-                    dequeued.inputPacket.Dispose();
-                }
-
-                SendFrameToRemote(player, tick, localTick, fullFrame, new BitPackerWithLength(deltaLen, packer));
+                if (fullFrame || deltaLen >= SafeFrameMtu)
+                    SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, new BitPackerWithLength(deltaLen, packer));
+                else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, new BitPackerWithLength(deltaLen, packer));
                 if (fullFrame)
                 {
                     clientFrame.fullFrame = false;
@@ -1099,8 +1234,9 @@ namespace PurrNet.Prediction
         struct FrameDelta : IDisposable
         {
             public BitPacker packer;
-            public ulong clientTick;
             public ulong serverTick;
+            public ulong baselineTick;
+            public ulong inputAck;
             public bool fullFrame;
 
             public void Dispose()
@@ -1111,17 +1247,29 @@ namespace PurrNet.Prediction
 
         readonly Queue<FrameDelta> _deltas = new ();
 
+        private const int SafeFrameMtu = 1000;
+
+        [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Best)]
+        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, BitPackerWithLength delta)
+        {
+            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, delta);
+        }
+
         [TargetRpc(compressionLevel: CompressionLevel.Best)]
-        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong localTick, ulong serverTick, bool fullFrame, BitPackerWithLength delta)
+        private void SendFrameToRemoteReliable([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, BitPackerWithLength delta)
+        {
+            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, delta);
+        }
+
+        private void HandleFrameFromServer(ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, BitPackerWithLength delta)
         {
             delta.packer.SkipBytes(delta.originalLength);
 
-            if (localTick > _inputAckTick)
-                _inputAckTick = localTick;
+            if (inputAck > _inputAckTick)
+                _inputAckTick = inputAck;
 
             if (fullFrame)
             {
-                _lastVerifiedTick = 1;
                 while (_deltas.Count > 0)
                     _deltas.Dequeue().Dispose();
             }
@@ -1129,30 +1277,30 @@ namespace PurrNet.Prediction
             _deltas.Enqueue(new FrameDelta
             {
                 packer = delta.packer,
-                clientTick = localTick,
                 serverTick = serverTick,
+                baselineTick = baselineTick,
+                inputAck = inputAck,
                 fullFrame = fullFrame
             });
         }
 
-        private void RollbackToFrame(ulong stateTick)
-        {
-            for (var i = 0; i < _systemsCount; i++)
-            {
-                var system = _systems[i];
-                if (!system.UsesSoftCorrectionTimeline())
-                    system.RunRollback(stateTick);
-            }
-            SyncTransforms();
-        }
-
-        private void RollbackToFrame(BitPacker frame, ulong stateTick, ulong inputTick)
+        private void RollbackToFrame(BitPacker frame, ulong stateTick, ulong inputTick, ulong baselineTick, ulong serverTick)
         {
             frame.ResetPositionAndMode(true);
 
             PackedInt _count = default;
             Packer<PackedInt>.Read(frame, ref _count);
             int count = _count;
+
+            ReadInputHistory(frame, serverTick);
+
+            if (_verifiedServerTick > 0 && serverTick > _verifiedServerTick + 1)
+            {
+                RollbackAllToVerified(_verifiedServerTick + 1);
+
+                for (ulong t = _verifiedServerTick + 1; t < serverTick; t++)
+                    SimulateFrame(t, HistorySaveMode.Full);
+            }
 
             for (var i = 0; i < count; ++i)
             {
@@ -1164,14 +1312,11 @@ namespace PurrNet.Prediction
                 bool softCorrected = system.UsesSoftCorrectionTimeline();
                 if (!softCorrected)
                     system.RunClearFuture(stateTick);
-                system.RunReadState(stateTick, frame, _deltaModuleState);
+                system.RunReadState(stateTick, frame, _deltaModuleState, baselineTick, serverTick);
                 if (!softCorrected)
                     system.RunRollback(stateTick);
                 system.lastVerifiedTick = stateTick;
             }
-
-            for (var i = 0; i < count; ++i)
-                _systems[i].ReadInput(inputTick, default, frame, _deltaModuleState, true);
 
             for (var i = 0; i < count; ++i)
             {
@@ -1181,7 +1326,7 @@ namespace PurrNet.Prediction
                 bool softCorrected = system.UsesSoftCorrectionTimeline();
                 if (!softCorrected)
                     system.RunClearFuture(stateTick);
-                system.RunReadState(stateTick, frame, _deltaModuleState);
+                system.RunReadState(stateTick, frame, _deltaModuleState, baselineTick, serverTick);
                 if (!softCorrected)
                     system.RunRollback(stateTick);
                 system.lastVerifiedTick = stateTick;
@@ -1205,14 +1350,31 @@ namespace PurrNet.Prediction
         public event Action onStartingToRollback;
         public event Action onRollbackFinished;
 
-        private ulong _lastVerifiedTick = 1;
-        private ulong _serverTickBaseline;
-        private ulong _deterministicTimeBaseline;
-        private bool _hasServerTickBaseline;
+        private ulong _verifiedServerTick;
+        private ulong _pauseAdvanceTicks;
+        private ulong _latestFrameServerTick;
+        private bool _inputStarved;
+
+        private const ulong MinLead = 2;
+        private const ulong TargetLead = 3;
+        private const ulong MaxLead = 10;
+
+        private void SaveEnteringState(ulong tick)
+        {
+            using (SaveHistoryMarker.Auto())
+            {
+                for (var i = 0; i < _systemsCount; i++)
+                {
+                    var system = _systems[i];
+                    if (!system.isEventHandler)
+                        system.RunSaveState(tick);
+                }
+            }
+        }
 
         private void OnPostTick()
         {
-            if (cachedIsServer || _deltas.Count == 0 || localTick <= _lastVerifiedTick)
+            if (cachedIsServer || _deltas.Count == 0)
             {
                 if (isClient)
                     UpdateInterpolation(false);
@@ -1230,72 +1392,78 @@ namespace PurrNet.Prediction
 
             try
             {
+                bool applied = false;
+
                 while (_deltas.Count > 0)
                 {
-                    isVerified = true;
-                    using var previousFrame = _deltas.Dequeue();
-                    bool inPlace = previousFrame.clientTick <= 1;
-                    var lastTick = _lastVerifiedTick;
-                    if (!inPlace)
-                        _lastVerifiedTick = previousFrame.clientTick;
+                    using var frame = _deltas.Dequeue();
 
-                    ulong verifiedTick = _lastVerifiedTick;
-                    bool isJump = verifiedTick - lastTick > 1;
-
-                    var inPlaceTick = isJump ? lastTick : verifiedTick;
-
-                    if (!previousFrame.fullFrame && (inPlace || isJump))
+                    if (frame.serverTick > _latestFrameServerTick)
                     {
-                        isCatchingUpFrames = true;
-                        RollbackToFrame(inPlaceTick);
-                        SimulateFrameInPlace(inPlaceTick);
-                        SimulateFrame(inPlaceTick, HistorySaveMode.Full);
-                        isCatchingUpFrames = false;
+                        _latestFrameServerTick = frame.serverTick;
+                        _inputStarved = frame.serverTick > frame.inputAck + MaxInputWindow;
                     }
 
-                    if (previousFrame.fullFrame)
-                    {
-                        ReadFullFrame(previousFrame.packer, inPlaceTick, verifiedTick);
+                    if (!frame.fullFrame && frame.serverTick <= _verifiedServerTick)
+                        continue;
 
-                        _serverTickBaseline = previousFrame.serverTick;
-                        _deterministicTimeBaseline = time ? time.tick : 0;
-                        _hasServerTickBaseline = time;
+                    isVerified = true;
+
+                    if (frame.fullFrame)
+                    {
+                        ReadFullFrame(frame.packer, frame.serverTick, frame.serverTick, frame.serverTick);
+                        SimulateFrame(frame.serverTick, HistorySaveMode.VerifiedFrame);
+                        SaveEnteringState(frame.serverTick + 1);
+                        _verifiedServerTick = frame.serverTick;
                     }
                     else
                     {
-                        RollbackToFrame(previousFrame.packer, inPlaceTick, verifiedTick);
-
-                        if (_hasServerTickBaseline && time)
-                        {
-                            ulong expected = _deterministicTimeBaseline + (previousFrame.serverTick - _serverTickBaseline);
-                            long deficit = (long)expected - (long)time.tick;
-
-                            if (deficit > 0)
-                                SimulateDeterministicDeficit(deficit, inPlaceTick);
-                            else if (deficit < 0 && _validateDeterministicData)
-                            {
-                                PurrLogger.LogWarning(
-                                    $"Deterministic timeline ahead of server clock by {-deficit} ticks at frame tag {previousFrame.clientTick}");
-                            }
-                        }
+                        RollbackToFrame(frame.packer, frame.serverTick, frame.serverTick, frame.baselineTick, frame.serverTick);
 
                         if (_validateDeterministicData)
                         {
                             for (var i = 0; i < _systemsCount; i++)
                             {
                                 if (_systems[i].isDeterministic)
-                                    _systems[i].ValidateDeterministicState(previousFrame.serverTick);
+                                    _systems[i].ValidateDeterministicState(frame.serverTick);
                             }
                         }
+
+                        SimulateFrame(frame.serverTick, HistorySaveMode.VerifiedFrame);
+                        SaveEnteringState(frame.serverTick + 1);
+                        _verifiedServerTick = frame.serverTick;
                     }
 
-                    SimulateFrame(verifiedTick, HistorySaveMode.VerifiedFrame);
-
+                    applied = true;
                     isVerified = false;
                 }
 
-                SimulateFrame(_lastVerifiedTick + 1, HistorySaveMode.Full);
-                ReplayToLatestTick(_lastVerifiedTick + 2, HistorySaveMode.None);
+                if (applied)
+                {
+                    if (_inputStarved && _latestFrameServerTick + TargetLead + 4 > localTick)
+                    {
+                        localTick = _latestFrameServerTick + TargetLead + 4;
+                        localTickInContext = localTick;
+                        _pauseAdvanceTicks = 0;
+                        PurrLogger.LogWarning($"Input starvation detected; jumping prediction head to {localTick} (server at {_latestFrameServerTick}).");
+                    }
+
+                    ulong lead = localTick > _verifiedServerTick ? localTick - _verifiedServerTick : 0;
+
+                    if (lead < MinLead)
+                    {
+                        localTick = _verifiedServerTick + TargetLead;
+                        localTickInContext = localTick;
+                        _pauseAdvanceTicks = 0;
+                    }
+                    else if (lead > MaxLead)
+                    {
+                        _pauseAdvanceTicks = lead - TargetLead;
+                    }
+
+                    SimulateFrame(_verifiedServerTick + 1, HistorySaveMode.Full);
+                    ReplayToLatestTick(_verifiedServerTick + 2, HistorySaveMode.None);
+                }
 
                 SyncTransforms();
                 UpdateInterpolation(true);
@@ -1485,127 +1653,6 @@ namespace PurrNet.Prediction
                 SimulateFrame(simTick, saveMode);
         }
 
-        private void SimulateDeterministicDeficit(long deficit, ulong contextTick)
-        {
-            long cap = tickRate * 30L;
-            if (deficit > cap)
-            {
-                PurrLogger.LogWarning(
-                    $"Deterministic timeline behind server clock by {deficit} ticks; clamping catch-up to {cap}");
-                deficit = cap;
-            }
-
-            var delta = tickDelta;
-            if (time)
-                delta *= time.timeScale;
-
-            bool wasCatchingUp = isCatchingUpFrames;
-            isCatchingUpFrames = true;
-            localTickInContext = contextTick;
-
-            try
-            {
-                for (long step = 0; step < deficit; step++)
-                {
-                    for (var i = 0; i < _systemsCount; i++)
-                    {
-                        var system = _systems[i];
-                        if (system.isDeterministic)
-                            system.RunPrepareSimulationInputs(contextTick, delta);
-                    }
-
-                    for (var i = 0; i < _systemsCount; i++)
-                    {
-                        var system = _systems[i];
-                        if (system.isDeterministic)
-                            system.RunSimulateTick(contextTick, delta);
-                    }
-
-                    for (var i = 0; i < _systemsCount; i++)
-                    {
-                        var system = _systems[i];
-                        if (system.isDeterministic)
-                            system.RunLateSimulateTick(delta);
-                    }
-
-                    for (var i = 0; i < _systemsCount; i++)
-                    {
-                        var system = _systems[i];
-                        if (system.isDeterministic)
-                            system.RunPostSimulate();
-                    }
-
-                    for (var i = 0; i < _systemsCount; i++)
-                    {
-                        var system = _systems[i];
-                        if (system.isDeterministic)
-                            system.RunGetLatestUnityState();
-                    }
-                }
-            }
-            finally
-            {
-                isCatchingUpFrames = wasCatchingUp;
-                localTickInContext = localTick;
-            }
-        }
-
-        private void SimulateFrameInPlace(ulong verifiedTick)
-        {
-            var delta = tickDelta;
-            if (time)
-                delta *= time.timeScale;
-
-            isSimulating = true;
-            localTickInContext = verifiedTick;
-
-            using (SimulateInputsMarker.Auto())
-            {
-                for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].RunPrepareSimulationInputs(verifiedTick, delta);
-            }
-
-            var simulateMarker = SimulateMarker.Auto();
-            try
-            {
-                for (var j = 0; j < _systemsCount; j++)
-                    _systems[j].RunSimulateTick(verifiedTick, delta);
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-            }
-            finally
-            {
-                simulateMarker.Dispose();
-            }
-
-            DoPhysicsPass();
-
-            var lateSimulateMarker = LateSimulateMarker.Auto();
-            try
-            {
-                for (var j = 0; j < _systemsCount; j++)
-                    _systems[j].RunLateSimulateTick(delta);
-            }
-            catch (Exception e)
-            {
-                Debug.LogException(e);
-            }
-            finally
-            {
-                lateSimulateMarker.Dispose();
-            }
-
-            for (var i = 0; i < _systemsCount; i++)
-                _systems[i].RunPostSimulate();
-            for (var j = 0; j < _systemsCount; j++)
-                _systems[j].RunGetLatestUnityState();
-
-            isSimulating = false;
-            localTickInContext = localTick;
-        }
-
         private void SimulateFrame(ulong verifiedTick, HistorySaveMode saveMode)
         {
             var delta = tickDelta;
@@ -1707,39 +1754,46 @@ namespace PurrNet.Prediction
 
         public class InputQueue
         {
-            public bool waitForInput;
-            public int ticksAboveMin;
             public ulong highestReceivedTick;
-            public readonly Queue<InputQueueValue> inputQueue = new ();
-            public int Count => inputQueue.Count;
+            public ulong ackedServerTick;
+            public ulong lastConsumedTick;
+            public readonly Dictionary<ulong, InputQueueValue> byTick = new ();
+            public int Count => byTick.Count;
+
+            public void Clear()
+            {
+                foreach (var entry in byTick.Values)
+                    entry.inputPacket.Dispose();
+                byTick.Clear();
+            }
         }
 
         readonly Dictionary<PlayerID, InputQueue> _clientTicks = new ();
 
         [ServerRpc(requireOwnership: false)]
-        private void SendInputToServerReliable(ulong firstTick, uint tickCount, BitPacker payload, RPCInfo info = default)
+        private void SendInputToServerReliable(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)
         {
-            ReceivedInput(firstTick, tickCount, payload, info);
+            ReceivedInput(firstTick, tickCount, frameAck, payload, info);
         }
 
         [ServerRpc(requireOwnership: false, channel: Channel.UnreliableSequenced)]
-        private void SendInputToServer(ulong firstTick, uint tickCount, BitPacker payload, RPCInfo info = default)
+        private void SendInputToServer(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)
         {
-            ReceivedInput(firstTick, tickCount, payload, info);
+            ReceivedInput(firstTick, tickCount, frameAck, payload, info);
         }
 
-        private void ReceivedInput(ulong firstTick, uint tickCount, BitPacker payload, RPCInfo info)
+        private void ReceivedInput(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info)
         {
             using (payload)
             {
                 if (!_clientTicks.TryGetValue(info.sender, out var ticks))
                 {
-                    ticks = new InputQueue
-                    {
-                        waitForInput = true
-                    };
+                    ticks = new InputQueue();
                     _clientTicks[info.sender] = ticks;
                 }
+
+                if (frameAck > ticks.ackedServerTick)
+                    ticks.ackedServerTick = frameAck;
 
                 for (uint i = 0; i < tickCount; i++)
                 {
@@ -1750,7 +1804,10 @@ namespace PurrNet.Prediction
 
                     ulong tick = firstTick + i;
 
-                    if (tick <= ticks.highestReceivedTick)
+                    bool tooOld = tick <= localTick || tick <= ticks.lastConsumedTick;
+                    bool tooFar = tick > localTick + MaxInputWindow * 2;
+
+                    if (tooOld || tooFar || ticks.byTick.ContainsKey(tick))
                     {
                         payload.SkipBits((int)blockBits.value);
                         continue;
@@ -1760,27 +1817,17 @@ namespace PurrNet.Prediction
                     slice.WriteBits(payload, (int)blockBits.value);
                     slice.ResetPositionAndMode(true);
 
-                    ticks.highestReceivedTick = tick;
+                    if (tick > ticks.highestReceivedTick)
+                        ticks.highestReceivedTick = tick;
 
-                    if (ticks.Count > _inputQueueSettings.maxInputs)
-                    {
-                        while (ticks.Count > _inputQueueSettings.minInputs)
-                        {
-                            var oldInput = ticks.inputQueue.Dequeue();
-                            oldInput.inputPacket.Dispose();
-                        }
-                    }
-
-                    ticks.inputQueue.Enqueue(new InputQueueValue
+                    ticks.byTick[tick] = new InputQueueValue
                     {
                         count = count,
                         inputPacket = slice,
                         clientTick = tick
-                    });
+                    };
                 }
 
-                if (ticks.waitForInput && ticks.inputQueue.Count >= _inputQueueSettings.minInputs)
-                    ticks.waitForInput = false;
             }
         }
 
@@ -1799,7 +1846,13 @@ namespace PurrNet.Prediction
                     {
                         system.QueueInput(inputPacket, sender);
                     }
-                    else break;
+                    else
+                    {
+                        PurrLogger.LogWarning(
+                            $"Input entry {i}/{count} rejected from {sender}: id={pid} known={_instanceMap.ContainsKey(pid)} " +
+                            $"owner={(system ? system.owner?.ToString() ?? "none" : "n/a")}; skipping remainder of the block.");
+                        break;
+                    }
                 }
             }
             catch

@@ -49,32 +49,24 @@ namespace PurrNet.Prediction
             Packer<PredictedIdentityState>.Write(packer, metadata);
         }
 
-        internal override bool WriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
+        internal override bool WriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule, ulong baselineTick)
         {
             var metadata = new PredictedIdentityState { owner = owner };
             return WritePredictionMetadata(receiver, packer, deltaModule, metadata);
         }
 
-        internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable)
-        {
-        }
-
-        internal override void ReadFirstState(ulong tick, BitPacker packer)
+        internal override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
         {
             PredictedIdentityState metadata = default;
             Packer<PredictedIdentityState>.Read(packer, ref metadata);
             SetOwner(metadata.owner);
         }
 
-        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule, ulong baselineTick, ulong serverTick)
         {
             PredictedIdentityState metadata = default;
             ReadPredictionMetadata(packer, deltaModule, ref metadata);
             SetOwner(metadata.owner);
-        }
-
-        internal override void ReadInput(ulong tick, PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable)
-        {
         }
 
         internal override void QueueInput(BitPacker packer, PlayerID sender)

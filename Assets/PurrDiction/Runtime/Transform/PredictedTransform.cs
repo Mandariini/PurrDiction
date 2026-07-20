@@ -132,39 +132,38 @@ namespace PurrNet.Prediction
             return false;
         }
 
-        protected override bool WriteDeltaState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
+        protected override void WriteDeltaState(BitPacker packer, in PredictedTransformState baseline, in PredictedTransformState current)
         {
             switch (_floatAccuracy)
             {
                 case FloatAccuracy.Purrfect:
-                    return base.WriteDeltaState(target, packer, deltaModule);
+                    base.WriteDeltaState(packer, in baseline, in current);
+                    break;
                 case FloatAccuracy.Medium:
-                {
-                    var key = new DeltaKey<PredictedTransformCompressedState>(sceneId, id);
-                    return deltaModule.WriteReliable(packer, target, key, new PredictedTransformCompressedState(currentState));
-                }
+                    DeltaPacker<PredictedTransformCompressedState>.Write(packer,
+                        new PredictedTransformCompressedState(baseline),
+                        new PredictedTransformCompressedState(current));
+                    break;
                 case FloatAccuracy.Low:
-                {
-                    var key = new DeltaKey<PredictedTransformHalfState>(sceneId, id);
-                    return deltaModule.WriteReliable(packer, target, key, new PredictedTransformHalfState(currentState));
-                }
+                    DeltaPacker<PredictedTransformHalfState>.Write(packer,
+                        new PredictedTransformHalfState(baseline),
+                        new PredictedTransformHalfState(current));
+                    break;
                 default: throw new ArgumentOutOfRangeException();
             }
-
         }
 
-        protected override void ReadDeltaState(BitPacker packer, DeltaModule deltaModule, ref PredictedTransformState state)
+        protected override void ReadDeltaState(BitPacker packer, in PredictedTransformState baseline, ref PredictedTransformState state)
         {
             switch (_floatAccuracy)
             {
                 case FloatAccuracy.Purrfect:
-                    base.ReadDeltaState(packer, deltaModule, ref state);
+                    base.ReadDeltaState(packer, in baseline, ref state);
                     break;
                 case FloatAccuracy.Medium:
                 {
-                    var key = new DeltaKey<PredictedTransformCompressedState>(sceneId, id);
                     PredictedTransformCompressedState compressedState = default;
-                    deltaModule.ReadReliable(packer, key, ref compressedState);
+                    DeltaPacker<PredictedTransformCompressedState>.Read(packer, new PredictedTransformCompressedState(baseline), ref compressedState);
 
                     state.unityPosition = compressedState.unityPosition;
                     state.unityRotation = ((Quaternion)compressedState.unityRotation).normalized;
@@ -172,9 +171,8 @@ namespace PurrNet.Prediction
                 }
                 case FloatAccuracy.Low:
                 {
-                    var key = new DeltaKey<PredictedTransformHalfState>(sceneId, id);
                     PredictedTransformHalfState compressedState = default;
-                    deltaModule.ReadReliable(packer, key, ref compressedState);
+                    DeltaPacker<PredictedTransformHalfState>.Read(packer, new PredictedTransformHalfState(baseline), ref compressedState);
 
                     state.unityPosition = compressedState.unityPosition;
                     state.unityRotation = ((Quaternion)compressedState.unityRotation).normalized;

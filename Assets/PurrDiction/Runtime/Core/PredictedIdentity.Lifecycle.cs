@@ -96,20 +96,20 @@ namespace PurrNet.Prediction
             ResetInterpolation();
         }
 
-        internal bool RunWriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule, bool allowSkip = false)
+        internal bool RunWriteCurrentState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule, ulong baselineTick)
         {
             bool moduleSetChanged = WriteDynamicModuleSnapshot(receiver, packer, deltaModule);
             bool modulesChanged = WriteModules(receiver, packer, deltaModule);
-            bool identityChanged = WriteCurrentState(receiver, packer, deltaModule, allowSkip);
+            bool identityChanged = WriteCurrentState(receiver, packer, deltaModule, baselineTick);
 
             return moduleSetChanged || modulesChanged || identityChanged;
         }
 
-        internal void RunReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        internal void RunReadState(ulong tick, BitPacker packer, DeltaModule deltaModule, ulong baselineTick, ulong serverTick)
         {
             ReadDynamicModuleSnapshot(tick, packer, deltaModule);
             ReadModules(tick, packer, deltaModule);
-            ReadState(tick, packer, deltaModule);
+            ReadState(tick, packer, deltaModule, baselineTick, serverTick);
         }
 
         internal void RunWriteFirstState(ulong tick, BitPacker packer)
@@ -119,11 +119,11 @@ namespace PurrNet.Prediction
             WriteFirstState(tick, packer);
         }
 
-        internal void RunReadFirstState(ulong tick, BitPacker packer)
+        internal void RunReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
         {
             ReadFirstDynamicModuleSnapshot(tick, packer);
             ReadFirstStateModules(tick, packer);
-            ReadFirstState(tick, packer);
+            ReadFirstState(tick, packer, serverTick);
         }
 
         internal void RunClearFuture(ulong tick)

@@ -7,7 +7,6 @@ namespace PurrNet.Prediction
         public PlayerID player;
         public BitPacker packer;
         public bool fullFrame;
-        public bool primed;
 
         public void Dispose()
         {

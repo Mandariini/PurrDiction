@@ -14,7 +14,7 @@ namespace PurrNet.Prediction
 
         protected virtual void LateSimulate(ref STATE state, sfloat delta) { }
 
-        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
+        internal override bool WriteCurrentState(PlayerID target, BitPacker packer, DeltaModule deltaModule, ulong baselineTick)
         {
             bool metadataChanged = WritePredictionMetadata(
                 target,
@@ -31,7 +31,7 @@ namespace PurrNet.Prediction
             return metadataChanged;
         }
 
-        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        internal override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule, ulong baselineTick, ulong serverTick)
         {
             PredictedIdentityState prediction = default;
             ReadPredictionMetadata(packer, deltaModule, ref prediction);
@@ -311,7 +311,7 @@ namespace PurrNet.Prediction
             Packer<STATE>.Write(packer, state.state);
         }
 
-        internal override void ReadFirstState(ulong tick, BitPacker packer)
+        internal override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
         {
             PredictedIdentityState prediction = default;
             STATE state = default;
@@ -326,10 +326,6 @@ namespace PurrNet.Prediction
             };
             WriteOwnedStateIfChanged(tick, ref newState);
         }
-
-        internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable) { }
-
-        internal override void ReadInput(ulong tick,  PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable) { }
 
         internal override void QueueInput(BitPacker packer, PlayerID sender) { }
 
