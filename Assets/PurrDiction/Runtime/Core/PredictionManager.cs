@@ -1411,6 +1411,8 @@ namespace PurrNet.Prediction
 
                 for (ulong t = _verifiedServerTick + 1; t < serverTick; t++)
                     SimulateFrame(t, HistorySaveMode.Full);
+
+                SaveEnteringState(serverTick);
             }
 
             for (var i = 0; i < count; ++i)
