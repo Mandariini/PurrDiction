@@ -59,6 +59,17 @@ public class PredictionBootstrap : Scenario
 
         LoadArgs();
 
+        if (CommandLineUtils.HasFlag("-serverLoadBenchmark"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<ServerLoadBenchmarkScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-includeHistoryStressScenario"))
             gameObject.AddComponent<HistoryStressScenario>();
 
@@ -147,10 +158,24 @@ public class PredictionBootstrap : Scenario
         {
             _lastTransport.onDataSent -= OnDataSentCallback;
             _lastTransport.onDataReceived -= OnDataReceivedCallback;
+            _lastTransport.onConnected -= OnConnectionDiag;
+            _lastTransport.onDisconnected -= OnDisconnectionDiag;
         }
         transport.onDataSent += OnDataSentCallback;
         transport.onDataReceived += OnDataReceivedCallback;
+        transport.onConnected += OnConnectionDiag;
+        transport.onDisconnected += OnDisconnectionDiag;
         _lastTransport = transport;
+    }
+
+    private void OnConnectionDiag(Connection conn, bool asServer)
+    {
+        Debug.Log($"[NetDiag] {_role} connected conn={conn.connectionId} asServer={asServer} t={Time.realtimeSinceStartup:F2}");
+    }
+
+    private void OnDisconnectionDiag(Connection conn, DisconnectReason reason, bool asServer)
+    {
+        Debug.Log($"[NetDiag] {_role} disconnected conn={conn.connectionId} reason={reason} asServer={asServer} t={Time.realtimeSinceStartup:F2}");
     }
 
     private ulong _dataSent;
@@ -378,12 +403,18 @@ public class PredictionBootstrap : Scenario
             {
                 for (var i = 1; i < _scenarios.Length; i++)
                 {
+                    if (_networkManager.playerCount < _expectedConnections)
+                    {
+                        anyFailed = true;
+                        AbortRemainingScenarios(i);
+                        break;
+                    }
+
                     ScenarioSequencer.IssuePrepare(i);
                     await ScenarioSequencer.WaitForAllReady(ctx, i);
 
-                    var startLeadTicks = GetScenarioStartLeadTicks();
-                    ScenarioSequencer.IssueStart(i, startLeadTicks);
-                    var startTick = GetLocalScenarioStartTick(startLeadTicks);
+                    var startTick = GetScenarioStartTick();
+                    ScenarioSequencer.IssueStart(i, startTick);
 
                     if (await RunOne(i, ctx, startTick))
                         anyFailed = true;
@@ -409,12 +440,11 @@ public class PredictionBootstrap : Scenario
                         break;
 
                     ScenarioSequencer.AckLocalReady(ctx, i);
-                    var startLeadTicks = await ScenarioSequencer.WaitForStart(ctx, i);
+                    var startTick = await ScenarioSequencer.WaitForStart(ctx, i);
 
                     if (ScenarioSequencer.SequenceComplete)
                         break;
 
-                    var startTick = GetLocalScenarioStartTick(startLeadTicks);
                     if (await RunOne(i, ctx, startTick))
                         anyFailed = true;
 
@@ -476,14 +506,25 @@ public class PredictionBootstrap : Scenario
         _activePerformanceSampler?.SampleFrame(_predictionManager);
     }
 
-    private ulong GetScenarioStartLeadTicks()
+    private ulong GetScenarioStartTick()
     {
-        return (ulong)Mathf.Max(1, Mathf.CeilToInt(_predictionManager.tickRate * ScenarioStartLeadSeconds));
+        var leadTicks = (ulong)Mathf.Max(1, Mathf.CeilToInt(_predictionManager.tickRate * ScenarioStartLeadSeconds));
+        return _predictionManager.time.tick + leadTicks;
     }
 
-    private ulong GetLocalScenarioStartTick(ulong leadTicks)
+    private void AbortRemainingScenarios(int fromIndex)
     {
-        return _predictionManager.time.tick + leadTicks;
+        var message = $"aborted: only {_networkManager.playerCount}/{_expectedConnections} clients still connected";
+        Debug.LogError($"[PredictionTests] {message}; skipping scenarios {fromIndex}..{_scenarios.Length - 1}");
+
+        for (var i = fromIndex; i < _scenarios.Length; i++)
+        {
+            _results[i] = new ScenarioDetails
+            {
+                name = _scenarios[i].GetType().Name,
+                result = ScenarioResult.Fail(message)
+            };
+        }
     }
 
     private async UniTask<bool> RunOne(int i, ScenarioContext ctx, ulong scheduledStartTick = 0)

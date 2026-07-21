@@ -6,7 +6,7 @@ using UnityEngine;
 
 public static class ScenarioBarrier
 {
-    private static readonly Dictionary<int, int> _arrivedByBarrier = new();
+    private static readonly Dictionary<int, HashSet<PlayerID>> _arrivedByBarrier = new();
     private static readonly Dictionary<int, Task> _inFlight = new();
     private static int _lastProceedBarrier = -1;
 
@@ -40,7 +40,7 @@ public static class ScenarioBarrier
             try
             {
                 await UniTaskUtils.WaitWithTimeout(
-                    () => _arrivedByBarrier.TryGetValue(barrierId, out var c) && c >= ctx.expectedConnections,
+                    () => _arrivedByBarrier.TryGetValue(barrierId, out var c) && c.Count >= ctx.expectedConnections,
                     timeoutSeconds,
                     ctx.cancellationToken);
             }
@@ -48,7 +48,7 @@ public static class ScenarioBarrier
             {
                 _arrivedByBarrier.TryGetValue(barrierId, out var arrived);
                 Debug.LogError(
-                    $"[ScenarioBarrier] server timeout barrier={barrierId} arrived={arrived}/{ctx.expectedConnections} role={ctx.role}");
+                    $"[ScenarioBarrier] server timeout barrier={barrierId} arrived={arrived?.Count ?? 0}/{ctx.expectedConnections} role={ctx.role}");
                 throw;
             }
             finally
@@ -68,10 +68,14 @@ public static class ScenarioBarrier
     }
 
     [ServerRpc(requireOwnership: false)]
-    private static void ReportArrived(int barrierId)
+    private static void ReportArrived(int barrierId, RPCInfo info = default)
     {
-        _arrivedByBarrier.TryGetValue(barrierId, out var count);
-        _arrivedByBarrier[barrierId] = count + 1;
+        if (!_arrivedByBarrier.TryGetValue(barrierId, out var set))
+        {
+            set = new HashSet<PlayerID>();
+            _arrivedByBarrier[barrierId] = set;
+        }
+        set.Add(info.sender);
     }
 
     [ObserversRpc(runLocally: true)]

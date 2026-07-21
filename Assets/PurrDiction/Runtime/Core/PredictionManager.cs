@@ -77,6 +77,11 @@ namespace PurrNet.Prediction
         static readonly ProfilerMarker UpdateViewMarker = new("PredictionManager.UpdateView");
         static readonly ProfilerMarker SaveHistoryMarker = new("PredictionManager.SaveHistory");
         static readonly ProfilerMarker WriteFrameOnServerMarker = new("PredictionManager.WriteFrameOnServer");
+        static readonly ProfilerMarker WriteInputHistoryMarker = new("PredictionManager.WriteInputHistory");
+        static readonly ProfilerMarker WriteStateDeltasMarker = new("PredictionManager.WriteStateDeltas");
+        static readonly ProfilerMarker WriteFullFrameMarker = new("PredictionManager.WriteFullFrame");
+        static readonly ProfilerMarker WriteEventHandlesMarker = new("PredictionManager.WriteEventHandles");
+        static readonly ProfilerMarker SendFrameMarker = new("PredictionManager.SendFrame");
 
         readonly List<PredictedIdentity> _queue = new ();
         readonly List<PredictedIdentity> _systems = new ();
@@ -358,6 +363,8 @@ namespace PurrNet.Prediction
             _replayFrozenSystems.Clear();
             _speculativeRelayLocks.Clear();
             _systemsCount = 0;
+            DisposeInputBlockCache();
+            InvalidateInputBlockCache();
             _nextSystemId = 0;
             foreach (var queue in _clientTicks.Values)
                 queue.Clear();
@@ -370,6 +377,10 @@ namespace PurrNet.Prediction
             _latestFrameServerTick = 0;
             _inputStarved = false;
             _inputAckTick = 0;
+            _frameInputMargin = 0;
+            _frameInputMarginTick = 0;
+            _hasFrameInputMargin = false;
+            _leadAdjustGateTick = 0;
             ClearVerifiedStores();
             _deltas.Clear();
         }
@@ -509,6 +520,7 @@ namespace PurrNet.Prediction
 
             _systems.Insert(posToInsert, system);
             ++_systemsCount;
+            InvalidateInputBlockCache();
 
             if (isReplaying && system.UsesSoftCorrectionTimeline() && !preserveState)
             {
@@ -528,6 +540,7 @@ namespace PurrNet.Prediction
             if (_systems.Remove(predictedIdentity))
             {
                 --_systemsCount;
+                InvalidateInputBlockCache();
                 predictedIdentity.RecordCompletedRegistrationPolicy();
             }
         }
@@ -897,6 +910,8 @@ namespace PurrNet.Prediction
             PackedInt packedSysCount = _systemsCount;
             PackedInt packedTickRate = tickRate;
 
+            ulong maxAckLag = 0;
+
             for (var j = 0; j < fCount; j++)
             {
                 var clientFrame = _clientFrames[j];
@@ -909,6 +924,10 @@ namespace PurrNet.Prediction
                 if (_clientTicks.TryGetValue(player, out var ackQueue))
                     baselineTick = ackQueue.ackedServerTick;
 
+                ulong ackLag = localTick > baselineTick ? localTick - baselineTick : 0;
+                if (ackLag > maxAckLag)
+                    maxAckLag = ackLag;
+
                 if (!clientFrame.fullFrame && baselineTick > 0 &&
                     localTick > baselineTick && localTick - baselineTick > (ulong)(tickRate * 8))
                 {
@@ -920,6 +939,8 @@ namespace PurrNet.Prediction
 
                 if (fullFrame)
                 {
+                    using var _ = WriteFullFrameMarker.Auto();
+
                     Packer<PackedInt>.Write(frame, packedTickRate);
                     Packer<float>.Write(frame, tickDelta);
                     Packer<uint>.Write(frame, _sessionSeed);
@@ -939,16 +960,106 @@ namespace PurrNet.Prediction
                 {
                     Packer<PackedInt>.Write(frame, packedSysCount);
 
-                    WriteInputHistory(frame, baselineTick);
+                    using (WriteInputHistoryMarker.Auto())
+                        WriteInputHistory(frame, baselineTick);
 
-                    for (var i = 0; i < _systemsCount; i++)
+                    using (WriteStateDeltasMarker.Auto())
                     {
-                        var sys = _systems[i];
-                        if (!sys.isEventHandler)
-                            sys.RunWriteCurrentState(player, frame, baselineTick);
+                        for (var i = 0; i < _systemsCount; i++)
+                        {
+                            var sys = _systems[i];
+                            if (!sys.isEventHandler)
+                                sys.RunWriteCurrentState(player, frame, baselineTick);
+                        }
                     }
                 }
             }
+
+            lastMaxAckLagTicks = maxAckLag;
+        }
+
+        /// <summary>
+        /// Largest gap, in ticks, between the current server tick and any connected client's
+        /// last acked frame at the time the previous server frame was written. Diagnostic only.
+        /// </summary>
+        public ulong lastMaxAckLagTicks { get; private set; }
+
+        private struct CachedInputBlock
+        {
+            public ulong tick;
+            public uint version;
+            public BitPacker packer;
+        }
+
+        private CachedInputBlock[] _inputBlockCache;
+        private uint _inputBlockVersion = 1;
+
+        private void InvalidateInputBlockCache()
+        {
+            _inputBlockVersion++;
+        }
+
+        private void DisposeInputBlockCache()
+        {
+            if (_inputBlockCache == null)
+                return;
+
+            for (var i = 0; i < _inputBlockCache.Length; i++)
+            {
+                _inputBlockCache[i].packer?.Dispose();
+                _inputBlockCache[i] = default;
+            }
+
+            _inputBlockCache = null;
+        }
+
+        private BitPacker GetInputBlockForTick(ulong tick)
+        {
+            _inputBlockCache ??= new CachedInputBlock[(int)MaxInputWindow + 1];
+
+            var index = (int)(tick % (ulong)_inputBlockCache.Length);
+            ref var slot = ref _inputBlockCache[index];
+
+            if (slot.packer != null && slot.tick == tick && slot.version == _inputBlockVersion)
+                return slot.packer;
+
+            slot.packer ??= BitPackerPool.Get();
+            slot.tick = tick;
+            slot.version = _inputBlockVersion;
+
+            var block = slot.packer;
+            block.ResetPositionAndMode(false);
+
+            uint entryCount = 0;
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                var sys = _systems[i];
+                if (sys.hasInput && sys.HasInputAt(tick))
+                    entryCount++;
+            }
+
+            Packer<PackedUInt>.Write(block, (PackedUInt)entryCount);
+
+            if (entryCount == 0)
+                return block;
+
+            using var entryScratch = BitPackerPool.Get();
+
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                var sys = _systems[i];
+                if (!sys.hasInput || !sys.HasInputAt(tick))
+                    continue;
+
+                Packer<PredictedComponentID>.Write(block, sys.id);
+                entryScratch.ResetPositionAndMode(false);
+                sys.WriteFirstInput(tick, entryScratch);
+                int bits = entryScratch.positionInBits;
+                Packer<PackedUInt>.Write(block, (PackedUInt)(uint)bits);
+                block.WriteBitsWithoutConsumingIt(entryScratch, bits);
+            }
+
+            return block;
         }
 
         private void WriteInputHistory(BitPacker frame, ulong baselineTick)
@@ -961,33 +1072,10 @@ namespace PurrNet.Prediction
 
             Packer<PackedUInt>.Write(frame, (PackedUInt)(uint)(localTick - from));
 
-            using var entryScratch = BitPackerPool.Get();
-
             for (ulong t = from + 1; t <= localTick; t++)
             {
-                uint entryCount = 0;
-                for (var i = 0; i < _systemsCount; i++)
-                {
-                    var sys = _systems[i];
-                    if (sys.hasInput && sys.HasInputAt(t))
-                        entryCount++;
-                }
-
-                Packer<PackedUInt>.Write(frame, (PackedUInt)entryCount);
-
-                for (var i = 0; i < _systemsCount; i++)
-                {
-                    var sys = _systems[i];
-                    if (!sys.hasInput || !sys.HasInputAt(t))
-                        continue;
-
-                    Packer<PredictedComponentID>.Write(frame, sys.id);
-                    entryScratch.ResetPositionAndMode(false);
-                    sys.WriteFirstInput(t, entryScratch);
-                    int bits = entryScratch.positionInBits;
-                    Packer<PackedUInt>.Write(frame, (PackedUInt)(uint)bits);
-                    frame.WriteBitsWithoutConsumingIt(entryScratch, bits);
-                }
+                var block = GetInputBlockForTick(t);
+                frame.WriteBitsWithoutConsumingIt(block, block.positionInBits);
             }
         }
 
@@ -1033,6 +1121,8 @@ namespace PurrNet.Prediction
 
         private void WriteEventHandles()
         {
+            using var _ = WriteEventHandlesMarker.Auto();
+
             var fCount = _clientFrames.Count;
 
             for (var i = 0; i < _systemsCount; i++)
@@ -1061,6 +1151,8 @@ namespace PurrNet.Prediction
 
         private void SendFrameToOthers()
         {
+            using var _ = SendFrameMarker.Auto();
+
             var fCount = _clientFrames.Count;
 
             for (var j = 0; j < fCount; j++)
@@ -1073,6 +1165,8 @@ namespace PurrNet.Prediction
 
                 ulong inputAck = 0;
                 ulong baselineTick = 0;
+                bool hasInputMargin = false;
+                PackedInt inputMargin = 0;
 
                 if (_clientTicks.TryGetValue(player, out var queue))
                 {
@@ -1081,11 +1175,20 @@ namespace PurrNet.Prediction
                         contiguous++;
                     inputAck = contiguous;
                     baselineTick = queue.ackedServerTick;
+
+                    if (queue.rawHighestReceivedTick > 0)
+                    {
+                        long margin = (long)queue.rawHighestReceivedTick - (long)localTick;
+                        if (margin > InputMarginClamp) margin = InputMarginClamp;
+                        else if (margin < -InputMarginClamp) margin = -InputMarginClamp;
+                        hasInputMargin = true;
+                        inputMargin = (int)margin;
+                    }
                 }
 
                 if (fullFrame)
-                    SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, new BitPackerWithLength(deltaLen, packer));
-                else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, new BitPackerWithLength(deltaLen, packer));
+                    SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, new BitPackerWithLength(deltaLen, packer));
+                else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, new BitPackerWithLength(deltaLen, packer));
                 if (fullFrame)
                 {
                     clientFrame.fullFrame = false;
@@ -1244,24 +1347,31 @@ namespace PurrNet.Prediction
 
         readonly Queue<FrameDelta> _deltas = new ();
 
-        [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Best, mtuExceeded: MTUBehaviour.Fragment)]
-        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, BitPackerWithLength delta)
+        [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Fast, mtuExceeded: MTUBehaviour.Fragment)]
+        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, BitPackerWithLength delta)
         {
-            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, delta);
+            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, delta);
         }
 
         [TargetRpc(compressionLevel: CompressionLevel.Best)]
-        private void SendFrameToRemoteReliable([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, BitPackerWithLength delta)
+        private void SendFrameToRemoteReliable([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, BitPackerWithLength delta)
         {
-            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, delta);
+            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, delta);
         }
 
-        private void HandleFrameFromServer(ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, BitPackerWithLength delta)
+        private void HandleFrameFromServer(ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, BitPackerWithLength delta)
         {
             delta.packer.SkipBytes(delta.originalLength);
 
             if (inputAck > _inputAckTick)
                 _inputAckTick = inputAck;
+
+            if (hasInputMargin && serverTick >= _frameInputMarginTick)
+            {
+                _frameInputMargin = inputMargin;
+                _frameInputMarginTick = serverTick;
+                _hasFrameInputMargin = true;
+            }
 
             if (fullFrame)
             {
@@ -1358,7 +1468,51 @@ namespace PurrNet.Prediction
 
         private const ulong MinLead = 2;
         private const ulong TargetLead = 3;
-        private const ulong MaxLead = 10;
+        private const ulong AbsoluteMaxLead = MaxInputWindow - 2;
+
+        private const long InputMarginClamp = 64;
+        private const long InputMarginLow = 1;
+        private const long InputMarginTarget = 3;
+        private const long InputMarginHigh = 6;
+        private const long MaxLeadAdjustPerFrame = 16;
+
+        private long _frameInputMargin;
+        private ulong _frameInputMarginTick;
+        private bool _hasFrameInputMargin;
+        private ulong _leadAdjustGateTick;
+
+        private void AdjustLeadFromInputMargin()
+        {
+            if (!_hasFrameInputMargin)
+                return;
+
+            long sampleInputTick = (long)_frameInputMarginTick + _frameInputMargin;
+            if (sampleInputTick <= (long)_leadAdjustGateTick)
+                return;
+
+            if (_frameInputMargin < InputMarginLow)
+            {
+                long deficit = InputMarginTarget - _frameInputMargin;
+                if (deficit > MaxLeadAdjustPerFrame)
+                    deficit = MaxLeadAdjustPerFrame;
+
+                localTick += (ulong)deficit;
+                localTickInContext = localTick;
+                _pauseAdvanceTicks = 0;
+                _leadAdjustGateTick = localTick;
+                _hasFrameInputMargin = false;
+            }
+            else if (_frameInputMargin > InputMarginHigh)
+            {
+                long excess = _frameInputMargin - InputMarginTarget;
+                if (excess > MaxLeadAdjustPerFrame)
+                    excess = MaxLeadAdjustPerFrame;
+
+                _pauseAdvanceTicks = (ulong)excess;
+                _leadAdjustGateTick = localTick;
+                _hasFrameInputMargin = false;
+            }
+        }
 
         private void SaveEnteringState(ulong tick)
         {
@@ -1451,6 +1605,8 @@ namespace PurrNet.Prediction
                             PurrLogger.LogWarning($"Input starvation detected; jumping prediction head to {localTick} (server at {_latestFrameServerTick}).");
                     }
 
+                    AdjustLeadFromInputMargin();
+
                     ulong lead = localTick > _verifiedServerTick ? localTick - _verifiedServerTick : 0;
 
                     if (lead < MinLead)
@@ -1459,9 +1615,9 @@ namespace PurrNet.Prediction
                         localTickInContext = localTick;
                         _pauseAdvanceTicks = 0;
                     }
-                    else if (lead > MaxLead)
+                    else if (lead > AbsoluteMaxLead)
                     {
-                        _pauseAdvanceTicks = lead - TargetLead;
+                        _pauseAdvanceTicks = lead - AbsoluteMaxLead;
                     }
 
                     SimulateFrame(_verifiedServerTick + 1, HistorySaveMode.Full);
@@ -1758,6 +1914,7 @@ namespace PurrNet.Prediction
         public class InputQueue
         {
             public ulong highestReceivedTick;
+            public ulong rawHighestReceivedTick;
             public ulong ackedServerTick;
             public ulong lastConsumedTick;
             public readonly Dictionary<ulong, InputQueueValue> byTick = new ();
@@ -1768,6 +1925,7 @@ namespace PurrNet.Prediction
                 foreach (var entry in byTick.Values)
                     entry.inputPacket.Dispose();
                 byTick.Clear();
+                rawHighestReceivedTick = 0;
             }
         }
 
@@ -1798,6 +1956,13 @@ namespace PurrNet.Prediction
                 if (frameAck > ticks.ackedServerTick)
                     ticks.ackedServerTick = frameAck;
 
+                if (tickCount > 0)
+                {
+                    ulong newestTick = firstTick + tickCount - 1;
+                    if (newestTick > ticks.rawHighestReceivedTick)
+                        ticks.rawHighestReceivedTick = newestTick;
+                }
+
                 for (uint i = 0; i < tickCount; i++)
                 {
                     PackedUInt blockBits = default;
@@ -1807,7 +1972,7 @@ namespace PurrNet.Prediction
 
                     ulong tick = firstTick + i;
 
-                    bool tooOld = tick <= localTick || tick <= ticks.lastConsumedTick;
+                    bool tooOld = tick < localTick || tick <= ticks.lastConsumedTick;
                     bool tooFar = tick > localTick + MaxInputWindow * 2;
 
                     if (tooOld || tooFar || ticks.byTick.ContainsKey(tick))

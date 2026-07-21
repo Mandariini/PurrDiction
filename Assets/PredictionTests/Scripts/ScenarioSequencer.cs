@@ -10,7 +10,7 @@ public static class ScenarioSequencer
 
     private static readonly Dictionary<int, HashSet<PlayerID>> _readyByIndex = new();
     private static readonly Dictionary<int, HashSet<PlayerID>> _acksByIndex = new();
-    private static readonly Dictionary<int, ulong> _startLeadTicksByIndex = new();
+    private static readonly Dictionary<int, ulong> _startTickByIndex = new();
     private static readonly HashSet<PlayerID> _endOfRunAcks = new();
 
     private static int _latestPreparedIndex = -1;
@@ -23,7 +23,7 @@ public static class ScenarioSequencer
     {
         _readyByIndex.Clear();
         _acksByIndex.Clear();
-        _startLeadTicksByIndex.Clear();
+        _startTickByIndex.Clear();
         _endOfRunAcks.Clear();
         _latestPreparedIndex = -1;
         _latestStartedIndex = -1;
@@ -84,9 +84,14 @@ public static class ScenarioSequencer
         _readyByIndex.Remove(index);
     }
 
-    public static void IssueStart(int index, ulong startLeadTicks)
+    /// <summary>
+    /// Broadcasts the absolute deterministic tick at which scenario actions should begin.
+    /// Every peer receives the same tick, so deterministic identities gate on an identical
+    /// timeline point instead of each peer deriving its own from a local tick plus a lead.
+    /// </summary>
+    public static void IssueStart(int index, ulong startTick)
     {
-        BroadcastStart(index, startLeadTicks);
+        BroadcastStart(index, startTick);
     }
 
     public static async UniTask<ulong> WaitForStart(ScenarioContext ctx, int index)
@@ -94,7 +99,7 @@ public static class ScenarioSequencer
         try
         {
             await UniTaskUtils.WaitWithTimeout(
-                () => _startLeadTicksByIndex.ContainsKey(index) || _sequenceComplete,
+                () => _startTickByIndex.ContainsKey(index) || _sequenceComplete,
                 SCENARIO_TIMEOUT_SECONDS,
                 ctx.cancellationToken);
         }
@@ -106,7 +111,7 @@ public static class ScenarioSequencer
                 e);
         }
 
-        return _startLeadTicksByIndex.TryGetValue(index, out var startLeadTicks) ? startLeadTicks : 0;
+        return _startTickByIndex.TryGetValue(index, out var startTick) ? startTick : 0;
     }
 
     public static async UniTask WaitForAllAcks(ScenarioContext ctx, int index)
@@ -235,9 +240,9 @@ public static class ScenarioSequencer
     }
 
     [ObserversRpc(runLocally: true)]
-    private static void BroadcastStart(int index, ulong startLeadTicks)
+    private static void BroadcastStart(int index, ulong startTick)
     {
-        _startLeadTicksByIndex[index] = startLeadTicks;
+        _startTickByIndex[index] = startTick;
         if (index > _latestStartedIndex)
             _latestStartedIndex = index;
     }

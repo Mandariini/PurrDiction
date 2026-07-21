@@ -11,7 +11,12 @@ public sealed class ScenarioPerformanceSampler : IDisposable
         "PredictionManager.Simulate",
         "PredictionManager.PrepareSimulationInputs",
         "PredictionManager.LateSimulate",
-        "PredictionManager.WriteFrameOnServer"
+        "PredictionManager.WriteFrameOnServer",
+        "PredictionManager.WriteInputHistory",
+        "PredictionManager.WriteStateDeltas",
+        "PredictionManager.WriteFullFrame",
+        "PredictionManager.WriteEventHandles",
+        "PredictionManager.SendFrame"
     };
 
     private readonly Recorder[] _recorders;

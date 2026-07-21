@@ -45,3 +45,17 @@ Optional args: `-port`, `-serverHost`, `-connectTimeout`. Exit code is non-zero 
 
 Policy regression scenarios are included in the normal suite. Pass `-policyRegressionScenariosOnly`
 to run just the bootstrap and the three focused policy scenarios.
+
+## Server load benchmark
+
+Pass `-serverLoadBenchmark` to run only the bootstrap plus `ServerLoadBenchmarkScenario`: a
+`BenchDriver` spawns `-benchObjects` (default 200) input-driven `BenchMover` identities, then the
+server samples the `WriteFrameOnServer` sub-markers (`WriteInputHistory`, `WriteStateDeltas`,
+`WriteFullFrame`, `WriteEventHandles`, `SendFrame`) plus client ack lag for `-benchSeconds`
+(default 20) and reports them in the scenario result message. Use
+`Tools/PurrDiction/Analysis/Run Server Load Latency Sweep` (or
+`-executeMethod PurrNet.Prediction.Benchmarks.Editor.ServerLoadBenchmarkRunner.RunFromCommandLine`)
+to build the player and sweep several simulated latencies (`-slbLatencies "0,50,100,200"`,
+`-slbClients`, `-slbObjects`, `-slbSeconds`, `-slbSkipBuild`, `-slbPlayer`); the per-latency
+reports land in `Builds/ServerLoadBenchmark/server-load-sweep.md`. This is how ping-dependent
+server frame-write cost is measured and compared.
