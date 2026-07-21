@@ -1,11 +1,31 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using Cysharp.Threading.Tasks;
 using PurrNet.Prediction;
 using UnityEngine;
 
 public static class PredictionTestUtils
 {
+    /// <summary>
+    /// Waits until the deterministic timed spawner is not about to fire. Peers digest their
+    /// own predicted head, which runs ahead of the server by the input lead; a digest taken
+    /// while a deterministic spawn lands inside that window sees instances the server has not
+    /// simulated yet and reports a false divergence. Two seconds of headroom comfortably
+    /// covers the lead at the highest simulated latencies.
+    /// </summary>
+    public static async UniTask WaitForDeterministicQuietWindow(ScenarioContext ctx, float timeoutSeconds)
+    {
+        var spawner = UnityEngine.Object.FindFirstObjectByType<DeterministicTimedSpawner>();
+        if (!spawner)
+            return;
+
+        await UniTaskUtils.WaitWithTimeout(
+            () => spawner.spawnedCount >= spawner.totalSpawns || spawner.secondsUntilNextSpawn > 2f,
+            timeoutSeconds,
+            ctx.cancellationToken);
+    }
+
     public static void RegisterPrefab(ScenarioContext ctx, GameObject prefab, bool pooled = false, int warmupCount = 0)
     {
         ctx.predictionManager.predictedPrefabs.prefabs.Add(new PredictedPrefab

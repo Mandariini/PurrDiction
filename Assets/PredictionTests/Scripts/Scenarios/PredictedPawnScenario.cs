@@ -51,6 +51,7 @@ public class PredictedPawnScenario : Scenario
         }
 
         await UniTask.WaitForSeconds(_settleSeconds, cancellationToken: ctx.cancellationToken);
+        await PredictionTestUtils.WaitForDeterministicQuietWindow(ctx, _timeout);
 
         var digest = PredictionTestUtils.WorldDigest(ctx, _counter);
         return await DigestExchange.Compare(ctx, DigestChannel, digest, 30f);
