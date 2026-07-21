@@ -77,6 +77,7 @@ public class PredictionBootstrap : Scenario
         gameObject.AddComponent<PieceLifecycleScenario>();
         gameObject.AddComponent<PieceReconnectScenario>();
         gameObject.AddComponent<TickAgreementScenario>();
+        gameObject.AddComponent<DeterministicGauntletScenario>();
 
         bool policyRegressionsOnly = CommandLineUtils.HasFlag("-policyRegressionScenariosOnly");
         var policyRegressionScenarios = AddPolicyRegressionScenarios();

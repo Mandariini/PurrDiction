@@ -22,6 +22,7 @@ Multi-process end-to-end tests for the prediction pipeline, modeled after PurrNe
 | `SoftCorrectionPoolReuseScenario` | A scoped soft-correction object preserves its policy through replay pooling, while a completed pooled lifetime cannot leak pose-correction accumulators into the next object |
 | `GenericSoftCorrectionScenario` | An opted-in generic state consumes verified deltas and converges without rollback simulation |
 | `ReplayPolicyTransitionScenario` | Entering SoftCorrection during reconcile freezes the body before the replay physics pass |
+| `DeterministicGauntletScenario` | Input-driven deterministic logic and `PredictedRandom` survive latency/jitter/loss byte-exactly: a scene-authored `DeterministicIdentity<INPUT,STATE>` accumulates an RNG stream and server-generated inputs for 200 ticks; every peer must land on the identical steps/seed/accumulator/input-sum. Canary for input-redundancy-window overruns and deterministic timeline shifts |
 
 All scenarios fail on unexpected Unity `Error`, `Assert`, or `Exception` logs during the active scenario. They run with simulated latency (40–80ms by default, configurable on the `Bootstrap` object or via `-latencyMin`/`-latencyMax`; `-latencyMax 0` disables) so rollback depth resembles real conditions instead of a clean localhost.
 

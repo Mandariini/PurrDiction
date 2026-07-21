@@ -283,6 +283,7 @@ GameObject:
   - component: {fileID: 120007}
   - component: {fileID: 120008}
   - component: {fileID: 120009}
+  - component: {fileID: 120010}
   m_Layer: 0
   m_Name: PredictedSystems
   m_TagString: Untagged
@@ -428,6 +429,18 @@ MonoBehaviour:
     rawValue: 1084227584
   _spawnPosition: {x: 0, y: 8, z: 0}
   _ownByFirstPlayer: 1
+--- !u!114 &120010
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 120000}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e3f8a1c20d934b6e8a51f0c4d7b21030, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
 --- !u!1 &130000
 GameObject:
   m_ObjectHideFlags: 0
