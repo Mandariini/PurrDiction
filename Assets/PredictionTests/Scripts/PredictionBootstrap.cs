@@ -51,6 +51,7 @@ public class PredictionBootstrap : Scenario
     private void Awake()
     {
         ScenarioSequencer.Reset();
+        DigestGate.Reset();
 
         var prefabs = ScriptableObject.CreateInstance<PredictedPrefabs>();
         prefabs.autoGenerate = false;

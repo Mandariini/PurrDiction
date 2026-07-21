@@ -8,20 +8,37 @@ using UnityEngine;
 public static class PredictionTestUtils
 {
     /// <summary>
-    /// Waits until the deterministic timed spawner is not about to fire. Peers digest their
-    /// own predicted head, which runs ahead of the server by the input lead; a digest taken
-    /// while a deterministic spawn lands inside that window sees instances the server has not
-    /// simulated yet and reports a false divergence. Two seconds of headroom comfortably
-    /// covers the lead at the highest simulated latencies.
+    /// Aligns all peers onto a single digest tick that sits inside a deterministic quiet
+    /// window. Peers digest their own predicted timelines, which sit at different wall-clock
+    /// and tick positions (input lead, scenario pacing under loss); a digest sampled on
+    /// different sides of a deterministic spawn sees different instance sets and reports a
+    /// false divergence. The barrier bounds wall-clock skew, the server then waits until the
+    /// timed spawner is at least six seconds from firing (or exhausted) and broadcasts a
+    /// digest tick one second ahead; every peer digests only after its own timeline passes
+    /// that tick, so all samples land in the same inter-spawn gap.
     /// </summary>
-    public static async UniTask WaitForDeterministicQuietWindow(ScenarioContext ctx, float timeoutSeconds)
+    public static async UniTask AlignDigestTick(ScenarioContext ctx, int channel, float timeoutSeconds)
     {
-        var spawner = UnityEngine.Object.FindFirstObjectByType<DeterministicTimedSpawner>();
-        if (!spawner)
-            return;
+        await ScenarioBarrier.Wait(ctx, 9000 + channel, timeoutSeconds);
+
+        var pm = ctx.predictionManager;
+
+        if (ctx.isServer)
+        {
+            var spawner = UnityEngine.Object.FindFirstObjectByType<DeterministicTimedSpawner>();
+            if (spawner)
+            {
+                await UniTaskUtils.WaitWithTimeout(
+                    () => spawner.spawnedCount >= spawner.totalSpawns || spawner.secondsUntilNextSpawn > 6f,
+                    timeoutSeconds,
+                    ctx.cancellationToken);
+            }
+
+            DigestGate.BroadcastDigestTick(channel, pm.time.tick + (ulong)pm.tickRate);
+        }
 
         await UniTaskUtils.WaitWithTimeout(
-            () => spawner.spawnedCount >= spawner.totalSpawns || spawner.secondsUntilNextSpawn > 2f,
+            () => DigestGate.TryGetDigestTick(channel, out var digestTick) && pm.time.tick >= digestTick,
             timeoutSeconds,
             ctx.cancellationToken);
     }
