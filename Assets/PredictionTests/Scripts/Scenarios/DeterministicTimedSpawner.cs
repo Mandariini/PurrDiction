@@ -13,7 +13,7 @@ public class DeterministicTimedSpawner : DeterministicIdentity<DeterministicTime
     public int spawnsPerWave => _spawnsPerWave;
     public int totalSpawns => _spawnsPerWave * 2;
     public int spawnedCount => currentState.spawned;
-    public float secondsUntilNextSpawn => (float)currentState.timer;
+    public float secondsUntilNextSpawn => currentState.timer.ToFloat();
 
     public struct SpawnerState : IPredictedData<SpawnerState>
     {
