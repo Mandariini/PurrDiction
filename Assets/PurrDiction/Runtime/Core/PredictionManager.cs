@@ -586,6 +586,8 @@ namespace PurrNet.Prediction
             for (var p = 0; p < _pendingFullSync.Count; p++)
             {
                 var player = _pendingFullSync[p];
+                var mtu = networkManager.GetMTU(player, Channel.Unreliable, true);
+                var maxUnreliableFrameBytes = GetMaxUnreliableFrameBytes(mtu);
 
                 _clientTicks[player] = new InputQueue();
 
@@ -597,6 +599,9 @@ namespace PurrNet.Prediction
                         continue;
 
                     clientFrame.fullFrame = true;
+                    clientFrame.preparedFrameTick = 0;
+                    clientFrame.maxUnreliableFrameBytes = maxUnreliableFrameBytes;
+                    clientFrame.reliableFrame.Clear();
                     _clientFrames[i] = clientFrame;
                     found = true;
                     break;
@@ -609,7 +614,8 @@ namespace PurrNet.Prediction
                 {
                     player = player,
                     packer = BitPackerPool.Get(),
-                    fullFrame = true
+                    fullFrame = true,
+                    maxUnreliableFrameBytes = maxUnreliableFrameBytes
                 });
             }
 
@@ -874,8 +880,8 @@ namespace PurrNet.Prediction
                 }
 
                 int blockBits = block.positionInBits;
-                Packer<PackedUInt>.Write(payload, (PackedUInt)(uint)blockBits);
-                Packer<PackedUInt>.Write(payload, (PackedUInt)writtenCount);
+                Packer<PackedUInt>.Write(payload, (uint)blockBits);
+                Packer<PackedUInt>.Write(payload, writtenCount);
                 payload.WriteBitsWithoutConsumingIt(block, blockBits);
                 tickCount += 1;
             }
@@ -915,9 +921,6 @@ namespace PurrNet.Prediction
             for (var j = 0; j < fCount; j++)
             {
                 var clientFrame = _clientFrames[j];
-                clientFrame.packer.ResetPositionAndMode(false);
-
-                var frame = clientFrame.packer;
                 var player = clientFrame.player;
 
                 ulong baselineTick = 0;
@@ -928,13 +931,25 @@ namespace PurrNet.Prediction
                 if (ackLag > maxAckLag)
                     maxAckLag = ackLag;
 
+                if (clientFrame.reliableFrame.ShouldSuppress(baselineTick))
+                {
+                    clientFrame.preparedFrameTick = 0;
+                    _clientFrames[j] = clientFrame;
+                    continue;
+                }
+
+                clientFrame.preparedFrameTick = localTick;
+
                 if (!clientFrame.fullFrame && baselineTick > 0 &&
                     localTick > baselineTick && localTick - baselineTick > (ulong)(tickRate * 8))
                 {
                     clientFrame.fullFrame = true;
-                    _clientFrames[j] = clientFrame;
                 }
 
+                _clientFrames[j] = clientFrame;
+
+                clientFrame.packer.ResetPositionAndMode(false);
+                var frame = clientFrame.packer;
                 var fullFrame = clientFrame.fullFrame;
 
                 if (fullFrame)
@@ -1038,7 +1053,7 @@ namespace PurrNet.Prediction
                     entryCount++;
             }
 
-            Packer<PackedUInt>.Write(block, (PackedUInt)entryCount);
+            Packer<PackedUInt>.Write(block, entryCount);
 
             if (entryCount == 0)
                 return block;
@@ -1055,7 +1070,7 @@ namespace PurrNet.Prediction
                 entryScratch.ResetPositionAndMode(false);
                 sys.WriteFirstInput(tick, entryScratch);
                 int bits = entryScratch.positionInBits;
-                Packer<PackedUInt>.Write(block, (PackedUInt)(uint)bits);
+                Packer<PackedUInt>.Write(block, (uint)bits);
                 block.WriteBitsWithoutConsumingIt(entryScratch, bits);
             }
 
@@ -1070,7 +1085,7 @@ namespace PurrNet.Prediction
             if (from > localTick)
                 from = localTick;
 
-            Packer<PackedUInt>.Write(frame, (PackedUInt)(uint)(localTick - from));
+            Packer<PackedUInt>.Write(frame, (uint)(localTick - from));
 
             for (ulong t = from + 1; t <= localTick; t++)
             {
@@ -1135,6 +1150,9 @@ namespace PurrNet.Prediction
                 for (var j = 0; j < fCount; j++)
                 {
                     var frame = _clientFrames[j];
+                    if (frame.preparedFrameTick != localTick)
+                        continue;
+
                     var packer = frame.packer;
                     if (frame.fullFrame)
                         system.RunWriteFirstState(localTick, packer);
@@ -1158,10 +1176,17 @@ namespace PurrNet.Prediction
             for (var j = 0; j < fCount; j++)
             {
                 var clientFrame = _clientFrames[j];
+                if (clientFrame.preparedFrameTick != localTick)
+                    continue;
+
                 var player = clientFrame.player;
                 var packer = clientFrame.packer;
                 var deltaLen = packer.ToByteData().length;
                 var fullFrame = clientFrame.fullFrame;
+                var requiresReliableRecovery = RequiresReliableRecovery(
+                    fullFrame,
+                    deltaLen,
+                    clientFrame.maxUnreliableFrameBytes);
 
                 ulong inputAck = 0;
                 ulong baselineTick = 0;
@@ -1186,15 +1211,45 @@ namespace PurrNet.Prediction
                     }
                 }
 
-                if (fullFrame)
+                if (requiresReliableRecovery)
                     SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, new BitPackerWithLength(deltaLen, packer));
                 else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, new BitPackerWithLength(deltaLen, packer));
+
+                if (requiresReliableRecovery)
+                    clientFrame.reliableFrame.MarkSent(localTick);
+
+                clientFrame.preparedFrameTick = 0;
                 if (fullFrame)
-                {
                     clientFrame.fullFrame = false;
-                    _clientFrames[j] = clientFrame;
-                }
+
+                _clientFrames[j] = clientFrame;
             }
+        }
+
+        internal static int GetMaxUnreliableFrameBytes(int mtu)
+        {
+            const int maxGeneratedRpcArgumentBytes = 30;
+            const int maxCompressedFrameExpansionBytes = 1;
+            const int maxEntryLengthPrefixBytes = 6;
+
+            var maxFragmentedMessageBytes = FragmentationLayer.GetMaxMessageSize(
+                mtu,
+                BroadcastModule.MAX_HEADER_SIZE);
+
+            return maxFragmentedMessageBytes -
+                   (maxGeneratedRpcArgumentBytes +
+                    maxCompressedFrameExpansionBytes +
+                    BroadcastModule.MAX_HEADER_SIZE +
+                    RPCBatch.MAX_HEADER_SIZE +
+                    maxEntryLengthPrefixBytes);
+        }
+
+        internal static bool RequiresReliableRecovery(
+            bool fullFrame,
+            int frameBytes,
+            int maxUnreliableFrameBytes)
+        {
+            return fullFrame || frameBytes > maxUnreliableFrameBytes;
         }
 
         /// <summary>
@@ -1395,7 +1450,7 @@ namespace PurrNet.Prediction
             });
         }
 
-        private void RollbackToFrame(BitPacker frame, ulong stateTick, ulong inputTick, ulong baselineTick, ulong serverTick)
+        private void RollbackToFrame(BitPacker frame, ulong stateTick, ulong baselineTick, ulong serverTick)
         {
             frame.ResetPositionAndMode(true);
 
@@ -1576,7 +1631,7 @@ namespace PurrNet.Prediction
                     }
                     else
                     {
-                        RollbackToFrame(frame.packer, frame.serverTick, frame.serverTick, frame.baselineTick, frame.serverTick);
+                        RollbackToFrame(frame.packer, frame.serverTick, frame.baselineTick, frame.serverTick);
 
                         if (_validateDeterministicData)
                         {
