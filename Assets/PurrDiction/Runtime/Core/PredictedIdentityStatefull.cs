@@ -292,12 +292,104 @@ namespace PurrNet.Prediction
             Packer<STATE>.Write(packer, fullPredictedState.state);
         }
 
-        private void RefreshVerifiedFromLive(ulong tick)
+        internal void RefreshVerifiedFromLive(ulong tick)
         {
             if (_verifiedHistory.Count > 0 && _verifiedHistory.MostRecentTick >= tick)
                 return;
 
             StoreVerified(tick, ref fullPredictedState);
+        }
+
+        internal bool TryGetVerifiedState(
+            ulong tick,
+            out PredictedIdentityState prediction,
+            out STATE state)
+        {
+            if (_verifiedHistory != null && _verifiedHistory.ReadOrPrevious(tick, out var fullState))
+            {
+                prediction = fullState.prediction;
+                state = fullState.state;
+                return true;
+            }
+
+            prediction = default;
+            state = default;
+            return false;
+        }
+
+        internal bool RestoreVerifiedState(ulong tick)
+        {
+            if (_verifiedHistory == null ||
+                !_verifiedHistory.ReadOrPrevious(tick, out var verified))
+            {
+                return false;
+            }
+
+            var copy = verified.DeepCopy();
+            WriteOwnedStateIfChanged(tick, ref copy);
+            Rollback(tick);
+            return true;
+        }
+
+        internal void WriteFirstProjectedState(ulong tick, BitPacker packer, in STATE projectedState)
+        {
+            RefreshVerifiedFromLive(tick);
+            Packer<PredictedIdentityState>.Write(packer, fullPredictedState.prediction);
+            Packer<STATE>.Write(packer, projectedState);
+        }
+
+        internal bool WriteProjectedState(
+            BitPacker packer,
+            in PredictedIdentityState baselinePrediction,
+            in STATE projectedBaseline,
+            in STATE projectedCurrent)
+        {
+            int pos = packer.positionInBits;
+            int changedPosition = packer.AdvanceBits(1);
+
+            bool changed = DeltaPacker<PredictedIdentityState>.Write(
+                packer,
+                baselinePrediction,
+                fullPredictedState.prediction);
+            changed |= DeltaPacker<STATE>.Write(packer, projectedBaseline, projectedCurrent);
+
+            packer.WriteAt(changedPosition, changed);
+            if (!changed)
+                packer.SetBitPosition(changedPosition + 1);
+
+            TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
+            return changed;
+        }
+
+        internal void RunWriteFirstProjectedState(
+            ulong tick,
+            BitPacker packer,
+            in STATE projectedState)
+        {
+            WriteFirstDynamicModuleSnapshot(tick, packer);
+            WriteFirstStateModules(tick, packer);
+            WriteFirstProjectedState(tick, packer, projectedState);
+        }
+
+        internal bool RunWriteProjectedState(
+            PlayerID receiver,
+            BitPacker packer,
+            ulong baselineTick,
+            in PredictedIdentityState baselinePrediction,
+            in STATE projectedBaseline,
+            in STATE projectedCurrent)
+        {
+            bool moduleSetChanged = WriteDynamicModuleSnapshot(
+                receiver,
+                packer,
+                baselineTick);
+            bool modulesChanged = WriteModules(receiver, packer, baselineTick);
+            bool stateChanged = WriteProjectedState(
+                packer,
+                baselinePrediction,
+                projectedBaseline,
+                projectedCurrent);
+            return moduleSetChanged || modulesChanged || stateChanged;
         }
 
         internal override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)

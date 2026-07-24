@@ -60,3 +60,22 @@ to build the player and sweep several simulated latencies (`-slbLatencies "0,50,
 `-slbClients`, `-slbObjects`, `-slbSeconds`, `-slbSkipBuild`, `-slbPlayer`); the per-latency
 reports land in `Builds/ServerLoadBenchmark/server-load-sweep.md`. This is how ping-dependent
 server frame-write cost is measured and compared.
+
+## Visibility microbenchmarks
+
+Use `Tools/PurrDiction/Analysis/Run Visibility Benchmarks` to measure the per-player visibility
+hot paths without adding machine-dependent timing assertions to the test suite. The runner covers
+stable and churning visibility timelines, hierarchy projection (including deletes and a 16-player
+batch), baseline-root membership, addressed record encoding/decoding, and 3D/2D physics-event
+projection. It reports median/min/max time, steady-state allocation, normalized time per source
+record, output counts, and encoded bit counts to
+`Temp/PurrDictionVisibilityBenchmarks/prediction-visibility-benchmarks.{json,md}`.
+
+For batch-mode comparisons, run:
+
+```text
+Unity.exe -batchmode -nographics -projectPath <project> -executeMethod PurrNet.Prediction.Benchmarks.Editor.PredictionVisibilityBenchmarkRunner.RunFromCommandLine -purrdictionVisibilityBenchmarkOutput Temp/PurrDictionVisibilityBenchmarks -logFile Temp/PurrDictionVisibilityBenchmarks/benchmark.log
+```
+
+Treat results as comparative data from the same machine and build configuration; these benchmarks
+are intentionally opt-in and non-gating.

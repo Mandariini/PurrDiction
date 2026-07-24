@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using PurrNet.Logging;
+using PurrNet.Packing;
 using PurrNet.Pooling;
 using UnityEngine;
 
@@ -1353,6 +1354,7 @@ namespace PurrNet.Prediction
         {
             if (_goToId.TryGetValue(trs.gameObject, out var poid))
             {
+                predictionManager.CapturePendingVisibilityDelete(poid);
                 currentState.toDelete.Add(poid);
                 return;
             }
@@ -1373,6 +1375,223 @@ namespace PurrNet.Prediction
         {
             if (id.TryGetGameObject(predictionManager, out var go))
                 Delete(go);
+        }
+
+        internal void CollectSpawnedRoots(HashSet<PredictedObjectID> roots)
+        {
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+                roots.Add(_spawnedPrefabs[i].rootId);
+        }
+
+        internal bool TryCollectVisibilityDeleteSnapshot(
+            PredictedObjectID objectId,
+            List<InstanceDetails> records,
+            out PredictedObjectID rootId)
+        {
+            if (!_recordsById.TryGetValue(objectId, out var target))
+            {
+                rootId = default;
+                return false;
+            }
+
+            rootId = target.rootId;
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+            {
+                var record = _spawnedPrefabs[i];
+                if (record.rootId.Equals(rootId))
+                    records.Add(record);
+            }
+
+            return records.Count > 0;
+        }
+
+        internal bool PreserveVisiblePendingDeletes(
+            PlayerVisibilityTimeline timeline,
+            HashSet<PredictedObjectID> roots)
+        {
+            if (currentState.toDelete.isDisposed)
+                return false;
+
+            bool preservedAny = false;
+            for (var i = 0; i < currentState.toDelete.Count; i++)
+            {
+                var deleteId = currentState.toDelete[i];
+                if (_recordsById.TryGetValue(deleteId, out var record) &&
+                    timeline.IsVisible(record.rootId))
+                {
+                    roots.Add(record.rootId);
+                    preservedAny = true;
+                }
+            }
+
+            return preservedAny;
+        }
+
+        internal void ExpandVisibilityDependencies(HashSet<PredictedObjectID> roots)
+        {
+            bool changed;
+            do
+            {
+                changed = false;
+
+                for (var i = 0; i < _spawnedPrefabs.Count; i++)
+                {
+                    var record = _spawnedPrefabs[i];
+                    if (!roots.Contains(record.rootId))
+                        continue;
+
+                    var parentObject = EffectiveParentObject(record);
+                    if (!parentObject.HasValue ||
+                        !_recordsById.TryGetValue(parentObject.Value, out var parentRecord))
+                        continue;
+
+                    if (roots.Add(parentRecord.rootId))
+                        changed = true;
+                }
+            } while (changed);
+        }
+
+        internal static PredictedHierarchyState BuildVisibilityProjection(
+            in PredictedHierarchyState source,
+            PlayerVisibilityTimeline timeline,
+            ulong tick)
+        {
+            int sourceCount = source.spawnedPrefabs.isDisposed ? 0 : source.spawnedPrefabs.Count;
+            int deleteCount = source.toDelete.isDisposed ? 0 : source.toDelete.Count;
+            var spawned = DisposableList<InstanceDetails>.Create(sourceCount);
+            var deletes = DisposableList<PredictedObjectID>.Create(deleteCount);
+
+            bool hasPreviousRoot = false;
+            bool previousRootVisible = false;
+            PredictedObjectID previousRoot = default;
+
+            for (var i = 0; i < sourceCount; i++)
+            {
+                var record = source.spawnedPrefabs[i];
+                var rootId = record.rootId;
+                if (!hasPreviousRoot || !rootId.Equals(previousRoot))
+                {
+                    previousRoot = rootId;
+                    previousRootVisible = timeline.WasVisibleAt(rootId, tick);
+                    hasPreviousRoot = true;
+                }
+
+                if (previousRootVisible)
+                    spawned.Add(record);
+            }
+
+            Dictionary<PredictedObjectID, PredictedObjectID> rootByPiece = null;
+            try
+            {
+                if (deleteCount > 1)
+                {
+                    rootByPiece =
+                        DictionaryPool<PredictedObjectID, PredictedObjectID>.Instantiate();
+                    for (var i = 0; i < sourceCount; i++)
+                    {
+                        var record = source.spawnedPrefabs[i];
+                        rootByPiece[record.instanceId] = record.rootId;
+                    }
+                }
+
+                for (var i = 0; i < deleteCount; i++)
+                {
+                    var deleteId = source.toDelete[i];
+                    PredictedObjectID rootId;
+                    bool resolved = rootByPiece != null
+                        ? rootByPiece.TryGetValue(deleteId, out rootId)
+                        : TryResolveRoot(in source, deleteId, out rootId);
+
+                    if (resolved && timeline.WasVisibleAt(rootId, tick))
+                        deletes.Add(deleteId);
+                }
+            }
+            finally
+            {
+                if (rootByPiece != null)
+                {
+                    DictionaryPool<PredictedObjectID, PredictedObjectID>.Destroy(
+                        rootByPiece);
+                }
+            }
+
+            return new PredictedHierarchyState(spawned, deletes, source.nextInstanceId);
+        }
+
+        internal static void CollectSpawnedRoots(
+            in PredictedHierarchyState state,
+            HashSet<PredictedObjectID> roots)
+        {
+            if (state.spawnedPrefabs.isDisposed)
+                return;
+
+            for (var i = 0; i < state.spawnedPrefabs.Count; i++)
+                roots.Add(state.spawnedPrefabs[i].rootId);
+        }
+
+        internal static bool StateContainsRoot(in PredictedHierarchyState state, PredictedObjectID rootId)
+        {
+            if (state.spawnedPrefabs.isDisposed)
+                return false;
+
+            for (var i = 0; i < state.spawnedPrefabs.Count; i++)
+            {
+                if (state.spawnedPrefabs[i].rootId.Equals(rootId))
+                    return true;
+            }
+
+            return false;
+        }
+
+        static bool TryResolveRoot(
+            in PredictedHierarchyState state,
+            PredictedObjectID pieceId,
+            out PredictedObjectID rootId)
+        {
+            if (!state.spawnedPrefabs.isDisposed)
+            {
+                for (var i = 0; i < state.spawnedPrefabs.Count; i++)
+                {
+                    var record = state.spawnedPrefabs[i];
+                    if (!record.instanceId.Equals(pieceId))
+                        continue;
+
+                    rootId = record.rootId;
+                    return true;
+                }
+            }
+
+            rootId = default;
+            return false;
+        }
+
+        internal void RunWriteFirstVisibilityState(
+            ulong tick,
+            BitPacker packer,
+            in PredictedHierarchyState projection)
+        {
+            WriteFirstDynamicModuleSnapshot(tick, packer);
+            WriteFirstStateModules(tick, packer);
+            WriteFirstProjectedState(tick, packer, projection);
+        }
+
+        internal bool RunWriteVisibilityState(
+            PlayerID receiver,
+            BitPacker packer,
+            ulong baselineTick,
+            in PredictedIdentityState baselinePrediction,
+            in PredictedHierarchyState baseline,
+            in PredictedHierarchyState current)
+        {
+            bool moduleSetChanged = WriteDynamicModuleSnapshot(receiver, packer, baselineTick);
+            bool modulesChanged = WriteModules(receiver, packer, baselineTick);
+            bool hierarchyChanged = WriteProjectedState(
+                packer,
+                baselinePrediction,
+                baseline,
+                current);
+
+            return moduleSetChanged || modulesChanged || hierarchyChanged;
         }
 
         public void Cleanup()
