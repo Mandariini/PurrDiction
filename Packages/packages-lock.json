@@ -5,14 +5,14 @@
       "depth": 0,
       "source": "git",
       "dependencies": {},
-      "hash": "e5acc106ee196bc5a32fb14cdf2987b0f96d11e0"
+      "hash": "ceac8d6946b1125fe782cd171fbcb245b567dbf9"
     },
     "com.dbrizov.naughtyattributes": {
       "version": "https://github.com/dbrizov/NaughtyAttributes.git#upm",
       "depth": 0,
       "source": "git",
       "dependencies": {},
-      "hash": "c46e45b61398d3c0ef4cff38c0f81ce40cf6d877"
+      "hash": "b11d62b28c5fcbe242988f9f8d451deb925cf23b"
     },
     "com.unity.asset-store-tools": {
       "version": "file:com.unity.asset-store-tools",
@@ -236,7 +236,7 @@
       "depth": 0,
       "source": "git",
       "dependencies": {},
-      "hash": "610157ad762084380380148ba8ce14e266a6da97"
+      "hash": "a122dc90cbe2d4cc2669ddad00b12b3917ef934b"
     },
     "dev.purrnet.purrnet": {
       "version": "https://github.com/PurrNet/PurrNet.git?path=/Assets/PurrNet#IMMEDIATE-RPCS",
@@ -247,7 +247,7 @@
         "com.unity.nuget.newtonsoft-json": "3.2.1",
         "com.unity.collections": "2.6.2"
       },
-      "hash": "e45d30dd2a5bdea229755f9f2ff7a397415d47a2"
+      "hash": "7845a73163a2f6b2dcf956b660828b1c5c66fdeb"
     },
     "com.unity.modules.accessibility": {
       "version": "1.0.0",
