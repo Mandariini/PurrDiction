@@ -816,17 +816,6 @@ namespace PurrNet.Prediction
             for (int i = 0; i < _modules.Count; i++) _modules[i].SaveStateInternal(tick);
         }
 
-        private bool SupportsUnchangedStateCarryForwardModules()
-        {
-            for (int i = 0; i < _modules.Count; i++)
-            {
-                if (!_modules[i].SupportsUnchangedStateCarryForwardInternal())
-                    return false;
-            }
-
-            return true;
-        }
-
         private bool HasUnchangedStateBaselineModules(ulong baselineTick)
         {
             if (HasDynamicModulesOrHistory() &&
@@ -864,8 +853,7 @@ namespace PurrNet.Prediction
                 for (int i = 0; i < _modules.Count; i++)
                 {
                     var module = _modules[i];
-                    if (!module.SupportsUnchangedStateCarryForwardInternal() ||
-                        !module.HasUnchangedStateBaselineInternal(baselineTick))
+                    if (!module.HasUnchangedStateBaselineInternal(baselineTick))
                     {
                         throw new InvalidOperationException(
                             $"Module {module.GetType().Name} has no acknowledged baseline " +

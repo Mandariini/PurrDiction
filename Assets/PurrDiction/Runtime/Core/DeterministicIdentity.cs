@@ -8,7 +8,6 @@ namespace PurrNet.Prediction
 {
     public abstract class DeterministicIdentity<STATE> : PredictedIdentity where STATE : struct, IPredictedData<STATE>
     {
-        protected override bool supportsUnchangedStateCarryForward => true;
         public override bool isDeterministic => true;
 
         protected virtual void Simulate(ref STATE state, sfloat delta) { }

@@ -1208,9 +1208,6 @@ namespace PurrNet.Prediction
             ulong baselineTick,
             ulong serverTick)
         {
-            if (!system.RunSupportsUnchangedStateCarryForward())
-                return;
-
             if (!system.RunCanReadUnchangedState(baselineTick))
             {
                 throw new InvalidOperationException(

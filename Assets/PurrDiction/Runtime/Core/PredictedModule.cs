@@ -24,12 +24,6 @@ namespace PurrNet.Prediction
 
     public abstract class PredictedModule
     {
-        /// <summary>
-        /// Opts this serializer into reconstructing an omitted unchanged record directly from
-        /// the acknowledged baseline. Custom serializers remain explicit records by default.
-        /// </summary>
-        protected virtual bool supportsUnchangedStateCarryForward => false;
-
         public PredictedIdentity identity { get; private set; }
         [Obsolete("Use predictionManager instead. This was a bad naming convention on me - Bobsi")]
         public PredictionManager manager => predictionManager;
@@ -113,8 +107,6 @@ namespace PurrNet.Prediction
         /// </summary>
         protected abstract void SaveState(ulong tick);
         internal bool WriteStateInternal(PlayerID receiver, BitPacker packer, ulong baselineTick) => WriteState(receiver, packer, baselineTick);
-        internal bool SupportsUnchangedStateCarryForwardInternal()
-            => supportsUnchangedStateCarryForward;
         internal bool HasUnchangedStateBaselineInternal(ulong baselineTick)
             => HasUnchangedStateBaseline(baselineTick);
         internal void ReadUnchangedStateInternal(ulong tick, ulong baselineTick, ulong serverTick)
@@ -122,6 +114,10 @@ namespace PurrNet.Prediction
 
         /// <summary>
         /// Serializes the current state of the module as a delta against the shared baseline tick.
+        /// Must be a pure function of the baseline and current state: ReadState must reconstruct
+        /// the exact state from the written bits and the same baseline. Records whose state
+        /// matches the receiver's acknowledged baseline may be omitted from the frame entirely,
+        /// in which case the receiver carries the baseline forward without invoking ReadState.
         /// </summary>
         /// <returns>True if any data was written (i.e., state changed), otherwise False.</returns>
         protected abstract bool WriteState(PlayerID receiver, BitPacker packer, ulong baselineTick);

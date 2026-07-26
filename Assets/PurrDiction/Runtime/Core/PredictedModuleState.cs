@@ -1,5 +1,4 @@
 using System;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using PurrNet.Modules;
 using PurrNet.Packing;
@@ -8,38 +7,6 @@ namespace PurrNet.Prediction
 {
     public abstract class PredictedModule<TState> : PredictedModule where TState : struct, IPredictedData<TState>
     {
-        private bool? _supportsDefaultUnchangedStateCarryForward;
-
-        protected override bool supportsUnchangedStateCarryForward
-            => _supportsDefaultUnchangedStateCarryForward ??=
-                UsesDefaultStateSerializer();
-
-        private bool UsesDefaultStateSerializer()
-        {
-            var runtimeType = GetType();
-            var write = runtimeType.GetMethod(
-                nameof(WriteState),
-                BindingFlags.Instance | BindingFlags.NonPublic,
-                null,
-                new[] { typeof(PlayerID), typeof(BitPacker), typeof(ulong) },
-                null);
-            var read = runtimeType.GetMethod(
-                nameof(ReadState),
-                BindingFlags.Instance | BindingFlags.NonPublic,
-                null,
-                new[]
-                {
-                    typeof(ulong),
-                    typeof(BitPacker),
-                    typeof(ulong),
-                    typeof(ulong)
-                },
-                null);
-
-            return write?.DeclaringType == typeof(PredictedModule<TState>) &&
-                   read?.DeclaringType == typeof(PredictedModule<TState>);
-        }
-
         /// <summary>
         /// Override when OnVerifiedStateReceived accumulates a smooth correction for this module.
         /// Modules that do not opt in snap their live state to the verified value when their parent
@@ -312,7 +279,6 @@ namespace PurrNet.Prediction
                 baseline = default;
 
             if (baselineTick > 0 &&
-                supportsUnchangedStateCarryForward &&
                 baseline.HasSameContents(ref fullPredictedState))
             {
                 Packer<bool>.Write(packer, false);
@@ -345,6 +311,11 @@ namespace PurrNet.Prediction
                 newState = baseline.DeepCopy();
             }
 
+            ApplyVerifiedState(tick, serverTick, ref newState);
+        }
+
+        private void ApplyVerifiedState(ulong tick, ulong serverTick, ref MODULE_STATE<TState> newState)
+        {
             StoreVerified(serverTick, ref newState);
 
             if (identity.UsesSoftCorrectionTimeline())
@@ -385,28 +356,7 @@ namespace PurrNet.Prediction
             }
 
             var newState = baseline.DeepCopy();
-            StoreVerified(serverTick, ref newState);
-            if (identity.UsesSoftCorrectionTimeline())
-            {
-                if (supportsSoftCorrection && _history.ReadOrPrevious(tick, out var predictedAtTick))
-                {
-                    OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
-                }
-                else
-                {
-                    fullPredictedState.Dispose();
-                    fullPredictedState = newState.DeepCopy();
-                    ResetInterpolation();
-                }
-
-                WriteOwnedStateIfChanged(tick, ref newState);
-                return;
-            }
-
-            fullPredictedState.Dispose();
-            fullPredictedState = newState;
-            if (!LatestHistoryMatches(tick, ref fullPredictedState))
-                _history.Write(tick, fullPredictedState.DeepCopy());
+            ApplyVerifiedState(tick, serverTick, ref newState);
         }
 
         protected virtual void OnVerifiedStateReceived(ulong tick, in TState predicted, in TState verified) { }

@@ -543,7 +543,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void CustomIdentitySerializerDefaultsToExplicitRecords()
+        public void CustomIdentitySerializerParticipatesInUnchangedShortcut()
         {
             var managerObject = new GameObject("Custom serializer manager");
             var identityObject = new GameObject("Custom serializer identity");
@@ -558,11 +558,17 @@ namespace PurrNet.Prediction.Tests.Editor
                 identity.fullPredictedState = FullState(100);
                 SetLocalTick(manager, 12);
 
-                Assert.That(identity.RunSupportsUnchangedStateCarryForward(), Is.False);
                 using var packer = BitPackerPool.Get();
-                Assert.That(identity.WriteCurrentState(default, packer, 10), Is.True);
+                Assert.That(identity.WriteCurrentState(default, packer, 10), Is.False,
+                    "state equal to the acknowledged baseline must take the unchanged shortcut");
+                Assert.That(identity.writeDeltaCalls, Is.Zero,
+                    "the shortcut applies regardless of who owns the delta serializer");
+
+                identity.fullPredictedState = FullState(300);
+                using var changedPacker = BitPackerPool.Get();
+                Assert.That(identity.WriteCurrentState(default, changedPacker, 10), Is.True);
                 Assert.That(identity.writeDeltaCalls, Is.EqualTo(1),
-                    "the custom serializer was bypassed by the net-equality shortcut");
+                    "changed state must still flow through the custom serializer");
             }
             finally
             {
@@ -572,7 +578,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void CustomModuleSerializerPreventsAggregateOmission()
+        public void ModuleWithoutVerifiedBaselineBlocksAggregateOmission()
         {
             var managerObject = new GameObject("Custom module manager");
             var identityObject = new GameObject("Custom module identity");
@@ -585,11 +591,17 @@ namespace PurrNet.Prediction.Tests.Editor
                 verified.Write(10, FullState(100));
                 var module = new CustomOmittedModule(identity);
 
-                Assert.That(
-                    module.SupportsUnchangedStateCarryForwardInternal(),
-                    Is.False);
                 Assert.That(identity.RunCanOmitUnchangedState(10), Is.False,
-                    "a false custom writer result must retain the aggregate record");
+                    "a module with no acknowledged baseline must retain the aggregate record");
+
+                var moduleVerified = manager.GetVerifiedHistory<MODULE_STATE<OmittedState>>(
+                    identity.id,
+                    1 + module.moduleIndex,
+                    out _);
+                moduleVerified.Write(10, default);
+
+                Assert.That(identity.RunCanOmitUnchangedState(10), Is.True,
+                    "once every ledger holds the baseline the record becomes omittable");
             }
             finally
             {

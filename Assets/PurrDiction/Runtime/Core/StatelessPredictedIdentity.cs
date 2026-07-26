@@ -14,7 +14,6 @@ namespace PurrNet.Prediction
     public abstract class StatelessPredictedIdentity : PredictedIdentity
     {
         public sealed override bool supportsSoftCorrection => false;
-        protected sealed override bool supportsUnchangedStateCarryForward => true;
 
         [UsedImplicitly]
         public new PlayerID? owner { get; }

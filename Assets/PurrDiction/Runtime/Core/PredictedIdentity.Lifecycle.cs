@@ -105,24 +105,17 @@ namespace PurrNet.Prediction
             return moduleSetChanged || modulesChanged || identityChanged;
         }
 
-        internal bool RunSupportsUnchangedStateCarryForward()
-            => supportsUnchangedStateCarryForward;
-
         internal bool RunCanOmitUnchangedState(ulong baselineTick)
         {
-            return supportsUnchangedStateCarryForward &&
-                   HasUnchangedStateBaseline(baselineTick) &&
-                   SupportsUnchangedStateCarryForwardModules() &&
+            return HasUnchangedStateBaseline(baselineTick) &&
                    HasUnchangedStateBaselineModules(baselineTick);
         }
 
         internal bool RunCanReadUnchangedState(ulong baselineTick)
         {
-            return supportsUnchangedStateCarryForward &&
-                   lastVerifiedTick.HasValue &&
+            return lastVerifiedTick.HasValue &&
                    lastVerifiedTick.Value >= baselineTick &&
                    HasUnchangedStateBaseline(baselineTick) &&
-                   SupportsUnchangedStateCarryForwardModules() &&
                    HasUnchangedStateBaselineModules(baselineTick);
         }
 

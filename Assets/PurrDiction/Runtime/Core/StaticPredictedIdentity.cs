@@ -6,8 +6,6 @@ namespace PurrNet.Prediction
 {
     public sealed class StaticPredictedIdentity : PredictedIdentity
     {
-        protected override bool supportsUnchangedStateCarryForward => true;
-
         public override void WriteFirstInput(ulong localTick, BitPacker packer) { }
 
         public override void ReadFirstInput(ulong localTick, BitPacker packer) { }

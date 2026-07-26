@@ -94,13 +94,6 @@ namespace PurrNet.Prediction
         /// </summary>
         public virtual bool supportsSoftCorrection => false;
 
-        /// <summary>
-        /// Opts this identity serializer into reconstructing an omitted unchanged record
-        /// directly from the acknowledged baseline. Core generic identities implement this;
-        /// custom serializers remain explicit records unless they opt in.
-        /// </summary>
-        protected virtual bool supportsUnchangedStateCarryForward => false;
-
         [Header("Predicted Identity")]
         [SerializeField, Tooltip("Use the nearest PredictionPolicyScope by default, or explicitly override it for this identity.")]
         private PredictionPolicySource _predictionPolicySource = PredictionPolicySource.UseScope;
