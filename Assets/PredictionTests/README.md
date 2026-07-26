@@ -47,28 +47,68 @@ Optional args: `-port`, `-serverHost`, `-connectTimeout`. Exit code is non-zero 
 Policy regression scenarios are included in the normal suite. Pass `-policyRegressionScenariosOnly`
 to run just the bootstrap and the three focused policy scenarios.
 
-## Server load benchmark
+## Server load and visibility benchmark
 
-Pass `-serverLoadBenchmark` to run only the bootstrap plus `ServerLoadBenchmarkScenario`: a
-`BenchDriver` spawns `-benchObjects` (default 200) input-driven `BenchMover` identities, then the
-server samples the `WriteFrameOnServer` sub-markers (`WriteInputHistory`, `WriteStateDeltas`,
-`WriteFullFrame`, `WriteEventHandles`, `SendFrame`) plus client ack lag for `-benchSeconds`
-(default 20) and reports them in the scenario result message. Use
-`Tools/PurrDiction/Analysis/Run Server Load Latency Sweep` (or
-`-executeMethod PurrNet.Prediction.Benchmarks.Editor.ServerLoadBenchmarkRunner.RunFromCommandLine`)
-to build the player and sweep several simulated latencies (`-slbLatencies "0,50,100,200"`,
-`-slbClients`, `-slbObjects`, `-slbSeconds`, `-slbSkipBuild`, `-slbPlayer`); the per-latency
-reports land in `Builds/ServerLoadBenchmark/server-load-sweep.md`. This is how ping-dependent
-server frame-write cost is measured and compared.
+Pass `-serverLoadBenchmark` to run only the bootstrap plus `ServerLoadBenchmarkScenario`.
+The server spawns `-benchObjects` movers (default 200), settles, then samples acknowledgement
+lag and frame-write profiler markers for `-benchSeconds` (default 20). Visibility markers cover
+per-player preparation, event commits, and hierarchy/3D/2D projection. Direct player runs support:
+
+- `-benchVisibilityMode none|static|churn|acquire-churn` (`none` is the default-visible baseline).
+- `-benchVisibilityPercent` (default 25).
+- `-benchVisibilityChurnPercent` (default 10) and `-benchVisibilityChurnTicks` (default 30).
+- `-benchDeleteChurn <perSecond>` deletes and respawns that many movers per second during the
+  timed window (steady total population, real `hierarchy.Delete` plus prefab respawn), exercising
+  the per-frame delete tombstone section. Requires the default `-benchVisibilityMode none`.
+
+`static` issues one-time `HideFrom` calls for the hidden complement. `churn` keeps the configured
+visible fraction and issues only `HideFrom`/`ShowTo` changes at epoch boundaries. `acquire-churn`
+hides the benchmark cohort once, holds `AcquireVisibility` handles for the visible window, and swaps
+only the entering/leaving leases. Churn at the 0%/100% edges is capped to an achievable value and
+reported as capped churn. An exact per-client RPC barrier prevents timing from starting with initial
+state still in flight, including when a client expects zero visible movers. After sampling and timed
+transport counters stop, every client also validates the exact sorted visible-root signature before
+the scenario can pass.
+
+Use `Tools/PurrDiction/Analysis/Run Server Load Latency Sweep` for the unchanged latency baseline.
+`Tools/PurrDiction/Analysis/Run Server Load Visibility Sweep` runs a four-case
+`none|static|churn|acquire-churn` preset at 0 ms below
+`Builds/ServerLoadBenchmark/VisibilityPreset`. Use
+`-executeMethod PurrNet.Prediction.Benchmarks.Editor.ServerLoadBenchmarkRunner.RunFromCommandLine`
+to build once and run a matrix. With no new arguments, its workload is unchanged: 3 clients, 200
+objects, visibility `none`, and latencies `0,50,100,200`. Opt-in CSV dimensions are
+`-slbClientCounts`, `-slbObjectCounts`, `-slbVisibilityModes`, and `-slbLatencies`; legacy scalar
+`-slbClients` and `-slbObjects` remain supported. Visibility settings use
+`-slbVisibilityPercent`, `-slbVisibilityChurnPercent`, and `-slbVisibilityChurnTicks`.
+`-slbVisibilityModes` also accepts `deletechurn`, which runs the delete-churn workload (visibility
+left fully open) at the `-slbDeleteChurn` rate (default 10 per second).
+
+The Cartesian product is capped at 32 runs by default so an accidental matrix does not monopolize CI;
+raise that deliberate guard with `-slbMaxRuns`. For example:
+
+```text
+Unity.exe -batchmode -nographics -projectPath <project> -executeMethod PurrNet.Prediction.Benchmarks.Editor.ServerLoadBenchmarkRunner.RunFromCommandLine -slbClientCounts "1,4" -slbObjectCounts "200,1000" -slbVisibilityModes "none,static,churn,acquire-churn" -slbLatencies "0,100" -slbVisibilityPercent 25 -slbVisibilityChurnPercent 10 -slbVisibilityChurnTicks 30 -slbMaxRuns 32 -logFile server-load-runner.log
+```
+
+Results land in `Builds/ServerLoadBenchmark/server-load-sweep.{md,json}` with one artifact directory
+per case. Reports include acknowledgement lag, visibility mutations/acquisitions/releases/active
+handles/epochs, final-signature validation counts, every sampled marker (including
+`CommitVisibilityChanges`), timed-window host bytes, and separately labeled whole-scenario host
+bytes. Delivery-cadence columns cover the timed window: reliable frames (per-client frames that
+took the reliable recovery path), full frames (non-delta frames), the per-case delete-churn rate
+with delete/respawn counts, and the client-averaged `framesPerSecond` (server-frame apply passes
+per second on each pure client). Other runner controls include `-slbSeconds`, `-slbInputEvery`,
+`-slbPacketLoss`, `-slbSkipBuild`, and `-slbPlayer`.
 
 ## Visibility microbenchmarks
 
 Use `Tools/PurrDiction/Analysis/Run Visibility Benchmarks` to measure the per-player visibility
 hot paths without adding machine-dependent timing assertions to the test suite. The runner covers
-stable and churning visibility timelines, hierarchy projection (including deletes and a 16-player
-batch), baseline-root membership, addressed record encoding/decoding, and 3D/2D physics-event
-projection. It reports median/min/max time, steady-state allocation, normalized time per source
-record, output counts, and encoded bit counts to
+`HideFrom`, `ShowTo`, `AcquireVisibility`, and handle-disposal event submission; idempotent and sparse
+timeline mutations; initial and stable ACK pruning; hierarchy projection (including deletes and a
+16-player batch); baseline-root membership; addressed record encoding/decoding; and 3D/2D
+physics-event projection. It reports median/min/max time, steady-state allocation, normalized time
+per source record, output counts, and encoded bit counts to
 `Temp/PurrDictionVisibilityBenchmarks/prediction-visibility-benchmarks.{json,md}`.
 
 For batch-mode comparisons, run:

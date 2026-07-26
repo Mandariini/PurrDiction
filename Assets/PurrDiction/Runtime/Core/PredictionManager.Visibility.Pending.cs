@@ -1,94 +1,135 @@
 using System.Collections.Generic;
+using PurrNet.Packing;
 
 namespace PurrNet.Prediction
 {
     public partial class PredictionManager
     {
         readonly Dictionary<PlayerID, PlayerPendingVisibilityDeletes> _pendingVisibilityDeletes = new ();
-        readonly List<InstanceDetails> _pendingVisibilityRecordScratch = new ();
+        readonly List<PredictedObjectID> _incomingVisibilityDeletes = new ();
 
         internal void CapturePendingVisibilityDelete(PredictedObjectID objectId)
         {
-            if (!hierarchy)
+            if (!hierarchy || _clientFrames.Count == 0)
                 return;
 
-            _pendingVisibilityRecordScratch.Clear();
-            if (!hierarchy.TryCollectVisibilityDeleteSnapshot(
-                    objectId,
-                    _pendingVisibilityRecordScratch,
-                    out var rootId))
-            {
-                return;
-            }
+            if (!hierarchy.TryGetRootId(objectId, out var rootId))
+                rootId = objectId;
 
-            foreach (var pair in _playerVisibility)
+            for (var i = 0; i < _clientFrames.Count; i++)
             {
-                bool receiverHasRoot = pair.Value.IsVisible(rootId);
-                if (!receiverHasRoot &&
-                    _clientTicks.TryGetValue(pair.Key, out var queue))
-                {
-                    receiverHasRoot = pair.Value.WasVisibleAt(
-                        rootId,
-                        queue.ackedServerTick);
-                }
-
-                if (!receiverHasRoot)
+                var frame = _clientFrames[i];
+                var player = frame.player;
+                if (!_playerVisibility.TryGetValue(player, out var timeline))
                     continue;
 
-                if (!_pendingVisibilityDeletes.TryGetValue(pair.Key, out var receiverPending))
+                ulong acknowledgedTick = 0;
+                if (_clientTicks.TryGetValue(player, out var queue))
+                    acknowledgedTick = queue.ackedServerTick;
+
+                if (!HasSentVisibilityRoot(
+                        player,
+                        timeline,
+                        rootId,
+                        acknowledgedTick,
+                        frame))
                 {
-                    receiverPending = new PlayerPendingVisibilityDeletes();
-                    _pendingVisibilityDeletes.Add(pair.Key, receiverPending);
+                    continue;
                 }
 
-                receiverPending.Capture(
-                    objectId,
-                    rootId,
-                    _pendingVisibilityRecordScratch,
-                    localTick);
+                if (!_pendingVisibilityDeletes.TryGetValue(player, out var receiverPending))
+                {
+                    receiverPending = new PlayerPendingVisibilityDeletes();
+                    _pendingVisibilityDeletes.Add(player, receiverPending);
+                }
+
+                receiverPending.Capture(objectId, rootId);
             }
         }
 
         void AcknowledgePendingVisibilityDeletes(
             PlayerID player,
+            PlayerVisibilityTimeline timeline,
             ulong acknowledgedTick)
         {
             if (!_pendingVisibilityDeletes.TryGetValue(player, out var pending))
                 return;
 
-            pending.Acknowledge(acknowledgedTick);
+            _visibilityRootScratch.Clear();
+            pending.Acknowledge(acknowledgedTick, _visibilityRootScratch);
+            for (var i = 0; i < _visibilityRootScratch.Count; i++)
+            {
+                var rootId = _visibilityRootScratch[i];
+                bool rootStillProjected =
+                    timeline.IsVisible(rootId) &&
+                    hierarchy &&
+                    hierarchy.ContainsSpawnedRoot(rootId);
+                if (!pending.ContainsRoot(rootId) && !rootStillProjected)
+                    RetireVisibilityRoot(player, rootId);
+            }
+            _visibilityRootScratch.Clear();
+
             if (pending.Count == 0)
                 _pendingVisibilityDeletes.Remove(player);
         }
 
-        void PreparePendingVisibilityDeletesCurrent(
+        void WritePendingVisibilityDeleteSection(
             PlayerID player,
-            ulong tick,
-            ref PredictedHierarchyState projection)
+            BitPacker frame,
+            ulong tick)
         {
-            if (_pendingVisibilityDeletes.TryGetValue(player, out var pending))
-                pending.PrepareCurrent(tick, ref projection);
+            if (!_pendingVisibilityDeletes.TryGetValue(player, out var pending) ||
+                pending.Count == 0)
+            {
+                AddressedPredictionRecords.WriteSectionCount(0, frame);
+                return;
+            }
+
+            AddressedPredictionRecords.WriteSectionCount(pending.Count, frame);
+            for (var i = 0; i < pending.Count; i++)
+                Packer<PredictedObjectID>.Write(frame, pending.GetObjectId(i));
+            pending.MarkPrepared(tick);
         }
 
-        void PreparePendingVisibilityDeletesBaseline(
-            PlayerID player,
-            ulong baselineTick,
-            ref PredictedHierarchyState projection)
+        void ReadVisibilityDeleteSection(BitPacker frame)
         {
-            if (_pendingVisibilityDeletes.TryGetValue(player, out var pending))
-                pending.PrepareBaseline(baselineTick, ref projection);
+            _incomingVisibilityDeletes.Clear();
+
+            PackedUInt count = default;
+            Packer<PackedUInt>.Read(frame, ref count);
+
+            for (uint i = 0; i < count.value; i++)
+            {
+                PredictedObjectID objectId = default;
+                Packer<PredictedObjectID>.Read(frame, ref objectId);
+                _incomingVisibilityDeletes.Add(objectId);
+            }
         }
 
-        bool RequiresFullVisibilityDeleteFrame(PlayerID player, ulong tick)
+        void ApplyPendingRemoteVisibilityDeletes(ulong stateTick)
         {
-            return _pendingVisibilityDeletes.TryGetValue(player, out var pending) &&
-                   pending.RequiresFullFrame(tick);
-        }
+            if (_incomingVisibilityDeletes.Count == 0)
+                return;
 
-        bool HasPendingVisibilityDeletes(PlayerID player)
-        {
-            return _pendingVisibilityDeletes.TryGetValue(player, out var pending) &&
-                   pending.Count > 0;
+            if (!hierarchy ||
+                !hierarchy.TryGetVerifiedState(
+                    stateTick,
+                    out _,
+                    out PredictedHierarchyState state))
+            {
+                return;
+            }
+
+            for (var i = 0; i < _incomingVisibilityDeletes.Count; i++)
+            {
+                var objectId = _incomingVisibilityDeletes[i];
+                if (PredictedHierarchy.StateContainsInstance(state, objectId))
+                    continue;
+
+                hierarchy.ApplyRemoteVisibilityDelete(objectId);
+            }
+
+            _incomingVisibilityDeletes.Clear();
         }
 
         void MarkPendingVisibilityDeletesSent(PlayerID player, ulong tick)
@@ -108,7 +149,7 @@ namespace PurrNet.Prediction
             foreach (var pending in _pendingVisibilityDeletes.Values)
                 pending.Clear();
             _pendingVisibilityDeletes.Clear();
-            _pendingVisibilityRecordScratch.Clear();
+            _incomingVisibilityDeletes.Clear();
         }
     }
 }

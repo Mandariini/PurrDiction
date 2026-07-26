@@ -34,6 +34,19 @@ namespace PurrNet.Prediction
             store.Write(serverTick, snapshot.isDisposed ? DisposableList<uint>.Create(0) : snapshot.Duplicate());
         }
 
+        private void StoreEmptyVerifiedModuleSet(ulong serverTick)
+        {
+            var empty = DisposableList<uint>.Create(0);
+            try
+            {
+                StoreVerifiedModuleSet(serverTick, in empty);
+            }
+            finally
+            {
+                empty.Dispose();
+            }
+        }
+
         /// <summary>
         /// The live, ordered list of modules attached to this identity.
         /// Static modules come first, followed by dynamic modules in registration order.
@@ -208,6 +221,8 @@ namespace PurrNet.Prediction
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
+                if (_moduleSetVerified != null || HasDynamicModulesOrHistory())
+                    StoreEmptyVerifiedModuleSet(serverTick);
                 ApplyEmptyDynamicModuleSnapshot(tick, UsesSoftCorrectionTimeline());
                 return;
             }
@@ -230,6 +245,44 @@ namespace PurrNet.Prediction
             var owned = !incoming.isDisposed ? incoming : DisposableList<uint>.Create(0);
             _moduleHistory.Write(tick, owned);
             ApplyDynamicModuleSnapshotForRead(tick, owned, UsesSoftCorrectionTimeline());
+        }
+
+        internal void ReadUnchangedDynamicModuleSnapshot(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            _moduleHistory?.PruneByTickWindow(tick);
+
+            bool hasDynamics = HasDynamicModulesOrHistory();
+            if (!hasDynamics && _moduleSetVerified == null)
+                return;
+
+            if (!moduleSetVerified.ReadOrPrevious(baselineTick, out var baseline))
+            {
+                if (hasDynamics)
+                {
+                    throw new InvalidOperationException(
+                        $"Missing dynamic module topology baseline at tick {baselineTick}.");
+                }
+
+                StoreEmptyVerifiedModuleSet(serverTick);
+                ApplyEmptyDynamicModuleSnapshot(tick, UsesSoftCorrectionTimeline());
+                return;
+            }
+
+            StoreVerifiedModuleSet(serverTick, in baseline);
+            if (!hasDynamics)
+                return;
+
+            var owned = baseline.isDisposed
+                ? DisposableList<uint>.Create(0)
+                : baseline.Duplicate();
+            _moduleHistory.Write(tick, owned);
+            ApplyDynamicModuleSnapshotForRead(
+                tick,
+                owned,
+                UsesSoftCorrectionTimeline());
         }
 
         internal bool WriteDynamicModuleSnapshot(PlayerID receiver, BitPacker packer, ulong baselineTick)
@@ -316,6 +369,8 @@ namespace PurrNet.Prediction
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
+                if (_moduleSetVerified != null || HasDynamicModulesOrHistory())
+                    StoreEmptyVerifiedModuleSet(serverTick);
                 ApplyEmptyDynamicModuleSnapshot(tick);
                 return;
             }
@@ -761,6 +816,34 @@ namespace PurrNet.Prediction
             for (int i = 0; i < _modules.Count; i++) _modules[i].SaveStateInternal(tick);
         }
 
+        private bool SupportsUnchangedStateCarryForwardModules()
+        {
+            for (int i = 0; i < _modules.Count; i++)
+            {
+                if (!_modules[i].SupportsUnchangedStateCarryForwardInternal())
+                    return false;
+            }
+
+            return true;
+        }
+
+        private bool HasUnchangedStateBaselineModules(ulong baselineTick)
+        {
+            if (HasDynamicModulesOrHistory() &&
+                !moduleSetVerified.ReadOrPrevious(baselineTick, out _))
+            {
+                return false;
+            }
+
+            for (int i = 0; i < _modules.Count; i++)
+            {
+                if (!_modules[i].HasUnchangedStateBaselineInternal(baselineTick))
+                    return false;
+            }
+
+            return true;
+        }
+
         protected bool WriteModules(PlayerID receiver, BitPacker packer, ulong baselineTick)
         {
             bool didWriteAny = false;
@@ -769,6 +852,33 @@ namespace PurrNet.Prediction
                 didWriteAny |= _modules[i].WriteStateInternal(receiver, packer, baselineTick);
             }
             return didWriteAny;
+        }
+
+        private void ReadUnchangedModules(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            try
+            {
+                for (int i = 0; i < _modules.Count; i++)
+                {
+                    var module = _modules[i];
+                    if (!module.SupportsUnchangedStateCarryForwardInternal() ||
+                        !module.HasUnchangedStateBaselineInternal(baselineTick))
+                    {
+                        throw new InvalidOperationException(
+                            $"Module {module.GetType().Name} has no acknowledged baseline " +
+                            $"for omitted state at tick {baselineTick}.");
+                    }
+
+                    module.ReadUnchangedStateInternal(tick, baselineTick, serverTick);
+                }
+            }
+            finally
+            {
+                EndSoftCorrectionDynamicModuleRead();
+            }
         }
 
         protected void ReadModules(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)

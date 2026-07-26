@@ -12,11 +12,21 @@ public sealed class ScenarioPerformanceSampler : IDisposable
         "PredictionManager.PrepareSimulationInputs",
         "PredictionManager.LateSimulate",
         "PredictionManager.WriteFrameOnServer",
+        "ServerLoadBenchmark.ApplyVisibilityEvents",
+        "ServerLoadBenchmark.ApplyDeleteChurn",
+        "PredictionManager.PreparePlayerVisibility",
+        "PredictionManager.CommitVisibilityChanges",
+        "PredictionManager.BuildVisibilityHierarchyProjection",
+        "PredictionManager.BuildVisibilityPhysics3DProjection",
+        "PredictionManager.BuildVisibilityPhysics2DProjection",
         "PredictionManager.WriteInputHistory",
         "PredictionManager.WriteStateDeltas",
         "PredictionManager.WriteFullFrame",
         "PredictionManager.WriteEventHandles",
-        "PredictionManager.SendFrame"
+        "PredictionManager.SendFrame",
+        "PredictionManager.RollbackToFrame",
+        "PredictionManager.ReadInputHistory",
+        "PredictionManager.ReplayToLatestTick"
     };
 
     private readonly Recorder[] _recorders;

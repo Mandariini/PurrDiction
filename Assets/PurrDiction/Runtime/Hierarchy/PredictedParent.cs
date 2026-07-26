@@ -42,6 +42,10 @@ namespace PurrNet.Prediction
         public void RefreshParentLink()
         {
             _dirty = true;
+
+            var manager = predictionManager;
+            if (manager && manager.hierarchy)
+                manager.hierarchy.NotifyVisibilityParentLinkInvalidated();
         }
 
         internal PredictedComponentID? resolvedParent => Resolve();

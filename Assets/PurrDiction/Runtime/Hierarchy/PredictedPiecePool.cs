@@ -107,6 +107,18 @@ namespace PurrNet.Prediction
                 _byPieceId.Remove(id);
         }
 
+        /// <summary>
+        /// Drops the pool's claim on a piece id that has been materialized live from somewhere
+        /// else - a fuzzy fallback that returned a different tree, or a fresh instantiate. The
+        /// GameObject stays owned by its entry so it is still torn down with it; only the id
+        /// lookup is relinquished, so the pool can never hand out a stale instance for an id
+        /// that is already live.
+        /// </summary>
+        public void ReleaseClaim(PredictedObjectID id)
+        {
+            _byPieceId.Remove(id);
+        }
+
         public bool Contains(PredictedObjectID pieceId)
         {
             return _byPieceId.ContainsKey(pieceId);

@@ -82,6 +82,9 @@ namespace PurrNet.Prediction
         static readonly ProfilerMarker WriteFullFrameMarker = new("PredictionManager.WriteFullFrame");
         static readonly ProfilerMarker WriteEventHandlesMarker = new("PredictionManager.WriteEventHandles");
         static readonly ProfilerMarker SendFrameMarker = new("PredictionManager.SendFrame");
+        static readonly ProfilerMarker RollbackToFrameMarker = new("PredictionManager.RollbackToFrame");
+        static readonly ProfilerMarker ReadInputHistoryMarker = new("PredictionManager.ReadInputHistory");
+        static readonly ProfilerMarker ReplayToLatestTickMarker = new("PredictionManager.ReplayToLatestTick");
 
         readonly List<PredictedIdentity> _queue = new ();
         readonly List<PredictedIdentity> _systems = new ();
@@ -364,6 +367,7 @@ namespace PurrNet.Prediction
             _speculativeRelayLocks.Clear();
             _systemsCount = 0;
             DisposeInputBlockCache();
+            InvalidateInputBlockCache();
             _nextSystemId = 0;
             foreach (var queue in _clientTicks.Values)
                 queue.Clear();
@@ -380,6 +384,8 @@ namespace PurrNet.Prediction
             _frameInputMarginTick = 0;
             _hasFrameInputMargin = false;
             _leadAdjustGateTick = 0;
+            reliableFramesSentTotal = 0;
+            fullFramesSentTotal = 0;
             ClearVerifiedStores();
             ClearVisibilityReplication();
             _deltas.Clear();
@@ -441,9 +447,9 @@ namespace PurrNet.Prediction
             {
                 if (components[i].hideFlags != HideFlags.NotEditable)
                 {
+                    UnregisterInstance(components[i]);
                     if (reset)
                         components[i].ResetState();
-                    UnregisterInstance(components[i]);
                     if (destroyEvent)
                         components[i].TriggerDestroyedEvent();
                 }
@@ -520,6 +526,7 @@ namespace PurrNet.Prediction
 
             _systems.Insert(posToInsert, system);
             ++_systemsCount;
+            InvalidateInputBlockCache();
 
             if (isReplaying && system.UsesSoftCorrectionTimeline() && !preserveState)
             {
@@ -535,11 +542,23 @@ namespace PurrNet.Prediction
         public void UnregisterInstance(PredictedIdentity predictedIdentity)
         {
             RemoveSpeculativeRelayLock(predictedIdentity);
-            _instanceMap.Remove(predictedIdentity.id);
+            if (_systems.Contains(predictedIdentity))
+                HandleVisibilitySystemRemoved(predictedIdentity);
+
+            // A pooled instance keeps its old id, so an expiring pool entry can tear down an
+            // identity whose id has already been re-registered to a live replacement. Only drop
+            // the lookup when it still resolves to this exact identity.
+            if (_instanceMap.TryGetValue(predictedIdentity.id, out var mapped) &&
+                ReferenceEquals(mapped, predictedIdentity))
+            {
+                _instanceMap.Remove(predictedIdentity.id);
+            }
+
             if (_systems.Remove(predictedIdentity))
             {
                 --_systemsCount;
                 predictedIdentity.RecordCompletedRegistrationPolicy();
+                InvalidateInputBlockCache();
             }
         }
 
@@ -599,6 +618,8 @@ namespace PurrNet.Prediction
 
                     clientFrame.fullFrame = true;
                     clientFrame.preparedFrameTick = 0;
+                    clientFrame.preparedVisibilityTick = 0;
+                    clientFrame.sentVisibilityTick = 0;
                     clientFrame.maxUnreliableFrameBytes = maxUnreliableFrameBytes;
                     clientFrame.reliableFrame.Clear();
                     _clientFrames[i] = clientFrame;
@@ -629,6 +650,7 @@ namespace PurrNet.Prediction
             tickDelta = Packer<float>.Read(frame);
             _sessionSeed = Packer<uint>.Read(frame);
 
+            ReadVisibilityDeleteSection(frame);
             ReadAddressedHierarchyRecord(frame, stateTick, 0, serverTick, true);
             ReadAddressedStateRecords(frame, stateTick, 0, serverTick, true, false);
             ReadAddressedFirstInputSection(frame, inputTick);
@@ -891,8 +913,6 @@ namespace PurrNet.Prediction
             PackedInt packedTickRate = tickRate;
             ulong maxAckLag = 0;
 
-            _preparedVisibilityTopology.Clear();
-
             for (var j = 0; j < fCount; j++)
             {
                 var clientFrame = _clientFrames[j];
@@ -909,6 +929,7 @@ namespace PurrNet.Prediction
                 if (clientFrame.reliableFrame.ShouldSuppress(baselineTick))
                 {
                     clientFrame.preparedFrameTick = 0;
+                    clientFrame.preparedVisibilityTick = 0;
                     _clientFrames[j] = clientFrame;
                     continue;
                 }
@@ -922,8 +943,7 @@ namespace PurrNet.Prediction
                 }
 
                 var timeline = PreparePlayerVisibility(player, localTick, baselineTick);
-                if (RequiresFullVisibilityDeleteFrame(player, localTick))
-                    clientFrame.fullFrame = true;
+                clientFrame.preparedVisibilityTick = localTick;
                 _clientFrames[j] = clientFrame;
 
                 clientFrame.packer.ResetPositionAndMode(false);
@@ -938,6 +958,7 @@ namespace PurrNet.Prediction
                     Packer<float>.Write(frame, tickDelta);
                     Packer<uint>.Write(frame, _sessionSeed);
 
+                    WritePendingVisibilityDeleteSection(player, frame, localTick);
                     WriteAddressedHierarchy(
                         player,
                         timeline,
@@ -957,6 +978,7 @@ namespace PurrNet.Prediction
                 }
                 else
                 {
+                    WritePendingVisibilityDeleteSection(player, frame, localTick);
                     WriteAddressedHierarchy(
                         player,
                         timeline,
@@ -991,14 +1013,44 @@ namespace PurrNet.Prediction
         /// </summary>
         public ulong lastMaxAckLagTicks { get; private set; }
 
+        /// <summary>
+        /// Count of per-client frames sent over the reliable recovery path since the session
+        /// started. Diagnostic only.
+        /// </summary>
+        public ulong reliableFramesSentTotal { get; private set; }
+
+        /// <summary>
+        /// Count of per-client full (non-delta) frames sent since the session started.
+        /// Diagnostic only.
+        /// </summary>
+        public ulong fullFramesSentTotal { get; private set; }
+
+        internal struct CachedInputEntry
+        {
+            public PredictedIdentity system;
+            public int bitOrigin;
+            public int bitLength;
+        }
+
         private struct CachedInputBlock
         {
             public ulong tick;
             public uint version;
             public BitPacker packer;
+            public List<CachedInputEntry> entries;
+            // Pre-framed (entryCount + repeated id/bitLength/bits) view of every entry, built once
+            // per tick. Lets a fully-visible ("pass-through") receiver's frame be assembled with a
+            // single bulk copy instead of an O(entries) per-receiver filter-and-reframe pass.
+            public BitPacker framedPacker;
         }
 
         private CachedInputBlock[] _inputBlockCache;
+        private uint _inputBlockVersion = 1;
+
+        private void InvalidateInputBlockCache()
+        {
+            _inputBlockVersion++;
+        }
 
         private void DisposeInputBlockCache()
         {
@@ -1008,14 +1060,74 @@ namespace PurrNet.Prediction
             for (var i = 0; i < _inputBlockCache.Length; i++)
             {
                 _inputBlockCache[i].packer?.Dispose();
+                _inputBlockCache[i].framedPacker?.Dispose();
                 _inputBlockCache[i] = default;
             }
 
             _inputBlockCache = null;
         }
 
+        // Serializes every input-bearing system's first-input payload for a given tick exactly
+        // once, regardless of how many players' frames end up including it. Per-player visibility
+        // filtering happens afterward against the cached (system, bitOrigin, bitLength) index, by
+        // copying bit ranges out of the shared blob rather than re-invoking WriteFirstInput -
+        // restores the O(window x systems)-once-per-tick cost this used to have before per-player
+        // visibility filtering was added (see WriteVisibilityInputHistory).
+        private CachedInputBlock GetInputBlockForTick(ulong tick)
+        {
+            _inputBlockCache ??= new CachedInputBlock[(int)MaxInputWindow + 1];
+
+            var index = (int)(tick % (ulong)_inputBlockCache.Length);
+            ref var slot = ref _inputBlockCache[index];
+
+            if (slot.packer != null && slot.tick == tick && slot.version == _inputBlockVersion)
+                return slot;
+
+            slot.packer ??= BitPackerPool.Get();
+            slot.entries ??= new List<CachedInputEntry>();
+            slot.tick = tick;
+            slot.version = _inputBlockVersion;
+            slot.entries.Clear();
+
+            var block = slot.packer;
+            block.ResetPositionAndMode(false);
+
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                var sys = _systems[i];
+                if (!sys.hasInput || !sys.HasInputAt(tick))
+                    continue;
+
+                int origin = block.positionInBits;
+                sys.WriteFirstInput(tick, block);
+                slot.entries.Add(new CachedInputEntry
+                {
+                    system = sys,
+                    bitOrigin = origin,
+                    bitLength = block.positionInBits - origin
+                });
+            }
+
+            slot.framedPacker ??= BitPackerPool.Get();
+            var framed = slot.framedPacker;
+            framed.ResetPositionAndMode(false);
+            Packer<PackedUInt>.Write(framed, (uint)slot.entries.Count);
+            for (var i = 0; i < slot.entries.Count; i++)
+            {
+                var entry = slot.entries[i];
+                Packer<PredictedComponentID>.Write(framed, entry.system.id);
+                Packer<PackedUInt>.Write(framed, (uint)entry.bitLength);
+                framed.WriteBitDataWithoutConsumingIt(
+                    new BitData(block, entry.bitOrigin, entry.bitLength));
+            }
+
+            return slot;
+        }
+
         private void ReadInputHistory(BitPacker frame, ulong serverTick)
         {
+            using var _ = ReadInputHistoryMarker.Auto();
+
             PackedUInt tickCount = default;
             Packer<PackedUInt>.Read(frame, ref tickCount);
 
@@ -1114,8 +1226,7 @@ namespace PurrNet.Prediction
                 var requiresReliableRecovery = RequiresReliableRecovery(
                     fullFrame,
                     deltaLen,
-                    clientFrame.maxUnreliableFrameBytes) ||
-                    HasPreparedVisibilityTopology(player);
+                    clientFrame.maxUnreliableFrameBytes);
 
                 ulong inputAck = 0;
                 ulong baselineTick = 0;
@@ -1144,6 +1255,15 @@ namespace PurrNet.Prediction
                     SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, new BitPackerWithLength(deltaLen, packer));
                 else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, new BitPackerWithLength(deltaLen, packer));
 
+                if (requiresReliableRecovery)
+                    reliableFramesSentTotal++;
+                if (fullFrame)
+                    fullFramesSentTotal++;
+
+                clientFrame.sentVisibilityTick = localTick;
+                clientFrame.preparedVisibilityTick = 0;
+                if (_playerVisibility.TryGetValue(player, out var visibilityTimeline))
+                    HandleVisibilityFrameSent(player, visibilityTimeline, localTick);
                 MarkPendingVisibilityDeletesSent(player, localTick);
 
                 if (requiresReliableRecovery)
@@ -1154,7 +1274,6 @@ namespace PurrNet.Prediction
                     clientFrame.fullFrame = false;
 
                 _clientFrames[j] = clientFrame;
-                _preparedVisibilityTopology.Remove(player);
             }
         }
 
@@ -1384,10 +1503,14 @@ namespace PurrNet.Prediction
 
         private void RollbackToFrame(BitPacker frame, ulong stateTick, ulong baselineTick, ulong serverTick)
         {
+            using var _ = RollbackToFrameMarker.Auto();
+
             frame.ResetPositionAndMode(true);
 
             bool crossedGap = _verifiedServerTick > 0 &&
                               serverTick > _verifiedServerTick + 1;
+
+            ReadVisibilityDeleteSection(frame);
 
             // Across a gap, decode and store the new hierarchy without applying it yet.
             // The old live topology must remain intact while its historical inputs replay.
@@ -1413,6 +1536,7 @@ namespace PurrNet.Prediction
                 // inputs were consumed, and creates entrants before their addressed state.
                 if (hierarchy)
                 {
+                    ApplyPendingRemoteVisibilityDeletes(serverTick);
                     if (!hierarchy.RestoreVerifiedState(serverTick))
                     {
                         throw new InvalidOperationException(
@@ -1809,6 +1933,8 @@ namespace PurrNet.Prediction
 
         private void ReplayToLatestTick(ulong verifiedTick, HistorySaveMode saveMode)
         {
+            using var _ = ReplayToLatestTickMarker.Auto();
+
             for (ulong simTick = verifiedTick; simTick < localTick; simTick++)
                 SimulateFrame(simTick, saveMode);
         }

@@ -38,7 +38,19 @@ namespace PurrNet.Prediction
         /// Represents the identifier of the owner associated with this object.
         /// Used to track ownership, enabling control over inputs.
         /// </summary>
-        public PlayerID? owner;
+        public PlayerID? owner
+        {
+            get => _owner;
+            set
+            {
+                if (predictionManager)
+                    SetOwner(value);
+                else
+                    _owner = value;
+            }
+        }
+
+        PlayerID? _owner;
 
         /// <summary>
         /// The unique identifier for this object.
@@ -81,6 +93,13 @@ namespace PurrNet.Prediction
         /// SoftCorrection even if a subclass overrides this property.
         /// </summary>
         public virtual bool supportsSoftCorrection => false;
+
+        /// <summary>
+        /// Opts this identity serializer into reconstructing an omitted unchanged record
+        /// directly from the acknowledged baseline. Core generic identities implement this;
+        /// custom serializers remain explicit records unless they opt in.
+        /// </summary>
+        protected virtual bool supportsUnchangedStateCarryForward => false;
 
         [Header("Predicted Identity")]
         [SerializeField, Tooltip("Use the nearest PredictionPolicyScope by default, or explicitly override it for this identity.")]
@@ -430,7 +449,8 @@ namespace PurrNet.Prediction
             preservesStateOnSetup = false;
             _simulateSoftCorrectionDuringReplay = false;
             _skipReplaySpawnInitialization = false;
-            owner = null;
+            lastVerifiedTick = null;
+            _owner = null;
             id = default;
             ResetModulesForPool();
             OnRemovedFromPool();
@@ -453,11 +473,20 @@ namespace PurrNet.Prediction
 
         internal void SetOwner(PlayerID? player, bool syncPolicySideEffects = true)
         {
-            owner = player;
+            var previousOwner = _owner;
+            _owner = player;
             OnOwnerAssigned(player);
 
             if (syncPolicySideEffects)
                 SyncEffectivePolicySideEffects();
+
+            if (previousOwner != player && predictionManager)
+            {
+                predictionManager.HandleVisibilityOwnershipChanged(
+                    this,
+                    previousOwner,
+                    player);
+            }
         }
 
         protected virtual void OnOwnerAssigned(PlayerID? player) { }
@@ -507,10 +536,27 @@ namespace PurrNet.Prediction
             if (!store.ReadOrPrevious(baselineTick, out var baseline))
                 baseline = default;
 
+            var current = metadata;
+            if (baselineTick > 0 && Packer.AreEqualRef(ref baseline, ref current))
+            {
+                Packer<bool>.Write(packer, false);
+                return false;
+            }
+
             Packer<bool>.Write(packer, true);
             DeltaPacker<PredictedIdentityState>.Write(packer, baseline, metadata);
             return true;
         }
+
+        internal bool TryGetPredictionMetadataBaseline(
+            ulong baselineTick,
+            out PredictedIdentityState metadata)
+        {
+            return metadataVerified.ReadOrPrevious(baselineTick, out metadata);
+        }
+
+        internal bool HasPredictionMetadataBaseline(ulong baselineTick)
+            => metadataVerified.ReadOrPrevious(baselineTick, out _);
 
         internal void ReadPredictionMetadata(BitPacker packer, ulong baselineTick, ulong serverTick, ref PredictedIdentityState metadata)
         {
@@ -520,11 +566,10 @@ namespace PurrNet.Prediction
                 baseline = default;
 
             if (changed)
-            {
                 DeltaPacker<PredictedIdentityState>.Read(packer, baseline, ref metadata);
-                StoreVerifiedMetadata(serverTick, in metadata);
-            }
             else metadata = baseline;
+
+            StoreVerifiedMetadata(serverTick, in metadata);
         }
 
         internal void TriggerOnRemovedFromPool()
@@ -715,6 +760,17 @@ namespace PurrNet.Prediction
         internal abstract void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick);
 
         internal abstract void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick);
+
+        internal virtual bool HasUnchangedStateBaseline(ulong baselineTick) => false;
+
+        internal virtual void ReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            throw new InvalidOperationException(
+                $"{GetType().Name} does not support unchanged-state carry-forward.");
+        }
 
         internal abstract void QueueInput(BitPacker packer, PlayerID sender);
 

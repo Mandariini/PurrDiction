@@ -1,18 +1,8 @@
+using System;
 using System.Collections.Generic;
-using UnityEngine;
 
 namespace PurrNet.Prediction
 {
-    /// <summary>
-    /// Selects which predicted hierarchy roots are replicated to a player.
-    /// The prediction manager always includes its built-in systems and identities owned by
-    /// the receiver. Returning true includes the complete spawned root, including all pieces.
-    /// </summary>
-    public interface IPredictionVisibilityProvider
-    {
-        bool CanSee(PlayerID player, PredictedObjectID rootId, GameObject root);
-    }
-
     internal readonly struct PredictionVisibilityTransition
     {
         public readonly ulong tick;
@@ -26,58 +16,103 @@ namespace PurrNet.Prediction
     }
 
     /// <summary>
-    /// Per-receiver visibility timeline. It stores transitions rather than a complete object
-    /// set for every frame, while still allowing any acknowledged frame to be used as a
-    /// replication baseline.
+    /// Per-receiver visibility timeline. Current state is stored as exceptions to the configured
+    /// default, and history is stored only for roots whose visibility actually changed.
     /// </summary>
     internal sealed class PlayerVisibilityTimeline
     {
-        readonly HashSet<PredictedObjectID> _current = new ();
+        readonly bool _defaultVisible;
+        readonly HashSet<PredictedObjectID> _currentExceptions = new ();
         readonly Dictionary<PredictedObjectID, List<PredictionVisibilityTransition>> _transitions = new ();
+        readonly HashSet<PredictedObjectID> _pruneCandidates = new ();
         readonly List<PredictedObjectID> _removedScratch = new ();
 
-        public IReadOnlyCollection<PredictedObjectID> current => _current;
+        ulong _lastPrunedTick;
+
+        internal bool defaultVisible => _defaultVisible;
+        internal bool isPassThrough =>
+            _defaultVisible &&
+            _currentExceptions.Count == 0 &&
+            _transitions.Count == 0;
+        internal int currentExceptionCount => _currentExceptions.Count;
         internal int trackedRootCount => _transitions.Count;
+        internal int pruneCandidateCount => _pruneCandidates.Count;
         public ulong latestRecordedTick { get; private set; }
         public ulong latestTransitionTick { get; private set; }
         public uint revision { get; private set; }
 
-        public bool IsVisible(PredictedObjectID rootId)
+        public PlayerVisibilityTimeline(bool defaultVisible = true)
         {
-            return _current.Contains(rootId);
+            _defaultVisible = defaultVisible;
         }
 
-        public void Record(ulong tick, HashSet<PredictedObjectID> desired)
+        public bool IsVisible(PredictedObjectID rootId)
         {
-            _removedScratch.Clear();
+            return _defaultVisible != _currentExceptions.Contains(rootId);
+        }
 
-            foreach (var rootId in _current)
+        internal void CollectCurrentExceptions(HashSet<PredictedObjectID> result)
+        {
+            foreach (var rootId in _currentExceptions)
+                result.Add(rootId);
+        }
+
+        internal void CollectHiddenRootsAt(ulong tick, HashSet<PredictedObjectID> result)
+        {
+            if (!_defaultVisible)
+                return;
+
+            foreach (var rootId in _currentExceptions)
             {
-                if (!desired.Contains(rootId))
-                    _removedScratch.Add(rootId);
+                if (!WasVisibleAt(rootId, tick))
+                    result.Add(rootId);
             }
 
-            for (var i = 0; i < _removedScratch.Count; i++)
+            foreach (var rootId in _transitions.Keys)
             {
-                var rootId = _removedScratch[i];
-                _current.Remove(rootId);
-                AddTransition(rootId, tick, false);
+                if (!WasVisibleAt(rootId, tick))
+                    result.Add(rootId);
+            }
+        }
+
+        /// <summary>
+        /// Records one effective root transition. Calls must be made in nondecreasing tick order.
+        /// Returns false when the requested state is already current or cancels an earlier change
+        /// from the same tick.
+        /// </summary>
+        public bool SetVisible(
+            ulong tick,
+            PredictedObjectID rootId,
+            bool visible)
+        {
+            if (tick < latestRecordedTick)
+            {
+                throw new InvalidOperationException(
+                    $"Visibility tick {tick} precedes the latest recorded tick " +
+                    $"{latestRecordedTick}.");
             }
 
-            foreach (var rootId in desired)
-            {
-                if (_current.Add(rootId))
-                    AddTransition(rootId, tick, true);
-            }
+            latestRecordedTick = tick;
+            if (IsVisible(rootId) == visible)
+                return false;
 
-            if (tick > latestRecordedTick)
-                latestRecordedTick = tick;
+            if (visible == _defaultVisible)
+                _currentExceptions.Remove(rootId);
+            else
+                _currentExceptions.Add(rootId);
+
+            bool hasNetTransition = AddTransition(rootId, tick, visible);
+            revision++;
+            return hasNetTransition;
         }
 
         public bool WasVisibleAt(PredictedObjectID rootId, ulong tick)
         {
-            if (!_transitions.TryGetValue(rootId, out var transitions) || transitions.Count == 0)
-                return false;
+            if (!_transitions.TryGetValue(rootId, out var transitions) ||
+                transitions.Count == 0)
+            {
+                return _defaultVisible;
+            }
 
             int low = 0;
             int high = transitions.Count - 1;
@@ -97,7 +132,7 @@ namespace PurrNet.Prediction
                 }
             }
 
-            return found >= 0 && transitions[found].visible;
+            return found >= 0 ? transitions[found].visible : _defaultVisible;
         }
 
         /// <summary>
@@ -105,12 +140,18 @@ namespace PurrNet.Prediction
         /// the supplied baseline. A re-entry therefore remains a full-state entry until a
         /// frame from the new visibility generation is acknowledged.
         /// </summary>
-        public bool HasContinuousVisibilityFrom(PredictedObjectID rootId, ulong baselineTick)
+        public bool HasContinuousVisibilityFrom(
+            PredictedObjectID rootId,
+            ulong baselineTick)
         {
-            if (!_current.Contains(rootId) ||
-                !_transitions.TryGetValue(rootId, out var transitions) ||
-                transitions.Count == 0)
+            if (!IsVisible(rootId))
                 return false;
+
+            if (!_transitions.TryGetValue(rootId, out var transitions) ||
+                transitions.Count == 0)
+            {
+                return _defaultVisible;
+            }
 
             var latest = transitions[^1];
             return latest.visible && latest.tick <= baselineTick;
@@ -122,14 +163,30 @@ namespace PurrNet.Prediction
         }
 
         /// <summary>
-        /// Acknowledgements only move forward. Collapse older transitions to one anchor so
-        /// long-lived sessions retain memory proportional to visibility churn after the
-        /// latest usable baseline.
+        /// Prunes only histories that received a transition since their last stable anchor.
+        /// Long-lived non-default exceptions therefore add no per-tick pruning work.
         /// </summary>
         public void PruneThrough(ulong acknowledgedTick)
         {
-            foreach (var transitions in _transitions.Values)
+            if (acknowledgedTick <= _lastPrunedTick ||
+                _pruneCandidates.Count == 0)
             {
+                return;
+            }
+
+            _lastPrunedTick = acknowledgedTick;
+            _removedScratch.Clear();
+            bool removedLatestTransition = false;
+
+            foreach (var rootId in _pruneCandidates)
+            {
+                if (!_transitions.TryGetValue(rootId, out var transitions) ||
+                    transitions.Count == 0)
+                {
+                    _removedScratch.Add(rootId);
+                    continue;
+                }
+
                 int anchor = -1;
                 for (var i = 0; i < transitions.Count; i++)
                 {
@@ -138,41 +195,55 @@ namespace PurrNet.Prediction
                     anchor = i;
                 }
 
-                if (anchor > 0)
-                    transitions.RemoveRange(0, anchor);
-            }
+                if (anchor < 0)
+                    continue;
 
-            if (_current.Count == _transitions.Count)
-                return;
-
-            _removedScratch.Clear();
-            foreach (var pair in _transitions)
-            {
-                var transitions = pair.Value;
-                if (transitions.Count == 1 &&
-                    !transitions[0].visible &&
-                    transitions[0].tick <= acknowledgedTick &&
-                    !_current.Contains(pair.Key))
+                if (transitions[anchor].visible == _defaultVisible)
                 {
-                    _removedScratch.Add(pair.Key);
+                    if (latestTransitionTick <= acknowledgedTick)
+                        removedLatestTransition = true;
+                    transitions.RemoveRange(0, anchor + 1);
+                }
+                else if (anchor > 0)
+                {
+                    transitions.RemoveRange(0, anchor);
+                }
+
+                if (transitions.Count == 0)
+                {
+                    _transitions.Remove(rootId);
+                    _removedScratch.Add(rootId);
+                }
+                else if (transitions.Count == 1 &&
+                         transitions[0].tick <= acknowledgedTick)
+                {
+                    _removedScratch.Add(rootId);
                 }
             }
 
             for (var i = 0; i < _removedScratch.Count; i++)
-                _transitions.Remove(_removedScratch[i]);
+                _pruneCandidates.Remove(_removedScratch[i]);
+
+            if (removedLatestTransition)
+                RecalculateLatestTransitionTick();
         }
 
         public void Clear()
         {
-            _current.Clear();
+            _currentExceptions.Clear();
             _transitions.Clear();
+            _pruneCandidates.Clear();
             _removedScratch.Clear();
+            _lastPrunedTick = 0;
             latestRecordedTick = 0;
             latestTransitionTick = 0;
             revision = 0;
         }
 
-        void AddTransition(PredictedObjectID rootId, ulong tick, bool visible)
+        bool AddTransition(
+            PredictedObjectID rootId,
+            ulong tick,
+            bool visible)
         {
             if (!_transitions.TryGetValue(rootId, out var transitions))
             {
@@ -182,6 +253,27 @@ namespace PurrNet.Prediction
 
             if (transitions.Count > 0 && transitions[^1].tick == tick)
             {
+                bool stateBeforeTick = transitions.Count > 1
+                    ? transitions[^2].visible
+                    : _defaultVisible;
+
+                if (stateBeforeTick == visible)
+                {
+                    transitions.RemoveAt(transitions.Count - 1);
+                    if (transitions.Count == 0)
+                    {
+                        _transitions.Remove(rootId);
+                        _pruneCandidates.Remove(rootId);
+                    }
+                    else if (transitions[^1].tick <= _lastPrunedTick)
+                    {
+                        _pruneCandidates.Remove(rootId);
+                    }
+
+                    RecalculateLatestTransitionTick();
+                    return false;
+                }
+
                 transitions[^1] = new PredictionVisibilityTransition(tick, visible);
             }
             else
@@ -189,8 +281,22 @@ namespace PurrNet.Prediction
                 transitions.Add(new PredictionVisibilityTransition(tick, visible));
             }
 
-            latestTransitionTick = tick;
-            revision++;
+            _pruneCandidates.Add(rootId);
+            if (tick > latestTransitionTick)
+                latestTransitionTick = tick;
+            return true;
+        }
+
+        void RecalculateLatestTransitionTick()
+        {
+            ulong latest = 0;
+            foreach (var transitions in _transitions.Values)
+            {
+                if (transitions.Count > 0 && transitions[^1].tick > latest)
+                    latest = transitions[^1].tick;
+            }
+
+            latestTransitionTick = latest;
         }
     }
 }

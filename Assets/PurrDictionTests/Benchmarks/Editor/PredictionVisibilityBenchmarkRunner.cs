@@ -23,6 +23,9 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         const int WarmupIterations = 4;
         const string DefaultOutputDirectory = "Temp/PurrDictionVisibilityBenchmarks";
 
+        static bool _allocationCounterSupported;
+        static byte[] _allocationProbe;
+
         [MenuItem("Tools/PurrDiction/Analysis/Run Visibility Benchmarks", false, -85)]
         public static void RunFromMenu()
         {
@@ -61,6 +64,14 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 outputDirectory = Path.GetFullPath(outputDirectory)
             };
 
+            _allocationCounterSupported = CalibrateAllocationCounter();
+            if (!_allocationCounterSupported)
+            {
+                report.warnings.Add(
+                    "This Unity runtime does not expose a working per-thread allocation " +
+                    "counter; B/op is reported as n/a.");
+            }
+
             report.jsonPath = Path.GetFullPath(
                 Path.Combine(outputDirectory, "prediction-visibility-benchmarks.json"));
             report.markdownPath = Path.GetFullPath(
@@ -89,40 +100,172 @@ namespace PurrNet.Prediction.Benchmarks.Editor
 
         static void AddTimelineBenchmarks(VisibilityBenchmarkReport report)
         {
-            AddTimelineBenchmark(report, 4096, 25, 0, 256);
-            AddTimelineBenchmark(report, 4096, 25, 10, 128);
+            AddTimelineBenchmark(report, 4096, 1, toggle: false, 256);
+            AddTimelineBenchmark(report, 4096, 1, toggle: true, 128);
+            AddTimelineBenchmark(report, 4096, 10, toggle: true, 64);
+            AddTimelinePruneBenchmark(
+                report, 4096, 25, restoreDefault: false, prePruneStable: false);
+            AddTimelinePruneBenchmark(
+                report, 4096, 25, restoreDefault: false, prePruneStable: true);
+            AddTimelinePruneBenchmark(
+                report, 4096, 25, restoreDefault: true, prePruneStable: false);
+            AddManagerEventBenchmarks(report);
         }
 
         static void AddTimelineBenchmark(
             VisibilityBenchmarkReport report,
             int roots,
-            int visiblePercent,
-            int churnPercent,
+            int mutationPercent,
+            bool toggle,
             int iterations)
         {
-            string mode = churnPercent == 0 ? "Stable" : $"Churn{churnPercent}Percent";
+            int affectedRoots = Math.Max(1, roots * mutationPercent / 100);
             var specification = new BenchmarkSpecification
             {
                 category = "Timeline",
-                name = $"RecordAndPrune.{mode}",
+                name = toggle
+                    ? $"SetVisibleAndPrune.Toggle{mutationPercent}Percent"
+                    : $"SetVisible.Idempotent{mutationPercent}Percent",
                 roots = roots,
-                visiblePercent = visiblePercent,
-                churnPercent = churnPercent,
+                visiblePercent = toggle ? 100 - mutationPercent : 100,
+                churnPercent = toggle ? mutationPercent : 0,
                 iterations = iterations,
-                sourceRecords = roots
+                sourceRecords = affectedRoots,
+                note = "Touches only roots supplied by visibility events."
             };
 
             report.operations.Add(Measure(
                 specification,
-                () => TimelineContext.Create(roots, visiblePercent, churnPercent),
+                () => TimelineContext.Create(roots, affectedRoots, toggle),
                 (context, _) => context.Step(),
-                context => new BenchmarkObservation(context.timeline.current.Count, -1),
+                context => new BenchmarkObservation(
+                    context.timeline.currentExceptionCount,
+                    -1),
+                context => context.Dispose()));
+        }
+
+        static void AddTimelinePruneBenchmark(
+            VisibilityBenchmarkReport report,
+            int roots,
+            int hiddenPercent,
+            bool restoreDefault,
+            bool prePruneStable)
+        {
+            int affectedRoots = roots * hiddenPercent / 100;
+            var specification = new BenchmarkSpecification
+            {
+                category = "Timeline",
+                name = restoreDefault
+                    ? "PruneThrough.DropRestoredDefaults"
+                    : prePruneStable
+                        ? "PruneThrough.StableHiddenExceptions"
+                        : "PruneThrough.AnchorHiddenExceptions",
+                roots = roots,
+                visiblePercent = 100 - hiddenPercent,
+                iterations = prePruneStable ? 256 : 1,
+                sourceRecords = prePruneStable ? 0 : affectedRoots,
+                note = prePruneStable
+                    ? "Measures advancing ACKs after hidden exceptions reached a stable anchor."
+                    : null
+            };
+
+            report.operations.Add(Measure(
+                specification,
+                () => TimelinePruneContext.Create(
+                    affectedRoots,
+                    restoreDefault,
+                    prePruneStable),
+                (context, _) => context.Prune(),
+                context => new BenchmarkObservation(
+                    context.timeline.trackedRootCount,
+                    -1),
+                context => context.Dispose()));
+        }
+
+        static void AddManagerEventBenchmarks(VisibilityBenchmarkReport report)
+        {
+            const int roots = 4096;
+            const int affectedRoots = 40;
+            const int iterations = 128;
+
+            AddManagerEventBenchmark(
+                report,
+                "HideFrom.Batch1Percent",
+                ManagerVisibilityEventOperation.HideFrom,
+                roots,
+                affectedRoots,
+                iterations,
+                visiblePercent: 100,
+                "Times only event submission; frame-boundary commits run in the untimed reset.");
+            AddManagerEventBenchmark(
+                report,
+                "ShowTo.Batch1Percent",
+                ManagerVisibilityEventOperation.ShowTo,
+                roots,
+                affectedRoots,
+                iterations,
+                visiblePercent: 99,
+                "Starts with the affected roots hidden and times only event submission.");
+            AddManagerEventBenchmark(
+                report,
+                "AcquireVisibility.Batch1Percent",
+                ManagerVisibilityEventOperation.Acquire,
+                roots,
+                affectedRoots,
+                iterations,
+                visiblePercent: 99,
+                "Includes visibility-handle and token bookkeeping allocations.");
+            AddManagerEventBenchmark(
+                report,
+                "VisibilityHandle.Dispose.Batch1Percent",
+                ManagerVisibilityEventOperation.Dispose,
+                roots,
+                affectedRoots,
+                iterations,
+                visiblePercent: 100,
+                "Starts with acquired hidden roots and times final-handle disposal.");
+        }
+
+        static void AddManagerEventBenchmark(
+            VisibilityBenchmarkReport report,
+            string name,
+            ManagerVisibilityEventOperation operation,
+            int roots,
+            int affectedRoots,
+            int iterations,
+            int visiblePercent,
+            string note)
+        {
+            var specification = new BenchmarkSpecification
+            {
+                category = "Manager events",
+                name = name,
+                roots = roots,
+                visiblePercent = visiblePercent,
+                churnPercent = 1,
+                iterations = iterations,
+                sourceRecords = affectedRoots,
+                note = note
+            };
+
+            report.operations.Add(MeasureWithUntimedReset(
+                specification,
+                () => ManagerVisibilityEventContext.Create(
+                    roots,
+                    affectedRoots,
+                    operation),
+                context => context.Step(),
+                context => context.ResetAfterStep(),
+                context => new BenchmarkObservation(
+                    context.lastOperationCount,
+                    -1),
                 context => context.Dispose()));
         }
 
         static void AddHierarchyBenchmarks(VisibilityBenchmarkReport report)
         {
             AddHierarchyBenchmark(report, 1024, 4, 100, 0, 64);
+            AddHierarchyPassThroughBenchmark(report, 1024, 4, 256);
             AddHierarchyBenchmark(report, 1024, 4, 25, 0, 64);
             AddHierarchyBenchmark(report, 1024, 4, 25, 1, 64);
             AddHierarchyBenchmark(report, 1024, 4, 25, 8, 64);
@@ -145,6 +288,34 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 specification,
                 () => MultiPlayerHierarchyContext.Create(1024, 4, 16),
                 (context, _) => context.ProjectAll(),
+                context => new BenchmarkObservation(context.lastOutputCount, -1),
+                context => context.Dispose()));
+        }
+
+        static void AddHierarchyPassThroughBenchmark(
+            VisibilityBenchmarkReport report,
+            int roots,
+            int piecesPerRoot,
+            int iterations)
+        {
+            var specification = new BenchmarkSpecification
+            {
+                category = "Hierarchy",
+                name = "SelectGlobal.PassThroughDefaultVisible",
+                roots = roots,
+                piecesPerRoot = piecesPerRoot,
+                visiblePercent = 100,
+                iterations = iterations,
+                sourceRecords = roots * piecesPerRoot,
+                note =
+                    "Exercises the default-visible/no-pending-delete selection branch " +
+                    "that reuses the global hierarchy instead of building a projection."
+            };
+
+            report.operations.Add(Measure(
+                specification,
+                () => HierarchyPassThroughContext.Create(roots, piecesPerRoot),
+                (context, _) => context.Select(),
                 context => new BenchmarkObservation(context.lastOutputCount, -1),
                 context => context.Dispose()));
         }
@@ -237,6 +408,42 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         {
             AddAddressedRecordSet(report, 64, 13, 256);
             AddAddressedRecordSet(report, 1024, 256, 16);
+            AddAddressedStateOmissionBenchmark(report, 4096, 256, 0, 128);
+            AddAddressedStateOmissionBenchmark(report, 4096, 256, 1, 64);
+            AddAddressedStateOmissionBenchmark(report, 4096, 256, 100, 8);
+        }
+
+        static void AddAddressedStateOmissionBenchmark(
+            VisibilityBenchmarkReport report,
+            int candidateCount,
+            int payloadBits,
+            int changedPercent,
+            int iterations)
+        {
+            var specification = new BenchmarkSpecification
+            {
+                category = "Addressed state omission",
+                name = $"Write.{changedPercent}PercentChanged",
+                addressedRecords = candidateCount,
+                payloadBits = payloadBits,
+                iterations = iterations,
+                sourceRecords = candidateCount,
+                note =
+                    "Scans every candidate, buffers only changed addressed records, " +
+                    "then writes the reduced count and copies the buffered bits."
+            };
+
+            report.operations.Add(Measure(
+                specification,
+                () => AddressedStateOmissionContext.Create(
+                    candidateCount,
+                    payloadBits,
+                    changedPercent),
+                (context, _) => context.WriteBatch(),
+                context => new BenchmarkObservation(
+                    context.lastOutputCount,
+                    context.serializedBits),
+                context => context.Dispose()));
         }
 
         static void AddAddressedRecordSet(
@@ -423,22 +630,27 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     GC.WaitForPendingFinalizers();
                     GC.Collect();
 
-                    long allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+                    long allocatedBefore = _allocationCounterSupported
+                        ? GC.GetAllocatedBytesForCurrentThread()
+                        : 0;
                     long started = Stopwatch.GetTimestamp();
 
                     for (var i = 0; i < specification.iterations; i++)
                         body(context, i);
 
                     long elapsed = Stopwatch.GetTimestamp() - started;
-                    long allocatedAfter = GC.GetAllocatedBytesForCurrentThread();
+                    long allocatedAfter = _allocationCounterSupported
+                        ? GC.GetAllocatedBytesForCurrentThread()
+                        : 0;
 
                     timings[sample] =
                         elapsed * 1_000_000_000.0 /
                         Stopwatch.Frequency /
                         specification.iterations;
-                    allocations[sample] =
-                        (allocatedAfter - allocatedBefore) /
-                        (double)specification.iterations;
+                    allocations[sample] = _allocationCounterSupported
+                        ? (allocatedAfter - allocatedBefore) /
+                          (double)specification.iterations
+                        : -1;
                     observation = observe(context);
                 }
                 finally
@@ -484,7 +696,131 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 $"PurrDiction visibility benchmark: finished " +
                 $"{result.category}.{result.name} = " +
                 $"{FormatNumber(result.medianNanoseconds)} ns/op, " +
-                $"{FormatNumber(result.medianAllocatedBytes)} B/op.");
+                $"{FormatAllocatedBytes(result.medianAllocatedBytes)} B/op.");
+            return result;
+        }
+
+        static VisibilityOperationResult MeasureWithUntimedReset<TContext>(
+            BenchmarkSpecification specification,
+            Func<TContext> setup,
+            Action<TContext> body,
+            Action<TContext> reset,
+            Func<TContext, BenchmarkObservation> observe,
+            Action<TContext> cleanup)
+            where TContext : class
+        {
+            Debug.Log(
+                $"PurrDiction visibility benchmark: starting " +
+                $"{specification.category}.{specification.name}.");
+
+            TContext warmupContext = null;
+            try
+            {
+                warmupContext = setup();
+                int warmups = Math.Min(specification.iterations, WarmupIterations);
+                for (var i = 0; i < warmups; i++)
+                {
+                    body(warmupContext);
+                    reset(warmupContext);
+                }
+
+                observe(warmupContext);
+            }
+            finally
+            {
+                if (warmupContext != null)
+                    cleanup(warmupContext);
+            }
+
+            var timings = new double[SampleCount];
+            var allocations = new double[SampleCount];
+            var observation = default(BenchmarkObservation);
+
+            for (var sample = 0; sample < SampleCount; sample++)
+            {
+                TContext context = null;
+                try
+                {
+                    context = setup();
+
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
+                    GC.Collect();
+
+                    long elapsed = 0;
+                    long allocated = 0;
+                    for (var i = 0; i < specification.iterations; i++)
+                    {
+                        long allocatedBefore = _allocationCounterSupported
+                            ? GC.GetAllocatedBytesForCurrentThread()
+                            : 0;
+                        long started = Stopwatch.GetTimestamp();
+
+                        body(context);
+
+                        elapsed += Stopwatch.GetTimestamp() - started;
+                        if (_allocationCounterSupported)
+                        {
+                            allocated +=
+                                GC.GetAllocatedBytesForCurrentThread() -
+                                allocatedBefore;
+                        }
+                        reset(context);
+                    }
+
+                    timings[sample] =
+                        elapsed * 1_000_000_000.0 /
+                        Stopwatch.Frequency /
+                        specification.iterations;
+                    allocations[sample] = _allocationCounterSupported
+                        ? allocated / (double)specification.iterations
+                        : -1;
+                    observation = observe(context);
+                }
+                finally
+                {
+                    if (context != null)
+                        cleanup(context);
+                }
+            }
+
+            Array.Sort(timings);
+            Array.Sort(allocations);
+
+            double medianNanoseconds = timings[SampleCount / 2];
+            var result = new VisibilityOperationResult
+            {
+                category = specification.category,
+                name = specification.name,
+                roots = specification.roots,
+                piecesPerRoot = specification.piecesPerRoot,
+                players = specification.players,
+                visiblePercent = specification.visiblePercent,
+                churnPercent = specification.churnPercent,
+                deletes = specification.deletes,
+                addressedRecords = specification.addressedRecords,
+                payloadBits = specification.payloadBits,
+                physicsEvents = specification.physicsEvents,
+                sourceRecords = specification.sourceRecords,
+                iterations = specification.iterations,
+                samples = SampleCount,
+                minNanoseconds = timings[0],
+                medianNanoseconds = medianNanoseconds,
+                maxNanoseconds = timings[SampleCount - 1],
+                medianAllocatedBytes = allocations[SampleCount / 2],
+                nanosecondsPerSourceRecord = specification.sourceRecords > 0
+                    ? medianNanoseconds / specification.sourceRecords
+                    : -1,
+                outputCount = observation.outputCount,
+                serializedBits = observation.serializedBits,
+                note = specification.note
+            };
+
+            Debug.Log(
+                $"PurrDiction visibility benchmark: finished " +
+                $"{result.category}.{result.name} = " +
+                $"{FormatNumber(result.medianNanoseconds)} ns/op, " +
+                $"{FormatAllocatedBytes(result.medianAllocatedBytes)} B/op.");
             return result;
         }
 
@@ -563,6 +899,21 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             return result;
         }
 
+        static void ApplyVisibilityExceptions(
+            PlayerVisibilityTimeline timeline,
+            int roots,
+            int piecesPerRoot,
+            HashSet<PredictedObjectID> visible,
+            ulong tick)
+        {
+            for (var rootIndex = 0; rootIndex < roots; rootIndex++)
+            {
+                var rootId = new PredictedObjectID(
+                    checked((uint)(2 + rootIndex * piecesPerRoot)));
+                if (!visible.Contains(rootId))
+                    timeline.SetVisible(tick, rootId, false);
+            }
+        }
         static void FillPayload(BitPacker payload, int payloadBits)
         {
             payload.ResetPositionAndMode(false);
@@ -624,7 +975,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     .Append("–")
                     .Append(FormatNumber(operation.maxNanoseconds))
                     .Append(" | ")
-                    .Append(FormatNumber(operation.medianAllocatedBytes))
+                    .Append(FormatAllocatedBytes(operation.medianAllocatedBytes))
                     .Append(" | ")
                     .Append(operation.nanosecondsPerSourceRecord < 0
                         ? "n/a"
@@ -707,6 +1058,21 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             return value.ToString("0.##", CultureInfo.InvariantCulture);
         }
 
+        static string FormatAllocatedBytes(double value)
+        {
+            return value < 0 ? "n/a" : FormatNumber(value);
+        }
+
+        static bool CalibrateAllocationCounter()
+        {
+            long before = GC.GetAllocatedBytesForCurrentThread();
+            _allocationProbe = new byte[4096];
+            long after = GC.GetAllocatedBytesForCurrentThread();
+            GC.KeepAlive(_allocationProbe);
+            _allocationProbe = null;
+            return after > before;
+        }
+
         static string GetArgument(string name)
         {
             string[] arguments = Environment.GetCommandLineArgs();
@@ -757,57 +1123,374 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         sealed class TimelineContext : IDisposable
         {
             public readonly PlayerVisibilityTimeline timeline = new();
-            readonly HashSet<PredictedObjectID> _desiredA;
-            readonly HashSet<PredictedObjectID> _desiredB;
-            readonly bool _churn;
-            ulong _tick = 1;
+            readonly PredictedObjectID[] _affected;
+            readonly bool _toggle;
+            bool _visible = true;
+            ulong _tick;
 
-            TimelineContext(
-                HashSet<PredictedObjectID> desiredA,
-                HashSet<PredictedObjectID> desiredB,
-                bool churn)
+            TimelineContext(PredictedObjectID[] affected, bool toggle)
             {
-                _desiredA = desiredA;
-                _desiredB = desiredB;
-                _churn = churn;
-                timeline.Record(_tick, _desiredA);
+                _affected = affected;
+                _toggle = toggle;
             }
 
             public static TimelineContext Create(
                 int roots,
-                int visiblePercent,
-                int churnPercent)
+                int affectedRoots,
+                bool toggle)
             {
-                var desiredA = CreateVisibleRoots(
-                    roots,
-                    piecesPerRoot: 1,
-                    visiblePercent);
-                var desiredB = new HashSet<PredictedObjectID>(desiredA);
+                var affected = new PredictedObjectID[affectedRoots];
+                for (var i = 0; i < affected.Length; i++)
+                {
+                    affected[i] = new PredictedObjectID(
+                        checked((uint)(2 + i % roots)));
+                }
 
-                int churnCount = roots * churnPercent / 100;
-                var ordered = new List<PredictedObjectID>(desiredB);
-                for (var i = 0; i < churnCount && i < ordered.Count; i++)
-                    desiredB.Remove(ordered[i]);
-
-                return new TimelineContext(
-                    desiredA,
-                    desiredB,
-                    churnPercent > 0);
+                return new TimelineContext(affected, toggle);
             }
 
             public void Step()
             {
                 _tick++;
-                var desired = _churn && (_tick & 1UL) == 0
-                    ? _desiredB
-                    : _desiredA;
-                timeline.Record(_tick, desired);
-                timeline.PruneThrough(_tick - 2);
+                if (_toggle)
+                    _visible = !_visible;
+
+                for (var i = 0; i < _affected.Length; i++)
+                    timeline.SetVisible(_tick, _affected[i], _visible);
+
+                if (_tick > 2)
+                    timeline.PruneThrough(_tick - 2);
             }
 
             public void Dispose()
             {
                 timeline.Clear();
+            }
+        }
+
+        sealed class TimelinePruneContext : IDisposable
+        {
+            public readonly PlayerVisibilityTimeline timeline = new();
+            readonly int _expectedTrackedRoots;
+            readonly bool _advanceAcknowledgement;
+            ulong _acknowledgedTick;
+
+            TimelinePruneContext(
+                ulong acknowledgedTick,
+                int expectedTrackedRoots,
+                bool advanceAcknowledgement)
+            {
+                _acknowledgedTick = acknowledgedTick;
+                _expectedTrackedRoots = expectedTrackedRoots;
+                _advanceAcknowledgement = advanceAcknowledgement;
+            }
+
+            public static TimelinePruneContext Create(
+                int affectedRoots,
+                bool restoreDefault,
+                bool prePruneStable)
+            {
+                var context = new TimelinePruneContext(
+                    restoreDefault ? 2UL : 1UL,
+                    restoreDefault ? 0 : affectedRoots,
+                    prePruneStable);
+
+                for (var i = 0; i < affectedRoots; i++)
+                {
+                    var root = new PredictedObjectID(checked((uint)(2 + i)));
+                    context.timeline.SetVisible(1, root, false);
+                }
+
+                if (restoreDefault)
+                {
+                    for (var i = 0; i < affectedRoots; i++)
+                    {
+                        var root = new PredictedObjectID(checked((uint)(2 + i)));
+                        context.timeline.SetVisible(2, root, true);
+                    }
+                }
+                else if (prePruneStable)
+                {
+                    context.timeline.PruneThrough(1);
+                }
+
+                return context;
+            }
+
+            public void Prune()
+            {
+                if (_advanceAcknowledgement)
+                    _acknowledgedTick++;
+
+                timeline.PruneThrough(_acknowledgedTick);
+                if (timeline.trackedRootCount != _expectedTrackedRoots)
+                {
+                    throw new InvalidOperationException(
+                        $"Unexpected tracked visibility roots: " +
+                        $"{timeline.trackedRootCount}/{_expectedTrackedRoots}.");
+                }
+            }
+
+            public void Dispose()
+            {
+                timeline.Clear();
+            }
+        }
+        enum ManagerVisibilityEventOperation
+        {
+            HideFrom,
+            ShowTo,
+            Acquire,
+            Dispose
+        }
+
+        sealed class ManagerVisibilityEventContext : IDisposable
+        {
+            readonly GameObject _owner;
+            readonly PredictionManager _manager;
+            readonly PlayerID _player;
+            readonly PredictedObjectID[] _affected;
+            readonly IDisposable[] _handles;
+            readonly ManagerVisibilityEventOperation _operation;
+
+            PlayerVisibilityTimeline _timeline;
+            ulong _tick;
+
+            public int lastOperationCount { get; private set; }
+
+            ManagerVisibilityEventContext(
+                GameObject owner,
+                PredictionManager manager,
+                PlayerID player,
+                PredictedObjectID[] affected,
+                ManagerVisibilityEventOperation operation)
+            {
+                _owner = owner;
+                _manager = manager;
+                _player = player;
+                _affected = affected;
+                _handles = new IDisposable[affected.Length];
+                _operation = operation;
+            }
+
+            public static ManagerVisibilityEventContext Create(
+                int roots,
+                int affectedRoots,
+                ManagerVisibilityEventOperation operation)
+            {
+                if (affectedRoots <= 0 || affectedRoots > roots)
+                    throw new ArgumentOutOfRangeException(nameof(affectedRoots));
+
+                var owner = new GameObject("Prediction visibility event benchmark");
+                var manager = owner.AddComponent<PredictionManager>();
+                var affected = new PredictedObjectID[affectedRoots];
+                for (var i = 0; i < affected.Length; i++)
+                {
+                    affected[i] = new PredictedObjectID(
+                        checked((uint)(2 + i * roots / affectedRoots)));
+                }
+
+                var context = new ManagerVisibilityEventContext(
+                    owner,
+                    manager,
+                    new PlayerID(new PackedULong(50_001), false),
+                    affected,
+                    operation);
+                context.Initialize();
+                return context;
+            }
+
+            void Initialize()
+            {
+                _timeline = Prepare();
+                switch (_operation)
+                {
+                    case ManagerVisibilityEventOperation.HideFrom:
+                        ValidateVisibility(expectedVisible: true);
+                        break;
+                    case ManagerVisibilityEventOperation.ShowTo:
+                    case ManagerVisibilityEventOperation.Acquire:
+                        HideAll();
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: false);
+                        break;
+                    case ManagerVisibilityEventOperation.Dispose:
+                        HideAll();
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: false);
+                        AcquireAll();
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: true);
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException();
+                }
+            }
+
+            public void Step()
+            {
+                int completed;
+                switch (_operation)
+                {
+                    case ManagerVisibilityEventOperation.HideFrom:
+                        completed = HideAll();
+                        break;
+                    case ManagerVisibilityEventOperation.ShowTo:
+                        completed = ShowAll();
+                        break;
+                    case ManagerVisibilityEventOperation.Acquire:
+                        completed = AcquireAll();
+                        break;
+                    case ManagerVisibilityEventOperation.Dispose:
+                        completed = DisposeAllHandles();
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException();
+                }
+
+                if (completed != _affected.Length)
+                {
+                    throw new InvalidOperationException(
+                        $"Unexpected visibility event count: " +
+                        $"{completed}/{_affected.Length}.");
+                }
+
+                lastOperationCount = completed;
+            }
+
+            public void ResetAfterStep()
+            {
+                switch (_operation)
+                {
+                    case ManagerVisibilityEventOperation.HideFrom:
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: false);
+                        RequireAll(ShowAll(), "show");
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: true);
+                        break;
+                    case ManagerVisibilityEventOperation.ShowTo:
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: true);
+                        RequireAll(HideAll(), "hide");
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: false);
+                        break;
+                    case ManagerVisibilityEventOperation.Acquire:
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: true);
+                        RequireAll(DisposeAllHandles(), "dispose");
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: false);
+                        break;
+                    case ManagerVisibilityEventOperation.Dispose:
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: false);
+                        RequireAll(AcquireAll(), "acquire");
+                        _timeline = Prepare();
+                        ValidateVisibility(expectedVisible: true);
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException();
+                }
+            }
+
+            PlayerVisibilityTimeline Prepare()
+            {
+                _tick++;
+                return _manager.PreparePlayerVisibility(
+                    _player,
+                    _tick,
+                    _tick - 1);
+            }
+
+            int HideAll()
+            {
+                int changed = 0;
+                for (var i = 0; i < _affected.Length; i++)
+                {
+                    if (_manager.HideFrom(_player, _affected[i]))
+                        changed++;
+                }
+
+                return changed;
+            }
+
+            int ShowAll()
+            {
+                int changed = 0;
+                for (var i = 0; i < _affected.Length; i++)
+                {
+                    if (_manager.ShowTo(_player, _affected[i]))
+                        changed++;
+                }
+
+                return changed;
+            }
+
+            int AcquireAll()
+            {
+                int acquired = 0;
+                for (var i = 0; i < _handles.Length; i++)
+                {
+                    if (_handles[i] != null)
+                        continue;
+
+                    _handles[i] = _manager.AcquireVisibility(
+                        _player,
+                        _affected[i]);
+                    acquired++;
+                }
+
+                return acquired;
+            }
+
+            int DisposeAllHandles()
+            {
+                int disposed = 0;
+                for (var i = 0; i < _handles.Length; i++)
+                {
+                    var handle = _handles[i];
+                    if (handle == null)
+                        continue;
+
+                    handle.Dispose();
+                    _handles[i] = null;
+                    disposed++;
+                }
+
+                return disposed;
+            }
+
+            void ValidateVisibility(bool expectedVisible)
+            {
+                for (var i = 0; i < _affected.Length; i++)
+                {
+                    bool actual = _timeline.IsVisible(_affected[i]);
+                    if (actual == expectedVisible)
+                        continue;
+
+                    throw new InvalidOperationException(
+                        $"Unexpected visibility for {_affected[i]}: " +
+                        $"{actual}/{expectedVisible}.");
+                }
+            }
+
+            void RequireAll(int actual, string operation)
+            {
+                if (actual != _affected.Length)
+                {
+                    throw new InvalidOperationException(
+                        $"Unexpected {operation} reset count: " +
+                        $"{actual}/{_affected.Length}.");
+                }
+            }
+
+            public void Dispose()
+            {
+                DisposeAllHandles();
+                _manager.RemovePlayerVisibility(_player);
+                UnityEngine.Object.DestroyImmediate(_owner);
             }
         }
 
@@ -846,7 +1529,12 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     piecesPerRoot,
                     visiblePercent);
                 var timeline = new PlayerVisibilityTimeline();
-                timeline.Record(1, visible);
+                ApplyVisibilityExceptions(
+                    timeline,
+                        roots,
+                        piecesPerRoot,
+                        visible,
+                        tick: 1);
 
                 int expectedDeletes = 0;
                 for (var i = 0; i < source.toDelete.Count; i++)
@@ -896,6 +1584,77 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             }
         }
 
+        sealed class HierarchyPassThroughContext : IDisposable
+        {
+            readonly PredictedHierarchyState _source;
+            readonly PlayerVisibilityTimeline _timeline = new();
+            readonly int _expectedOutputCount;
+            readonly bool _hasPendingDeletes;
+
+            public int lastOutputCount { get; private set; }
+
+            HierarchyPassThroughContext(
+                PredictedHierarchyState source,
+                int expectedOutputCount)
+            {
+                _source = source;
+                _expectedOutputCount = expectedOutputCount;
+            }
+
+            public static HierarchyPassThroughContext Create(
+                int roots,
+                int piecesPerRoot)
+            {
+                return new HierarchyPassThroughContext(
+                    CreateHierarchyState(roots, piecesPerRoot, deleteCount: 0),
+                    checked(roots * piecesPerRoot));
+            }
+
+            public void Select()
+            {
+                PredictedHierarchyState selected;
+                bool ownsSelection;
+                if (_timeline.isPassThrough && !_hasPendingDeletes)
+                {
+                    selected = _source;
+                    ownsSelection = false;
+                }
+                else
+                {
+                    selected = PredictedHierarchy.BuildVisibilityProjection(
+                        _source,
+                        _timeline,
+                        1);
+                    ownsSelection = true;
+                }
+
+                try
+                {
+                    int output = selected.spawnedPrefabs.Count +
+                                 selected.toDelete.Count;
+                    if (output != _expectedOutputCount)
+                    {
+                        throw new InvalidOperationException(
+                            $"Unexpected pass-through hierarchy count: " +
+                            $"{output}/{_expectedOutputCount}.");
+                    }
+
+                    lastOutputCount = output;
+                }
+                finally
+                {
+                    if (ownsSelection)
+                        selected.Dispose();
+                }
+            }
+
+            public void Dispose()
+            {
+                _timeline.Clear();
+                _source.Dispose();
+            }
+        }
+
         sealed class MultiPlayerHierarchyContext : IDisposable
         {
             readonly PredictedHierarchyState _source;
@@ -933,7 +1692,12 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                         visiblePercent: 25,
                         offset: player);
                     var timeline = new PlayerVisibilityTimeline();
-                    timeline.Record(1, visible);
+                    ApplyVisibilityExceptions(
+                    timeline,
+                        roots,
+                        piecesPerRoot,
+                        visible,
+                        tick: 1);
                     timelines[player] = timeline;
                     expected += visible.Count * piecesPerRoot;
                 }
@@ -1060,6 +1824,113 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             {
                 _source.Dispose();
                 _rootIndex.Clear();
+            }
+        }
+
+        sealed class AddressedStateOmissionContext : IDisposable
+        {
+            readonly BitPacker _destination;
+            readonly BitPacker _records;
+            readonly BitPacker _payload;
+            readonly PredictedComponentID[] _ids;
+            readonly bool[] _changed;
+            readonly int _expectedOutputCount;
+
+            public int lastOutputCount { get; private set; }
+            public int serializedBits { get; private set; }
+
+            AddressedStateOmissionContext(
+                BitPacker destination,
+                BitPacker records,
+                BitPacker payload,
+                PredictedComponentID[] ids,
+                bool[] changed,
+                int expectedOutputCount)
+            {
+                _destination = destination;
+                _records = records;
+                _payload = payload;
+                _ids = ids;
+                _changed = changed;
+                _expectedOutputCount = expectedOutputCount;
+            }
+
+            public static AddressedStateOmissionContext Create(
+                int candidateCount,
+                int payloadBits,
+                int changedPercent)
+            {
+                if (candidateCount <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(candidateCount));
+                if (changedPercent < 0 || changedPercent > 100)
+                    throw new ArgumentOutOfRangeException(nameof(changedPercent));
+
+                var ids = new PredictedComponentID[candidateCount];
+                for (var i = 0; i < ids.Length; i++)
+                {
+                    ids[i] = new PredictedComponentID(
+                        new PredictedObjectID(checked((uint)(2 + i * 17))),
+                        (uint)(i & 3));
+                }
+
+                int changedCount = candidateCount * changedPercent / 100;
+                var changed = new bool[candidateCount];
+                for (var i = 0; i < changedCount; i++)
+                    changed[i * candidateCount / changedCount] = true;
+
+                var payload = BitPackerPool.Get();
+                FillPayload(payload, payloadBits);
+                return new AddressedStateOmissionContext(
+                    BitPackerPool.Get(),
+                    BitPackerPool.Get(),
+                    payload,
+                    ids,
+                    changed,
+                    changedCount);
+            }
+
+            public void WriteBatch()
+            {
+                _records.ResetPositionAndMode(false);
+                int writtenCount = 0;
+
+                for (var i = 0; i < _ids.Length; i++)
+                {
+                    if (!_changed[i])
+                        continue;
+
+                    AddressedPredictionRecords.WriteRecord(
+                        _records,
+                        _ids[i],
+                        isFullState: false,
+                        _payload);
+                    writtenCount++;
+                }
+
+                _destination.ResetPositionAndMode(false);
+                AddressedPredictionRecords.WriteSectionCount(
+                    writtenCount,
+                    _destination);
+                _destination.WriteBitsWithoutConsumingIt(
+                    _records,
+                    _records.positionInBits);
+
+                if (writtenCount != _expectedOutputCount)
+                {
+                    throw new InvalidOperationException(
+                        $"Unexpected omitted state count: " +
+                        $"{writtenCount}/{_expectedOutputCount}.");
+                }
+
+                lastOutputCount = writtenCount;
+                serializedBits = _destination.positionInBits;
+            }
+
+            public void Dispose()
+            {
+                _payload.Dispose();
+                _records.Dispose();
+                _destination.Dispose();
             }
         }
 
@@ -1206,39 +2077,39 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         sealed class Physics3DProjectionContext : IDisposable
         {
             readonly PredictedPhysicsData _source;
-            readonly HashSet<PredictedObjectID> _visible;
+            readonly HashSet<PredictedObjectID> _hidden;
             readonly int _expected;
             public int lastOutputCount { get; private set; }
 
             Physics3DProjectionContext(
                 PredictedPhysicsData source,
-                HashSet<PredictedObjectID> visible,
+                HashSet<PredictedObjectID> hidden,
                 int expected)
             {
                 _source = source;
-                _visible = visible;
+                _hidden = hidden;
                 _expected = expected;
             }
 
+            // Projection filters by the hidden set, so anything the predicted hierarchy does not
+            // own stays visible. Model that by hiding the complement of the retained events.
             public static Physics3DProjectionContext Create(
                 int eventCount,
                 int retainedPercent)
             {
                 int retained = eventCount * retainedPercent / 100;
-                var visible = new HashSet<PredictedObjectID>();
+                var hidden = new HashSet<PredictedObjectID>();
                 var source = new PredictedPhysicsData
                 {
                     events = DisposableList<PhysicsEvent>.Create(eventCount)
                 };
 
-                for (var i = 0; i < retained; i++)
-                    visible.Add(new PredictedObjectID(checked((uint)(2 + i))));
-
                 for (var i = 0; i < eventCount; i++)
                 {
-                    var me = i < retained
-                        ? new PredictedObjectID(checked((uint)(2 + i)))
-                        : new PredictedObjectID(checked((uint)(100_000 + i)));
+                    var me = new PredictedObjectID(checked((uint)(2 + i)));
+                    if (i >= retained)
+                        hidden.Add(me);
+
                     source.events.Add(new PhysicsEvent
                     {
                         me = new PredictedComponentID(me, 0),
@@ -1248,7 +2119,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
 
                 return new Physics3DProjectionContext(
                     source,
-                    visible,
+                    hidden,
                     retained);
             }
 
@@ -1256,7 +2127,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             {
                 var projection = PredictionPhysicsVisibility.Project(
                     _source,
-                    _visible);
+                    _hidden);
                 try
                 {
                     int count = projection.events.Count;
@@ -1278,7 +2149,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             public void Dispose()
             {
                 _source.Dispose();
-                _visible.Clear();
+                _hidden.Clear();
             }
         }
 #endif
@@ -1287,39 +2158,39 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         sealed class Physics2DProjectionContext : IDisposable
         {
             readonly PredictedPhysics2DData _source;
-            readonly HashSet<PredictedObjectID> _visible;
+            readonly HashSet<PredictedObjectID> _hidden;
             readonly int _expected;
             public int lastOutputCount { get; private set; }
 
             Physics2DProjectionContext(
                 PredictedPhysics2DData source,
-                HashSet<PredictedObjectID> visible,
+                HashSet<PredictedObjectID> hidden,
                 int expected)
             {
                 _source = source;
-                _visible = visible;
+                _hidden = hidden;
                 _expected = expected;
             }
 
+            // Projection filters by the hidden set, so anything the predicted hierarchy does not
+            // own stays visible. Model that by hiding the complement of the retained events.
             public static Physics2DProjectionContext Create(
                 int eventCount,
                 int retainedPercent)
             {
                 int retained = eventCount * retainedPercent / 100;
-                var visible = new HashSet<PredictedObjectID>();
+                var hidden = new HashSet<PredictedObjectID>();
                 var source = new PredictedPhysics2DData
                 {
                     events = DisposableList<Physics2DEvent>.Create(eventCount)
                 };
 
-                for (var i = 0; i < retained; i++)
-                    visible.Add(new PredictedObjectID(checked((uint)(2 + i))));
-
                 for (var i = 0; i < eventCount; i++)
                 {
-                    var me = i < retained
-                        ? new PredictedObjectID(checked((uint)(2 + i)))
-                        : new PredictedObjectID(checked((uint)(100_000 + i)));
+                    var me = new PredictedObjectID(checked((uint)(2 + i)));
+                    if (i >= retained)
+                        hidden.Add(me);
+
                     source.events.Add(new Physics2DEvent
                     {
                         me = new PredictedComponentID(me, 0),
@@ -1329,7 +2200,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
 
                 return new Physics2DProjectionContext(
                     source,
-                    visible,
+                    hidden,
                     retained);
             }
 
@@ -1337,7 +2208,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             {
                 var projection = PredictionPhysicsVisibility.Project(
                     _source,
-                    _visible);
+                    _hidden);
                 try
                 {
                     int count = projection.events.Count;
@@ -1359,7 +2230,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             public void Dispose()
             {
                 _source.Dispose();
-                _visible.Clear();
+                _hidden.Clear();
             }
         }
 #endif

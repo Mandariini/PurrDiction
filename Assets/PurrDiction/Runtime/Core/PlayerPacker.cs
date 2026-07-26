@@ -8,6 +8,8 @@ namespace PurrNet.Prediction
         public BitPacker packer;
         public bool fullFrame;
         public ulong preparedFrameTick;
+        public ulong preparedVisibilityTick;
+        public ulong sentVisibilityTick;
         public int maxUnreliableFrameBytes;
         public ReliableFrameDeliveryState reliableFrame;
 
@@ -15,6 +17,8 @@ namespace PurrNet.Prediction
         {
             packer?.Dispose();
             preparedFrameTick = 0;
+            preparedVisibilityTick = 0;
+            sentVisibilityTick = 0;
             reliableFrame.Clear();
         }
     }

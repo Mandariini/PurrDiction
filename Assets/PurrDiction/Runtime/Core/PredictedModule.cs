@@ -24,6 +24,12 @@ namespace PurrNet.Prediction
 
     public abstract class PredictedModule
     {
+        /// <summary>
+        /// Opts this serializer into reconstructing an omitted unchanged record directly from
+        /// the acknowledged baseline. Custom serializers remain explicit records by default.
+        /// </summary>
+        protected virtual bool supportsUnchangedStateCarryForward => false;
+
         public PredictedIdentity identity { get; private set; }
         [Obsolete("Use predictionManager instead. This was a bad naming convention on me - Bobsi")]
         public PredictionManager manager => predictionManager;
@@ -107,6 +113,12 @@ namespace PurrNet.Prediction
         /// </summary>
         protected abstract void SaveState(ulong tick);
         internal bool WriteStateInternal(PlayerID receiver, BitPacker packer, ulong baselineTick) => WriteState(receiver, packer, baselineTick);
+        internal bool SupportsUnchangedStateCarryForwardInternal()
+            => supportsUnchangedStateCarryForward;
+        internal bool HasUnchangedStateBaselineInternal(ulong baselineTick)
+            => HasUnchangedStateBaseline(baselineTick);
+        internal void ReadUnchangedStateInternal(ulong tick, ulong baselineTick, ulong serverTick)
+            => ReadUnchangedState(tick, baselineTick, serverTick);
 
         /// <summary>
         /// Serializes the current state of the module as a delta against the shared baseline tick.
@@ -119,6 +131,14 @@ namespace PurrNet.Prediction
         /// Deserializes incoming network data and applies it to the module's state.
         /// </summary>
         protected abstract void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick);
+
+        protected virtual bool HasUnchangedStateBaseline(ulong baselineTick) => false;
+
+        protected virtual void ReadUnchangedState(ulong tick, ulong baselineTick, ulong serverTick)
+        {
+            throw new InvalidOperationException(
+                $"{GetType().Name} does not support unchanged-state carry-forward.");
+        }
 
         internal void WriteFirstStateInternal(ulong tick, BitPacker packer) => WriteFirstState(tick, packer);
 

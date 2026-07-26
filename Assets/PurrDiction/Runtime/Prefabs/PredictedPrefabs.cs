@@ -12,7 +12,7 @@ using UnityEditor;
 
 namespace PurrNet.Prediction
 {
-    [CreateAssetMenu(fileName = "PredictedPrefabs", menuName = "PurrNet/Purrdiction/PredictedPrefabs", order = -401)]
+    [CreateAssetMenu(fileName = "PredictedPrefabs", menuName = "PurrNet/PurrDiction/PredictedPrefabs", order = -401)]
     public class PredictedPrefabs : ScriptableObject
     {
         [FormerlySerializedAs("_autoGenerate")]

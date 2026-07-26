@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using PurrNet.Modules;
 using PurrNet.Packing;
@@ -7,6 +8,38 @@ namespace PurrNet.Prediction
 {
     public abstract class PredictedModule<TState> : PredictedModule where TState : struct, IPredictedData<TState>
     {
+        private bool? _supportsDefaultUnchangedStateCarryForward;
+
+        protected override bool supportsUnchangedStateCarryForward
+            => _supportsDefaultUnchangedStateCarryForward ??=
+                UsesDefaultStateSerializer();
+
+        private bool UsesDefaultStateSerializer()
+        {
+            var runtimeType = GetType();
+            var write = runtimeType.GetMethod(
+                nameof(WriteState),
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null,
+                new[] { typeof(PlayerID), typeof(BitPacker), typeof(ulong) },
+                null);
+            var read = runtimeType.GetMethod(
+                nameof(ReadState),
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                null,
+                new[]
+                {
+                    typeof(ulong),
+                    typeof(BitPacker),
+                    typeof(ulong),
+                    typeof(ulong)
+                },
+                null);
+
+            return write?.DeclaringType == typeof(PredictedModule<TState>) &&
+                   read?.DeclaringType == typeof(PredictedModule<TState>);
+        }
+
         /// <summary>
         /// Override when OnVerifiedStateReceived accumulates a smooth correction for this module.
         /// Modules that do not opt in snap their live state to the verified value when their parent
@@ -278,6 +311,14 @@ namespace PurrNet.Prediction
             if (!store.ReadOrPrevious(baselineTick, out var baseline))
                 baseline = default;
 
+            if (baselineTick > 0 &&
+                supportsUnchangedStateCarryForward &&
+                baseline.HasSameContents(ref fullPredictedState))
+            {
+                Packer<bool>.Write(packer, false);
+                return false;
+            }
+
             Packer<bool>.Write(packer, true);
             DeltaPacker<ModulePredictedState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
             DeltaPacker<TState>.Write(packer, baseline.state, fullPredictedState.state);
@@ -298,13 +339,53 @@ namespace PurrNet.Prediction
                 newState = default;
                 DeltaPacker<ModulePredictedState>.Read(packer, baseline.prediction, ref newState.prediction);
                 DeltaPacker<TState>.Read(packer, baseline.state, ref newState.state);
-                StoreVerified(serverTick, ref newState);
             }
             else
             {
                 newState = baseline.DeepCopy();
             }
 
+            StoreVerified(serverTick, ref newState);
+
+            if (identity.UsesSoftCorrectionTimeline())
+            {
+                if (supportsSoftCorrection && _history.ReadOrPrevious(tick, out var predictedAtTick))
+                {
+                    OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
+                }
+                else
+                {
+                    fullPredictedState.Dispose();
+                    fullPredictedState = newState.DeepCopy();
+                    ResetInterpolation();
+                }
+
+                WriteOwnedStateIfChanged(tick, ref newState);
+                return;
+            }
+
+            fullPredictedState.Dispose();
+            fullPredictedState = newState;
+            if (!LatestHistoryMatches(tick, ref fullPredictedState))
+                _history.Write(tick, fullPredictedState.DeepCopy());
+        }
+
+        protected override bool HasUnchangedStateBaseline(ulong baselineTick)
+            => verifiedHistory.ReadOrPrevious(baselineTick, out _);
+
+        protected override void ReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            if (!verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
+            {
+                throw new InvalidOperationException(
+                    $"Missing module state baseline at tick {baselineTick}.");
+            }
+
+            var newState = baseline.DeepCopy();
+            StoreVerified(serverTick, ref newState);
             if (identity.UsesSoftCorrectionTimeline())
             {
                 if (supportsSoftCorrection && _history.ReadOrPrevious(tick, out var predictedAtTick))

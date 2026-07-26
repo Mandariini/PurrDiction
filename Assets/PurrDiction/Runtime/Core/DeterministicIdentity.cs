@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using PurrNet.Logging;
 using PurrNet.Modules;
 using PurrNet.Packing;
@@ -8,6 +8,7 @@ namespace PurrNet.Prediction
 {
     public abstract class DeterministicIdentity<STATE> : PredictedIdentity where STATE : struct, IPredictedData<STATE>
     {
+        protected override bool supportsUnchangedStateCarryForward => true;
         public override bool isDeterministic => true;
 
         protected virtual void Simulate(ref STATE state, sfloat delta) { }
@@ -43,6 +44,35 @@ namespace PurrNet.Prediction
                 _pendingValidationState = read;
                 _hasPendingValidation = true;
             }
+
+            if (_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
+            {
+                var verified = stateAtTick.DeepCopy();
+                verified.prediction = prediction;
+                WriteOwnedStateIfChanged(tick, ref verified);
+            }
+            else
+            {
+                fullPredictedState.prediction = prediction;
+                SetOwner(prediction.owner);
+            }
+        }
+
+        internal override bool HasUnchangedStateBaseline(ulong baselineTick)
+            => HasPredictionMetadataBaseline(baselineTick);
+
+        internal override void ReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            if (!TryGetPredictionMetadataBaseline(baselineTick, out var prediction))
+            {
+                throw new InvalidOperationException(
+                    $"Missing deterministic metadata baseline at tick {baselineTick}.");
+            }
+
+            StoreVerifiedMetadata(serverTick, in prediction);
 
             if (_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
             {

@@ -1,3 +1,4 @@
+using System;
 using PurrNet.Modules;
 using PurrNet.Packing;
 
@@ -5,6 +6,8 @@ namespace PurrNet.Prediction
 {
     public sealed class StaticPredictedIdentity : PredictedIdentity
     {
+        protected override bool supportsUnchangedStateCarryForward => true;
+
         public override void WriteFirstInput(ulong localTick, BitPacker packer) { }
 
         public override void ReadFirstInput(ulong localTick, BitPacker packer) { }
@@ -68,6 +71,20 @@ namespace PurrNet.Prediction
         {
             PredictedIdentityState metadata = default;
             ReadPredictionMetadata(packer, baselineTick, serverTick, ref metadata);
+            SetOwner(metadata.owner);
+        }
+
+        internal override bool HasUnchangedStateBaseline(ulong baselineTick)
+            => HasPredictionMetadataBaseline(baselineTick);
+
+        internal override void ReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            if (!TryGetPredictionMetadataBaseline(baselineTick, out var metadata))
+                throw new InvalidOperationException($"Missing metadata baseline at tick {baselineTick}.");
+            StoreVerifiedMetadata(serverTick, in metadata);
             SetOwner(metadata.owner);
         }
 

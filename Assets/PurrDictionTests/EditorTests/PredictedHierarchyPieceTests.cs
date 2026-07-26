@@ -256,6 +256,102 @@ namespace PurrNet.Prediction.Tests.Editor
             UnityEngine.TestTools.LogAssert.ignoreFailingMessages = false;
         }
 
+        [Test]
+        public void DirectPieceTeardownRemovesItsPolicyRefreshStamp()
+        {
+            var hierarchy = CreateHierarchyWorld();
+
+            var rigRoot = BuildCompoundRig();
+            hierarchy.ReserveSceneObject(rigRoot, -1);
+            hierarchy.RegisterReservedSceneObjects();
+
+            var pieceA = rigRoot.transform.GetChild(0).GetChild(0).gameObject;
+            Assert.That(hierarchy.TryGetId(pieceA, out var pieceAId), Is.True);
+
+            var stamps = GetField<Dictionary<GameObject, (int frame, Transform parent)>>(
+                typeof(PredictedHierarchy), hierarchy, "_policyRefreshStamp");
+            var goToId = GetField<Dictionary<GameObject, PredictedObjectID>>(
+                typeof(PredictedHierarchy), hierarchy, "_goToId");
+
+            hierarchy.NotifyInstanceParentChanged(pieceA);
+            Assert.That(stamps.ContainsKey(pieceA), Is.True,
+                "a parent-change notification must stamp the registered piece");
+
+            SetField(typeof(PredictedHierarchy), hierarchy, "_visibilityDependencyCacheDirty", false);
+            hierarchy.NotifyInstanceParentChanged(pieceA);
+            Assert.That(
+                GetField<bool>(typeof(PredictedHierarchy), hierarchy, "_visibilityDependencyCacheDirty"),
+                Is.False,
+                "an unchanged parent must not invalidate the visibility topology");
+
+            UnityEngine.TestTools.LogAssert.Expect(
+                LogType.Warning,
+                new System.Text.RegularExpressions.Regex("destroyed directly"));
+            hierarchy.NotifyPieceDestroyed(pieceA);
+
+            Assert.That(goToId.ContainsKey(pieceA), Is.False,
+                "the torn-down piece must leave the id lookup");
+            Assert.That(stamps.ContainsKey(pieceA), Is.False,
+                "the torn-down piece must leave the policy refresh stamps");
+
+            goToId[pieceA] = pieceAId;
+            SetField(typeof(PredictedHierarchy), hierarchy, "_visibilityDependencyCacheDirty", false);
+            hierarchy.NotifyInstanceParentChanged(pieceA);
+
+            Assert.That(stamps.ContainsKey(pieceA), Is.True);
+            Assert.That(
+                GetField<bool>(typeof(PredictedHierarchy), hierarchy, "_visibilityDependencyCacheDirty"),
+                Is.True,
+                "a stale stamp from a previous life suppressed the topology refresh for the new life");
+        }
+
+        [Test]
+        public void SubtreeRemovalClearsPolicyRefreshStampsForPooledPieces()
+        {
+            var hierarchy = CreateHierarchyWorld();
+
+            var rigRoot = BuildCompoundRig();
+            hierarchy.ReserveSceneObject(rigRoot, -1);
+            hierarchy.RegisterReservedSceneObjects();
+
+            var pieceA = rigRoot.transform.GetChild(0).GetChild(0).gameObject;
+            Assert.That(hierarchy.TryGetId(rigRoot, out var rootId), Is.True);
+            hierarchy.NotifyInstanceParentChanged(pieceA);
+
+            var stamps = GetField<Dictionary<GameObject, (int frame, Transform parent)>>(
+                typeof(PredictedHierarchy), hierarchy, "_policyRefreshStamp");
+            Assert.That(stamps.ContainsKey(rigRoot), Is.True);
+            Assert.That(stamps.ContainsKey(pieceA), Is.True);
+
+            hierarchy.ApplyRemoteVisibilityDelete(rootId);
+
+            Assert.That(stamps.ContainsKey(rigRoot), Is.False,
+                "the pooled root must leave the policy refresh stamps");
+            Assert.That(stamps.ContainsKey(pieceA), Is.False,
+                "pooled pieces must leave the policy refresh stamps");
+            Assert.That(hierarchy.TryGetId(pieceA, out _), Is.False);
+            Assert.That(rigRoot.activeSelf, Is.False,
+                "the removed scene tree should be pooled, not destroyed");
+        }
+
+        private PredictedHierarchy CreateHierarchyWorld()
+        {
+            PurrNet.Utils.Hasher.PrepareType<PredictedHierarchyState>();
+            PurrNet.Utils.Hasher.PrepareType<InstanceDetails>();
+            PurrNet.Utils.Hasher.PrepareType<PredictedObjectID>();
+            PurrNet.Utils.Hasher.PrepareType<PredictedComponentID>();
+            PurrNet.Utils.Hasher.PrepareType<PredictedGameObjectState>();
+
+            var networkObject = Track(new GameObject("NetworkManager"));
+            var managerObject = Track(new GameObject("PredictionManager"));
+
+            var networkManager = networkObject.AddComponent<NetworkManager>();
+            var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+            var hierarchy = manager.RegisterSystem<PredictedHierarchy>();
+            SetField(typeof(PredictionManager), manager, "<hierarchy>k__BackingField", hierarchy);
+            return hierarchy;
+        }
+
         private const BindingFlags InstanceFields = BindingFlags.Instance | BindingFlags.NonPublic;
 
         private static PredictionManager CreateSpawnedPredictionManager(GameObject managerObject, NetworkManager networkManager)
@@ -288,6 +384,13 @@ namespace PurrNet.Prediction.Tests.Editor
             var field = declaringType.GetField(fieldName, InstanceFields);
             Assert.That(field, Is.Not.Null, $"Missing field {declaringType.FullName}.{fieldName}");
             field.SetValue(target, value);
+        }
+
+        private static T GetField<T>(Type declaringType, object target, string fieldName)
+        {
+            var field = declaringType.GetField(fieldName, InstanceFields);
+            Assert.That(field, Is.Not.Null, $"Missing field {declaringType.FullName}.{fieldName}");
+            return (T)field.GetValue(target);
         }
 
         [Test]
