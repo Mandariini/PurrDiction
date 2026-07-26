@@ -347,6 +347,8 @@ namespace PurrNet.Prediction
                 _pools.Dispose();
                 _pools = null;
             }
+
+            DisposeCachedInputPayload();
         }
 
         private void CleanupAllSystems()
@@ -368,6 +370,7 @@ namespace PurrNet.Prediction
             _systemsCount = 0;
             DisposeInputBlockCache();
             InvalidateInputBlockCache();
+            DisposeCachedInputPayload();
             _nextSystemId = 0;
             foreach (var queue in _clientTicks.Values)
                 queue.Clear();
@@ -839,8 +842,54 @@ namespace PurrNet.Prediction
 
         private const int InputMtu = 1024;
         private const ulong MaxInputWindow = 32;
+        private const double InputResendIntervalSeconds = 0.02;
 
         private ulong _inputAckTick;
+
+        private BitPacker _cachedInputPayload;
+        private ulong _cachedInputFirstTick;
+        private uint _cachedInputTickCount;
+        private ulong _cachedInputFrameAck;
+        private bool _cachedInputFragmented;
+        private double _lastInputSendTime;
+
+        private void CacheInputPayload(ulong firstTick, uint tickCount, BitPacker payload)
+        {
+            _cachedInputPayload?.Dispose();
+            _cachedInputPayload = BitPackerPool.Get();
+            _cachedInputPayload.WriteBitsWithoutConsumingIt(payload, payload.positionInBits);
+            _cachedInputFirstTick = firstTick;
+            _cachedInputTickCount = tickCount;
+            _cachedInputFrameAck = _verifiedServerTick;
+            _cachedInputFragmented = payload.positionInBytes >= InputMtu;
+        }
+
+        private void DisposeCachedInputPayload()
+        {
+            _cachedInputPayload?.Dispose();
+            _cachedInputPayload = null;
+            _cachedInputTickCount = 0;
+            _lastInputSendTime = 0;
+        }
+
+        private void ResendCachedInput()
+        {
+            if (_cachedInputPayload == null || _cachedInputTickCount == 0)
+                return;
+
+            var now = Time.unscaledTimeAsDouble;
+            if (now - _lastInputSendTime < InputResendIntervalSeconds)
+                return;
+
+            _lastInputSendTime = now;
+
+            using var payload = BitPackerPool.Get();
+            payload.WriteBitsWithoutConsumingIt(_cachedInputPayload, _cachedInputPayload.positionInBits);
+
+            if (_cachedInputFragmented)
+                SendInputToServerFragmented(_cachedInputFirstTick, _cachedInputTickCount, _cachedInputFrameAck, payload);
+            else SendInputToServer(_cachedInputFirstTick, _cachedInputTickCount, _cachedInputFrameAck, payload);
+        }
 
         private void FinalizeInputOnClient(DisposableList<PredictedIdentity> ownedIdentities)
         {
@@ -883,6 +932,9 @@ namespace PurrNet.Prediction
                 payload.WriteBitsWithoutConsumingIt(block, blockBits);
                 tickCount += 1;
             }
+
+            CacheInputPayload(firstTick, tickCount, payload);
+            _lastInputSendTime = Time.unscaledTimeAsDouble;
 
             if (payload.positionInBytes >= InputMtu)
                 SendInputToServerFragmented(firstTick, tickCount, _verifiedServerTick, payload);
@@ -1453,7 +1505,7 @@ namespace PurrNet.Prediction
 
         readonly Queue<FrameDelta> _deltas = new ();
 
-        [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Fast, mtuExceeded: MTUBehaviour.Fragment)]
+        [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Fast, mtuExceeded: MTUBehaviour.Fragment, immediate: true)]
         private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, BitPackerWithLength delta)
         {
             HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, delta);
@@ -1597,9 +1649,13 @@ namespace PurrNet.Prediction
 
         private const long InputMarginClamp = 64;
         private const long InputMarginLow = 1;
-        private const long InputMarginTarget = 3;
-        private const long InputMarginHigh = 6;
+        private const float InputMarginTargetSeconds = 0.04f;
         private const long MaxLeadAdjustPerFrame = 16;
+
+        private long inputMarginTarget =>
+            Math.Max(2, (long)Math.Ceiling(InputMarginTargetSeconds * tickRate));
+
+        private long inputMarginHigh => inputMarginTarget * 2;
 
         private long _frameInputMargin;
         private ulong _frameInputMarginTick;
@@ -1617,7 +1673,7 @@ namespace PurrNet.Prediction
 
             if (_frameInputMargin < InputMarginLow)
             {
-                long deficit = InputMarginTarget - _frameInputMargin;
+                long deficit = inputMarginTarget - _frameInputMargin;
                 if (deficit > MaxLeadAdjustPerFrame)
                     deficit = MaxLeadAdjustPerFrame;
 
@@ -1627,9 +1683,9 @@ namespace PurrNet.Prediction
                 _leadAdjustGateTick = localTick;
                 _hasFrameInputMargin = false;
             }
-            else if (_frameInputMargin > InputMarginHigh)
+            else if (_frameInputMargin > inputMarginHigh)
             {
-                long excess = _frameInputMargin - InputMarginTarget;
+                long excess = _frameInputMargin - inputMarginTarget;
                 if (excess > MaxLeadAdjustPerFrame)
                     excess = MaxLeadAdjustPerFrame;
 
@@ -2058,13 +2114,13 @@ namespace PurrNet.Prediction
 
         readonly Dictionary<PlayerID, InputQueue> _clientTicks = new ();
 
-        [ServerRpc(requireOwnership: false, channel: Channel.Unreliable, mtuExceeded: MTUBehaviour.Fragment)]
+        [ServerRpc(requireOwnership: false, channel: Channel.Unreliable, mtuExceeded: MTUBehaviour.Fragment, immediate: true)]
         private void SendInputToServerFragmented(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)
         {
             ReceivedInput(firstTick, tickCount, frameAck, payload, info);
         }
 
-        [ServerRpc(requireOwnership: false, channel: Channel.UnreliableSequenced)]
+        [ServerRpc(requireOwnership: false, channel: Channel.Unreliable, immediate: true)]
         private void SendInputToServer(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)
         {
             ReceivedInput(firstTick, tickCount, frameAck, payload, info);
@@ -2158,6 +2214,9 @@ namespace PurrNet.Prediction
 
         private void Update()
         {
+            if (isSpawned && isClient && !isServer)
+                ResendCachedInput();
+
             if (_updateViewMode != UpdateViewMode.Update)
                 return;
 
