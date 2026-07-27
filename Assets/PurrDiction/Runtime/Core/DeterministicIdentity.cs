@@ -216,7 +216,7 @@ namespace PurrNet.Prediction
             ResetStateToInitialState();
             GetLatestUnityState();
 
-            var interpolationBuffer = (int)Mathf.Max(world.tickRate / (float)10, 2);
+            var interpolationBuffer = PredictionManager.GetViewInterpolationMaxBufferSize(world.tickRate);
 
             if (_interpolatedState == null)
             {
@@ -302,6 +302,13 @@ namespace PurrNet.Prediction
             var copy = fullPredictedState.DeepCopy();
             ModifyRollbackViewState(ref copy.state, delta, accumulateError);
 
+            bool refreshOnly = predictionManager && predictionManager.refreshViewLatchOnly;
+            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _viewState.HasValue))
+            {
+                copy.Dispose();
+                return;
+            }
+
             _viewState?.Dispose();
             _viewState = copy;
         }
@@ -384,11 +391,17 @@ namespace PurrNet.Prediction
 
             if (_viewState.HasValue)
             {
+                int depthBeforeAdd = _interpolatedState.bufferSize;
                 _interpolatedState.Add(_viewState.Value);
+                if (_interpolatedState.bufferSize <= depthBeforeAdd && predictionManager)
+                    predictionManager.ReportViewBufferTrim();
                 _viewState = null;
             }
 
             viewState = _interpolatedState.Advance(deltaTime).state;
+
+            if (_interpolatedState.bufferSize == 0 && predictionManager)
+                predictionManager.ReportViewBufferStarved();
 
             if (_firstViewUpdate)
             {

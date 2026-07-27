@@ -1259,7 +1259,8 @@ namespace PurrNet.Prediction
                     if (ReferenceEquals(system, hierarchy))
                         ApplyPendingRemoteVisibilityDeletes(stateTick);
                     system.RunRollback(stateTick);
-                    system.RunResetInterpolation();
+                    if (hierarchy && hierarchy.WasMaterializedByVerifiedApply(system.id.objectId))
+                        system.RunResetInterpolation();
                     system.lastVerifiedTick = stateTick;
                 }
                 return;

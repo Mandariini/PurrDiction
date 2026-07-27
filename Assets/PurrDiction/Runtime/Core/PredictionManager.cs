@@ -322,6 +322,7 @@ namespace PurrNet.Prediction
             {
                 _tickManager.onPreTick -= OnPreTick;
                 _tickManager.onPostTick -= OnPostTick;
+                _tickManager.tickPacingScale = 1d;
                 _tickManager = null;
             }
 
@@ -340,6 +341,7 @@ namespace PurrNet.Prediction
             {
                 _tickManager.onPreTick -= OnPreTick;
                 _tickManager.onPostTick -= OnPostTick;
+                _tickManager.tickPacingScale = 1d;
             }
 
             if (_pools != null)
@@ -387,8 +389,23 @@ namespace PurrNet.Prediction
             _frameInputMarginTick = 0;
             _hasFrameInputMargin = false;
             _leadAdjustGateTick = 0;
+            _frameInputSlackMs = 0;
+            _frameInputSlackServerTick = 0;
+            _frameInputSlackInputTick = 0;
+            _serverSendsInputSlack = false;
+            _serverTickBoundaryTime = 0;
+            lastInputSlackMs = 0;
+            leadJumpsTotal = 0;
+            leadPausesTotal = 0;
+            minLeadSnapsTotal = 0;
+            starvationJumpsTotal = 0;
+            ResetSlackController();
             reliableFramesSentTotal = 0;
             fullFramesSentTotal = 0;
+            renderPhaseFrameAppliesTotal = 0;
+            tickPhaseFrameAppliesTotal = 0;
+            maxFrameApplyAgeFrames = 0;
+            refreshViewLatchOnly = false;
             ClearVerifiedStores();
             ClearVisibilityReplication();
             _deltas.Clear();
@@ -670,6 +687,9 @@ namespace PurrNet.Prediction
         {
             cachedIsServer = isServer;
             localTickInContext = localTick;
+
+            if (cachedIsServer && _tickManager != null)
+                _serverTickBoundaryTime = _tickManager.lastTickTime;
 
             if (!cachedIsServer && _pauseAdvanceTicks > 0)
             {
@@ -1284,6 +1304,8 @@ namespace PurrNet.Prediction
                 ulong baselineTick = 0;
                 bool hasInputMargin = false;
                 PackedInt inputMargin = 0;
+                bool hasInputSlack = false;
+                PackedInt inputSlackMs = 0;
 
                 if (_clientTicks.TryGetValue(player, out var queue))
                 {
@@ -1301,11 +1323,21 @@ namespace PurrNet.Prediction
                         hasInputMargin = true;
                         inputMargin = (int)margin;
                     }
+
+                    if (queue.hasPendingInputSlack)
+                    {
+                        double slack = queue.pendingInputSlackMs;
+                        if (slack > InputSlackClampMs) slack = InputSlackClampMs;
+                        else if (slack < -InputSlackClampMs) slack = -InputSlackClampMs;
+                        hasInputSlack = true;
+                        inputSlackMs = (int)Math.Round(slack);
+                        queue.hasPendingInputSlack = false;
+                    }
                 }
 
                 if (requiresReliableRecovery)
-                    SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, new BitPackerWithLength(deltaLen, packer));
-                else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, new BitPackerWithLength(deltaLen, packer));
+                    SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
+                else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
 
                 if (requiresReliableRecovery)
                     reliableFramesSentTotal++;
@@ -1496,6 +1528,8 @@ namespace PurrNet.Prediction
             public ulong baselineTick;
             public ulong inputAck;
             public bool fullFrame;
+            public int enqueuedFrame;
+            public bool trackAge;
 
             public void Dispose()
             {
@@ -1506,18 +1540,18 @@ namespace PurrNet.Prediction
         readonly Queue<FrameDelta> _deltas = new ();
 
         [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Fast, mtuExceeded: MTUBehaviour.Fragment, immediate: true)]
-        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, BitPackerWithLength delta)
+        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
         {
-            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, delta);
+            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
         }
 
         [TargetRpc(compressionLevel: CompressionLevel.Best)]
-        private void SendFrameToRemoteReliable([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, BitPackerWithLength delta)
+        private void SendFrameToRemoteReliable([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
         {
-            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, delta);
+            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
         }
 
-        private void HandleFrameFromServer(ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, BitPackerWithLength delta)
+        private void HandleFrameFromServer(ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
         {
             delta.packer.SkipBytes(delta.originalLength);
 
@@ -1529,6 +1563,16 @@ namespace PurrNet.Prediction
                 _frameInputMargin = inputMargin;
                 _frameInputMarginTick = serverTick;
                 _hasFrameInputMargin = true;
+            }
+
+            if (hasInputSlack && serverTick >= _frameInputSlackServerTick)
+            {
+                _frameInputSlackMs = inputSlackMs;
+                _frameInputSlackServerTick = serverTick;
+                _frameInputSlackInputTick = (long)serverTick + (hasInputMargin ? (long)(int)inputMargin : 0);
+                _hasFrameInputSlack = true;
+                _serverSendsInputSlack = true;
+                lastInputSlackMs = inputSlackMs;
             }
 
             if (fullFrame)
@@ -1549,7 +1593,9 @@ namespace PurrNet.Prediction
                 serverTick = serverTick,
                 baselineTick = baselineTick,
                 inputAck = inputAck,
-                fullFrame = fullFrame
+                fullFrame = fullFrame,
+                enqueuedFrame = Time.frameCount,
+                trackAge = localTick > 1
             });
         }
 
@@ -1652,6 +1698,19 @@ namespace PurrNet.Prediction
         private const float InputMarginTargetSeconds = 0.04f;
         private const long MaxLeadAdjustPerFrame = 16;
 
+        private const long InputSlackClampMs = 1000;
+        internal const double SlackTargetBaseMs = 12;
+        internal const double SlackTargetMaxMs = 150;
+        internal const double SlackDeadbandMs = 4;
+        internal const double SlackJitterHeadroom = 1.5;
+        internal const double SlackScalePerMs = 0.0005;
+        internal const double MaxTickPacingOffset = 0.02;
+        internal const double SlackDroopMarginMs = 4;
+        internal const double SlackFloorDecayMsPerSample = 0.25;
+        private const double SlackEmaAlpha = 0.15;
+        private const double SlackDeviationAlpha = 0.1;
+        internal const int LowMarginJumpStreak = 3;
+
         private long inputMarginTarget =>
             Math.Max(2, (long)Math.Ceiling(InputMarginTargetSeconds * tickRate));
 
@@ -1662,37 +1721,204 @@ namespace PurrNet.Prediction
         private bool _hasFrameInputMargin;
         private ulong _leadAdjustGateTick;
 
+        private long _frameInputSlackMs;
+        private ulong _frameInputSlackServerTick;
+        private long _frameInputSlackInputTick;
+        private bool _hasFrameInputSlack;
+        private bool _serverSendsInputSlack;
+        private int _lowMarginStreak;
+        private double _slackEmaMs;
+        private double _slackDevEmaMs;
+        private double _slackFloorEstimateMs;
+        private bool _hasSlackEma;
+        private double _serverTickBoundaryTime;
+
+        /// <summary>
+        /// Latest server-echoed input slack sample, in milliseconds: how long before its
+        /// consumption deadline the newest input tick arrived at the server. Positive means
+        /// early, negative means late. Diagnostic only.
+        /// </summary>
+        public double lastInputSlackMs { get; private set; }
+
+        /// <summary>
+        /// Smoothed input slack estimate driving the tick pacing controller, in milliseconds.
+        /// Diagnostic only.
+        /// </summary>
+        public double smoothedInputSlackMs => _hasSlackEma ? _slackEmaMs : 0d;
+
+        /// <summary>
+        /// Current slack the pacing controller aims for, in milliseconds. Grows with observed
+        /// arrival jitter. Diagnostic only.
+        /// </summary>
+        public double currentSlackTargetMs => _hasSlackEma
+            ? ComputeSlackTargetMs(_slackDevEmaMs, Math.Max(0d, _slackEmaMs - _slackFloorEstimateMs))
+            : ComputeSlackTargetMs(0d);
+
+        /// <summary>
+        /// Tick pacing scale last applied to the local tick clock. 1 means neutral pacing.
+        /// Diagnostic only.
+        /// </summary>
+        public double currentTickPacingScale { get; private set; } = 1d;
+
+        /// <summary>
+        /// True once the server has echoed at least one input slack sample this session.
+        /// Diagnostic only.
+        /// </summary>
+        public bool hasInputSlackFeedback => _serverSendsInputSlack;
+
+        /// <summary>
+        /// Count of forward prediction-head jumps triggered by the input margin feedback loop
+        /// since the session started. Diagnostic only.
+        /// </summary>
+        public ulong leadJumpsTotal { get; private set; }
+
+        /// <summary>
+        /// Count of tick pauses scheduled by the input margin feedback loop or the absolute
+        /// lead clamp since the session started. Diagnostic only.
+        /// </summary>
+        public ulong leadPausesTotal { get; private set; }
+
+        /// <summary>
+        /// Count of minimum-lead snaps of the prediction head since the session started.
+        /// Diagnostic only.
+        /// </summary>
+        public ulong minLeadSnapsTotal { get; private set; }
+
+        /// <summary>
+        /// Count of input starvation rescue jumps since the session started. Diagnostic only.
+        /// </summary>
+        public ulong starvationJumpsTotal { get; private set; }
+
+        internal static double ComputeSlackTargetMs(double deviationMs, double droopMs = 0d)
+        {
+            double jitterHeadroom = SlackJitterHeadroom * Math.Max(0d, deviationMs);
+            double droopHeadroom = droopMs > 0d ? droopMs + SlackDroopMarginMs : 0d;
+            double target = SlackTargetBaseMs + Math.Max(jitterHeadroom, droopHeadroom);
+            return Math.Min(target, SlackTargetMaxMs);
+        }
+
+        internal static double ComputeTickPacingScale(double emaSlackMs, double targetSlackMs)
+        {
+            double error = emaSlackMs - targetSlackMs;
+            double magnitude = Math.Abs(error) - SlackDeadbandMs;
+            if (magnitude <= 0d)
+                return 1d;
+
+            double offset = Math.Min(magnitude * SlackScalePerMs, MaxTickPacingOffset);
+            return error > 0d ? 1d + offset : 1d - offset;
+        }
+
+        internal static double ClampPacingScaleForLead(double scale, ulong lead, ulong minLead)
+        {
+            return scale > 1d && lead <= minLead ? 1d : scale;
+        }
+
+        internal static bool ShouldJumpForLowMargin(long margin, long marginTarget, bool slackFeedback, int lowMarginStreak)
+        {
+            if (!slackFeedback)
+                return margin < InputMarginLow;
+
+            if (margin >= 0)
+                return false;
+
+            return lowMarginStreak >= LowMarginJumpStreak || margin <= -marginTarget;
+        }
+
         private void AdjustLeadFromInputMargin()
         {
-            if (!_hasFrameInputMargin)
+            if (_hasFrameInputMargin)
+            {
+                long sampleInputTick = (long)_frameInputMarginTick + _frameInputMargin;
+                if (sampleInputTick > (long)_leadAdjustGateTick)
+                {
+                    if (_serverSendsInputSlack)
+                    {
+                        if (_frameInputMargin < 0)
+                            _lowMarginStreak++;
+                        else
+                            _lowMarginStreak = 0;
+                    }
+
+                    if (ShouldJumpForLowMargin(_frameInputMargin, inputMarginTarget, _serverSendsInputSlack, _lowMarginStreak))
+                    {
+                        long deficit = inputMarginTarget - _frameInputMargin;
+                        if (deficit > MaxLeadAdjustPerFrame)
+                            deficit = MaxLeadAdjustPerFrame;
+
+                        localTick += (ulong)deficit;
+                        localTickInContext = localTick;
+                        _pauseAdvanceTicks = 0;
+                        _leadAdjustGateTick = localTick;
+                        _hasFrameInputMargin = false;
+                        leadJumpsTotal++;
+                        ResetSlackController();
+                    }
+                    else if (_frameInputMargin > inputMarginHigh)
+                    {
+                        long excess = _frameInputMargin - inputMarginTarget;
+                        if (excess > MaxLeadAdjustPerFrame)
+                            excess = MaxLeadAdjustPerFrame;
+
+                        _pauseAdvanceTicks = (ulong)excess;
+                        _leadAdjustGateTick = localTick;
+                        _hasFrameInputMargin = false;
+                        leadPausesTotal++;
+                        ResetSlackController();
+                    }
+                }
+            }
+
+            UpdateTickPacingFromSlack();
+        }
+
+        private void UpdateTickPacingFromSlack()
+        {
+            if (!_hasFrameInputSlack)
                 return;
 
-            long sampleInputTick = (long)_frameInputMarginTick + _frameInputMargin;
-            if (sampleInputTick <= (long)_leadAdjustGateTick)
+            _hasFrameInputSlack = false;
+
+            if (_frameInputSlackInputTick <= (long)_leadAdjustGateTick)
                 return;
 
-            if (_frameInputMargin < InputMarginLow)
-            {
-                long deficit = inputMarginTarget - _frameInputMargin;
-                if (deficit > MaxLeadAdjustPerFrame)
-                    deficit = MaxLeadAdjustPerFrame;
+            double sample = _frameInputSlackMs;
 
-                localTick += (ulong)deficit;
-                localTickInContext = localTick;
-                _pauseAdvanceTicks = 0;
-                _leadAdjustGateTick = localTick;
-                _hasFrameInputMargin = false;
-            }
-            else if (_frameInputMargin > inputMarginHigh)
+            if (!_hasSlackEma)
             {
-                long excess = _frameInputMargin - inputMarginTarget;
-                if (excess > MaxLeadAdjustPerFrame)
-                    excess = MaxLeadAdjustPerFrame;
-
-                _pauseAdvanceTicks = (ulong)excess;
-                _leadAdjustGateTick = localTick;
-                _hasFrameInputMargin = false;
+                _slackEmaMs = sample;
+                _slackDevEmaMs = 0d;
+                _slackFloorEstimateMs = sample;
+                _hasSlackEma = true;
             }
+            else
+            {
+                _slackEmaMs += SlackEmaAlpha * (sample - _slackEmaMs);
+                _slackDevEmaMs += SlackDeviationAlpha * (Math.Abs(sample - _slackEmaMs) - _slackDevEmaMs);
+                _slackFloorEstimateMs = Math.Min(sample, _slackFloorEstimateMs + SlackFloorDecayMsPerSample);
+            }
+
+            double droop = Math.Max(0d, _slackEmaMs - _slackFloorEstimateMs);
+            double scale = ComputeTickPacingScale(_slackEmaMs, ComputeSlackTargetMs(_slackDevEmaMs, droop));
+            ulong lead = localTick > _verifiedServerTick ? localTick - _verifiedServerTick : 0;
+            SetTickPacingScale(ClampPacingScaleForLead(scale, lead, MinLead));
+        }
+
+        private void ResetSlackController()
+        {
+            _hasSlackEma = false;
+            _slackEmaMs = 0d;
+            _slackDevEmaMs = 0d;
+            _slackFloorEstimateMs = 0d;
+            _hasFrameInputSlack = false;
+            _lowMarginStreak = 0;
+            SetTickPacingScale(1d);
+        }
+
+        private void SetTickPacingScale(double scale)
+        {
+            currentTickPacingScale = scale;
+            if (_tickManager != null && isClient && !cachedIsServer)
+                _tickManager.tickPacingScale = scale;
         }
 
         private void SaveEnteringState(ulong tick)
@@ -1718,22 +1944,98 @@ namespace PurrNet.Prediction
                 return;
             }
 
+            ProcessQueuedFrames(false);
+        }
+
+        internal static bool ShouldApplyQueuedFramesInRenderPhase(
+            ulong localTick,
+            int queuedFrames,
+            bool isSimulating,
+            bool isReplaying)
+        {
+            return queuedFrames > 0 && localTick > 1 && !isSimulating && !isReplaying;
+        }
+
+        internal static bool ShouldReplaceViewLatch(bool refreshOnly, bool hasPendingLatch)
+        {
+            return !refreshOnly || hasPendingLatch;
+        }
+
+        internal const float ViewInterpolationMaxBufferSeconds = 0.1f;
+        internal const int ViewInterpolationMaxBufferFloor = 3;
+
+        internal static int GetViewInterpolationMaxBufferSize(int tickRate)
+        {
+            return Math.Max(ViewInterpolationMaxBufferFloor,
+                (int)(tickRate * ViewInterpolationMaxBufferSeconds));
+        }
+
+        internal bool refreshViewLatchOnly { get; private set; }
+
+        /// <summary>
+        /// Count of view interpolation buffer overflow trims across all identities and modules
+        /// since the session started. Each trim discards buffered view samples and snaps the
+        /// view forward. Diagnostic only.
+        /// </summary>
+        public ulong viewBufferTrimsTotal { get; private set; }
+
+        /// <summary>
+        /// Count of view updates that advanced with an empty interpolation buffer across all
+        /// identities and modules since the session started. The view holds its last sample on
+        /// those frames. Diagnostic only.
+        /// </summary>
+        public ulong viewBufferStarvedFramesTotal { get; private set; }
+
+        internal void ReportViewBufferTrim() => viewBufferTrimsTotal++;
+
+        internal void ReportViewBufferStarved() => viewBufferStarvedFramesTotal++;
+
+        /// <summary>
+        /// Count of server-frame batches applied from the render-frame path since the session
+        /// started. Diagnostic only.
+        /// </summary>
+        public ulong renderPhaseFrameAppliesTotal { get; private set; }
+
+        /// <summary>
+        /// Count of server-frame batches applied from the post-tick path since the session
+        /// started. Diagnostic only.
+        /// </summary>
+        public ulong tickPhaseFrameAppliesTotal { get; private set; }
+
+        /// <summary>
+        /// Largest number of render frames any received server frame spent queued before being
+        /// consumed, ignoring frames received before the first local tick. Diagnostic only.
+        /// </summary>
+        public int maxFrameApplyAgeFrames { get; private set; }
+
+        private void ProcessQueuedFrames(bool renderPhase)
+        {
             onStartingToRollback?.Invoke();
-            UpdateInterpolation(false);
+
+            if (!renderPhase)
+                UpdateInterpolation(false);
 
             isSimulating = true;
             isReplaying = true;
 
             NotifyReplayStart();
 
+            bool applied = false;
+
             try
             {
-                bool applied = false;
                 bool firstContact = _latestFrameServerTick == 0;
 
                 while (_deltas.Count > 0)
                 {
                     using var frame = _deltas.Dequeue();
+
+                    if (frame.trackAge)
+                    {
+                        int age = Time.frameCount - frame.enqueuedFrame;
+                        if (age > maxFrameApplyAgeFrames)
+                            maxFrameApplyAgeFrames = age;
+                    }
 
                     if (frame.serverTick > _latestFrameServerTick)
                     {
@@ -1782,6 +2084,9 @@ namespace PurrNet.Prediction
                         localTick = _latestFrameServerTick + TargetLead + 4;
                         localTickInContext = localTick;
                         _pauseAdvanceTicks = 0;
+                        _leadAdjustGateTick = localTick;
+                        starvationJumpsTotal++;
+                        ResetSlackController();
                         if (!firstContact)
                             PurrLogger.LogWarning($"Input starvation detected; jumping prediction head to {localTick} (server at {_latestFrameServerTick}).");
                     }
@@ -1795,18 +2100,38 @@ namespace PurrNet.Prediction
                         localTick = _verifiedServerTick + TargetLead;
                         localTickInContext = localTick;
                         _pauseAdvanceTicks = 0;
+                        _leadAdjustGateTick = localTick;
+                        minLeadSnapsTotal++;
+                        ResetSlackController();
                     }
                     else if (lead > AbsoluteMaxLead)
                     {
                         _pauseAdvanceTicks = lead - AbsoluteMaxLead;
+                        leadPausesTotal++;
                     }
 
                     SimulateFrame(_verifiedServerTick + 1, HistorySaveMode.Full);
                     ReplayToLatestTick(_verifiedServerTick + 2, HistorySaveMode.None);
                 }
 
-                SyncTransforms();
-                UpdateInterpolation(true);
+                if (!renderPhase)
+                {
+                    SyncTransforms();
+                    UpdateInterpolation(true);
+                }
+                else if (applied)
+                {
+                    SyncTransforms();
+                    refreshViewLatchOnly = true;
+                    try
+                    {
+                        UpdateInterpolation(true);
+                    }
+                    finally
+                    {
+                        refreshViewLatchOnly = false;
+                    }
+                }
             }
             finally
             {
@@ -1818,7 +2143,16 @@ namespace PurrNet.Prediction
                 isSimulating = false;
             }
 
-            TickBandwidthProfiler.MarkEndOfTick();
+            if (applied)
+            {
+                if (renderPhase)
+                    renderPhaseFrameAppliesTotal++;
+                else tickPhaseFrameAppliesTotal++;
+            }
+
+            if (!renderPhase)
+                TickBandwidthProfiler.MarkEndOfTick();
+
             onRollbackFinished?.Invoke();
         }
 
@@ -2100,6 +2434,8 @@ namespace PurrNet.Prediction
             public ulong rawHighestReceivedTick;
             public ulong ackedServerTick;
             public ulong lastConsumedTick;
+            public double pendingInputSlackMs;
+            public bool hasPendingInputSlack;
             public readonly Dictionary<ulong, InputQueueValue> byTick = new ();
             public int Count => byTick.Count;
 
@@ -2109,6 +2445,8 @@ namespace PurrNet.Prediction
                     entry.inputPacket.Dispose();
                 byTick.Clear();
                 rawHighestReceivedTick = 0;
+                pendingInputSlackMs = 0;
+                hasPendingInputSlack = false;
             }
         }
 
@@ -2143,7 +2481,17 @@ namespace PurrNet.Prediction
                 {
                     ulong newestTick = firstTick + tickCount - 1;
                     if (newestTick > ticks.rawHighestReceivedTick)
+                    {
                         ticks.rawHighestReceivedTick = newestTick;
+
+                        if (_serverTickBoundaryTime > 0 && _tickManager != null)
+                        {
+                            double deadline = _serverTickBoundaryTime +
+                                ((long)newestTick - (long)localTick + 1) * _tickManager.tickDeltaDouble;
+                            ticks.pendingInputSlackMs = (deadline - Time.unscaledTimeAsDouble) * 1000d;
+                            ticks.hasPendingInputSlack = true;
+                        }
+                    }
                 }
 
                 for (uint i = 0; i < tickCount; i++)
@@ -2215,7 +2563,12 @@ namespace PurrNet.Prediction
         private void Update()
         {
             if (isSpawned && isClient && !isServer)
+            {
                 ResendCachedInput();
+
+                if (ShouldApplyQueuedFramesInRenderPhase(localTick, _deltas.Count, isSimulating, isReplaying))
+                    ProcessQueuedFrames(true);
+            }
 
             if (_updateViewMode != UpdateViewMode.Update)
                 return;

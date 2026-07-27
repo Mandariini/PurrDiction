@@ -152,9 +152,15 @@ namespace PurrNet.Prediction
 
         private bool _isRollingBack = false;
 
+        readonly HashSet<PredictedObjectID> _verifiedApplyEntrants = new ();
+
+        internal bool WasMaterializedByVerifiedApply(PredictedObjectID id)
+            => _verifiedApplyEntrants.Contains(id);
+
         protected override void SetUnityState(PredictedHierarchyState state)
         {
             _isRollingBack = true;
+            _verifiedApplyEntrants.Clear();
 
             var target = state.spawnedPrefabs;
 
@@ -234,6 +240,12 @@ namespace PurrNet.Prediction
                 {
                     for (var r = 0; r < records.Count; r++)
                         ResurrectPiece(records[r], proto);
+                }
+
+                for (var r = 0; r < records.Count; r++)
+                {
+                    if (_instanceMap.ContainsKey(records[r].instanceId))
+                        _verifiedApplyEntrants.Add(records[r].instanceId);
                 }
 
                 ListPool<InstanceDetails>.Destroy(records);
@@ -1754,6 +1766,7 @@ namespace PurrNet.Prediction
             _pendingSceneReservations.Clear();
             _policyRefreshStamp.Clear();
             _parentingWarned.Clear();
+            _verifiedApplyEntrants.Clear();
             _visibilityParentsByRoot.Clear();
             _visibilityChildrenByRoot.Clear();
             _visibilityDependencyQueue.Clear();

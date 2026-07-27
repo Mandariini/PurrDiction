@@ -72,7 +72,7 @@ namespace PurrNet.Prediction
         internal override void OnCoreInitialize()
         {
             var tickRate = predictionManager.tickRate;
-            var bufferSize = (int)Math.Max(tickRate / 10f, 2);
+            var bufferSize = PredictionManager.GetViewInterpolationMaxBufferSize(tickRate);
 
             _history = new History<MODULE_STATE<TState>>(tickRate * 10);
 
@@ -155,12 +155,18 @@ namespace PurrNet.Prediction
 
             if (_viewState.HasValue)
             {
+                int depthBeforeAdd = _interpolatedState.bufferSize;
                 _interpolatedState.Add(_viewState.Value);
+                if (_interpolatedState.bufferSize <= depthBeforeAdd && predictionManager)
+                    predictionManager.ReportViewBufferTrim();
                 _viewState = null;
             }
 
             var result = _interpolatedState.Advance(delta);
             viewState = result.state;
+
+            if (_interpolatedState.bufferSize == 0 && predictionManager)
+                predictionManager.ReportViewBufferStarved();
 
             UpdateView(viewState, verifiedState);
         }
@@ -197,6 +203,13 @@ namespace PurrNet.Prediction
         {
             var copy = fullPredictedState.DeepCopy();
             ModifyRollbackViewState(ref copy.state, delta, accumulateError);
+
+            bool refreshOnly = predictionManager && predictionManager.refreshViewLatchOnly;
+            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _viewState.HasValue))
+            {
+                copy.Dispose();
+                return;
+            }
 
             _viewState?.Dispose();
             _viewState = copy;
