@@ -1036,7 +1036,110 @@ namespace PurrNet.Prediction
             }
         }
 
+        struct CachedFilteredInputBlock
+        {
+            public ulong tick;
+            public uint blockVersion;
+            public uint timelineRevision;
+            public BitPacker framed;
+        }
+
+        sealed class PlayerInputWindowCache
+        {
+            public readonly CachedFilteredInputBlock[] slots =
+                new CachedFilteredInputBlock[(int)MaxInputWindow + 1];
+        }
+
+        readonly Dictionary<PlayerID, PlayerInputWindowCache> _playerInputWindowCaches = new();
+        readonly List<int> _visibleInputEntryScratch = new();
+
+        // A culling receiver's filtered per-tick input record only changes when the shared block
+        // for that tick is rebuilt (system list changed) or the receiver's visibility timeline
+        // records a new transition. Both are versioned, so the filter-and-reframe pass runs once
+        // per (player, tick) instead of once per tick of the redundancy window every server tick.
+        // PruneThrough never changes WasVisibleAt answers for ticks past its anchor, and the
+        // window only spans ticks past the receiver's acked tick, so pruning cannot stale a slot
+        // that is still being served.
+        BitPacker GetFilteredInputBlockForTick(
+            PlayerID player,
+            PlayerVisibilityTimeline timeline,
+            ulong tick,
+            in CachedInputBlock block)
+        {
+            if (!_playerInputWindowCaches.TryGetValue(player, out var cache))
+            {
+                cache = new PlayerInputWindowCache();
+                _playerInputWindowCaches[player] = cache;
+            }
+
+            var index = (int)(tick % (ulong)cache.slots.Length);
+            ref var slot = ref cache.slots[index];
+
+            if (slot.framed != null &&
+                slot.tick == tick &&
+                slot.blockVersion == _inputBlockVersion &&
+                slot.timelineRevision == timeline.revision)
+            {
+                return slot.framed;
+            }
+
+            slot.framed ??= BitPackerPool.Get();
+            slot.tick = tick;
+            slot.blockVersion = _inputBlockVersion;
+            slot.timelineRevision = timeline.revision;
+
+            var framed = slot.framed;
+            framed.ResetPositionAndMode(false);
+
+            var entries = block.entries;
+            _visibleInputEntryScratch.Clear();
+            for (var i = 0; i < entries.Count; i++)
+            {
+                if (WasSystemVisibleAt(timeline, entries[i].system, tick))
+                    _visibleInputEntryScratch.Add(i);
+            }
+
+            Packer<PackedUInt>.Write(framed, (uint)_visibleInputEntryScratch.Count);
+            for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
+            {
+                var entry = entries[_visibleInputEntryScratch[i]];
+                Packer<PredictedComponentID>.Write(framed, entry.system.id);
+                Packer<PackedUInt>.Write(framed, (uint)entry.bitLength);
+                framed.WriteBitDataWithoutConsumingIt(
+                    new BitData(block.packer, entry.bitOrigin, entry.bitLength));
+            }
+
+            return framed;
+        }
+
+        void DisposePlayerInputWindowCache(PlayerID player)
+        {
+            if (!_playerInputWindowCaches.Remove(player, out var cache))
+                return;
+
+            for (var i = 0; i < cache.slots.Length; i++)
+            {
+                cache.slots[i].framed?.Dispose();
+                cache.slots[i] = default;
+            }
+        }
+
+        void DisposeAllPlayerInputWindowCaches()
+        {
+            foreach (var cache in _playerInputWindowCaches.Values)
+            {
+                for (var i = 0; i < cache.slots.Length; i++)
+                {
+                    cache.slots[i].framed?.Dispose();
+                    cache.slots[i] = default;
+                }
+            }
+
+            _playerInputWindowCaches.Clear();
+        }
+
         void WriteVisibilityInputHistory(
+            PlayerID player,
             BitPacker frame,
             ulong baselineTick,
             PlayerVisibilityTimeline timeline)
@@ -1066,28 +1169,14 @@ namespace PurrNet.Prediction
                     continue;
                 }
 
-                var entries = block.entries;
-
-                int visibleCount = 0;
-                for (var i = 0; i < entries.Count; i++)
-                {
-                    if (WasSystemVisibleAt(timeline, entries[i].system, tick))
-                        visibleCount++;
-                }
-
-                Packer<PackedUInt>.Write(frame, (uint)visibleCount);
-
-                for (var i = 0; i < entries.Count; i++)
-                {
-                    var entry = entries[i];
-                    if (!WasSystemVisibleAt(timeline, entry.system, tick))
-                        continue;
-
-                    Packer<PredictedComponentID>.Write(frame, entry.system.id);
-                    Packer<PackedUInt>.Write(frame, (uint)entry.bitLength);
-                    frame.WriteBitDataWithoutConsumingIt(
-                        new BitData(block.packer, entry.bitOrigin, entry.bitLength));
-                }
+                var filtered = GetFilteredInputBlockForTick(
+                    player,
+                    timeline,
+                    tick,
+                    block);
+                frame.WriteBitsWithoutConsumingIt(
+                    filtered,
+                    filtered.positionInBits);
             }
         }
 
@@ -1338,6 +1427,8 @@ namespace PurrNet.Prediction
             RemoveVisibilityAcquisitions(player);
             RemovePendingVisibilityDeletes(player);
             _hierarchyBaselineScratchByPlayer.Remove(player);
+            _hiddenPiecesScratchByPlayer.Remove(player);
+            DisposePlayerInputWindowCache(player);
         }
 
         void ClearVisibilityReplication()
@@ -1358,6 +1449,8 @@ namespace PurrNet.Prediction
             _spawnedRootScratch.Clear();
             _ownedRootScratch.Clear();
             _hierarchyBaselineScratchByPlayer.Clear();
+            _hiddenPiecesScratchByPlayer.Clear();
+            DisposeAllPlayerInputWindowCaches();
             _visibilityRootScratch.Clear();
             ClearPendingVisibilityDeletes();
         }

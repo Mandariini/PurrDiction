@@ -12,7 +12,62 @@ namespace PurrNet.Prediction
         static readonly ProfilerMarker BuildVisibilityPhysics2DProjectionMarker =
             new("PredictionManager.BuildVisibilityPhysics2DProjection");
 
-        readonly HashSet<PredictedObjectID> _hiddenPiecesScratch = new ();
+        sealed class HiddenPiecesScratch
+        {
+            public ulong cachedAtLocalTick = ulong.MaxValue;
+            public ulong tickA = ulong.MaxValue;
+            public ulong tickB = ulong.MaxValue;
+            public readonly HashSet<PredictedObjectID> piecesA = new ();
+            public readonly HashSet<PredictedObjectID> piecesB = new ();
+        }
+
+        readonly Dictionary<PlayerID, HiddenPiecesScratch> _hiddenPiecesScratchByPlayer = new ();
+
+        // The hidden set for a given (receiver, tick) is identical across the 3D and 2D physics
+        // writers, and each writer needs it for both the current tick and the baseline tick. All
+        // four requests happen inside one synchronous addressed-section write, so a two-slot
+        // per-receiver cache scoped to the current localTick lets the 2D pass reuse the 3D pass's
+        // scans instead of rebuilding them.
+        HashSet<PredictedObjectID> GetHiddenPiecesAt(
+            PlayerID receiver,
+            PlayerVisibilityTimeline timeline,
+            in PredictedHierarchyState hierarchyState,
+            ulong tick)
+        {
+            if (!_hiddenPiecesScratchByPlayer.TryGetValue(receiver, out var scratch))
+            {
+                scratch = new HiddenPiecesScratch();
+                _hiddenPiecesScratchByPlayer[receiver] = scratch;
+            }
+
+            if (scratch.cachedAtLocalTick != localTick)
+            {
+                scratch.cachedAtLocalTick = localTick;
+                scratch.tickA = ulong.MaxValue;
+                scratch.tickB = ulong.MaxValue;
+            }
+
+            if (scratch.tickA == tick)
+                return scratch.piecesA;
+            if (scratch.tickB == tick)
+                return scratch.piecesB;
+
+            HashSet<PredictedObjectID> result;
+            if (scratch.tickA == ulong.MaxValue)
+            {
+                scratch.tickA = tick;
+                result = scratch.piecesA;
+            }
+            else
+            {
+                scratch.tickB = tick;
+                result = scratch.piecesB;
+            }
+
+            result.Clear();
+            CollectHiddenPieces(hierarchyState, timeline, tick, result);
+            return result;
+        }
 
         bool TryWriteAggregateVisibilityState(
             PredictedIdentity system,
@@ -59,13 +114,12 @@ namespace PurrNet.Prediction
             return false;
         }
 
-        void CollectHiddenPieces(
+        static void CollectHiddenPieces(
             in PredictedHierarchyState hierarchyState,
             PlayerVisibilityTimeline timeline,
-            ulong tick)
+            ulong tick,
+            HashSet<PredictedObjectID> result)
         {
-            _hiddenPiecesScratch.Clear();
-
             if (!hierarchyState.spawnedPrefabs.isDisposed)
             {
                 bool hasPreviousRoot = false;
@@ -84,11 +138,11 @@ namespace PurrNet.Prediction
                     }
 
                     if (!previousRootVisible)
-                        _hiddenPiecesScratch.Add(record.instanceId);
+                        result.Add(record.instanceId);
                 }
             }
 
-            timeline.CollectHiddenRootsAt(tick, _hiddenPiecesScratch);
+            timeline.CollectHiddenRootsAt(tick, result);
         }
 
 #if UNITY_PHYSICS_3D
@@ -150,10 +204,9 @@ namespace PurrNet.Prediction
             PredictedPhysicsData currentProjection;
             using (BuildVisibilityPhysics3DProjectionMarker.Auto())
             {
-                CollectHiddenPieces(currentHierarchy, timeline, tick);
                 currentProjection = PredictionPhysicsVisibility.Project(
                     currentGlobal,
-                    _hiddenPiecesScratch);
+                    GetHiddenPiecesAt(receiver, timeline, currentHierarchy, tick));
             }
             PredictedPhysicsData baselineProjection = default;
             bool changed;
@@ -172,13 +225,13 @@ namespace PurrNet.Prediction
                 {
                     using (BuildVisibilityPhysics3DProjectionMarker.Auto())
                     {
-                        CollectHiddenPieces(
-                            baselineHierarchy,
-                            timeline,
-                            baselineTick);
                         baselineProjection = PredictionPhysicsVisibility.Project(
                             baselineGlobal,
-                            _hiddenPiecesScratch);
+                            GetHiddenPiecesAt(
+                                receiver,
+                                timeline,
+                                baselineHierarchy,
+                                baselineTick));
                     }
                     changed = physics3d.RunWriteProjectedState(
                         receiver,
@@ -266,10 +319,9 @@ namespace PurrNet.Prediction
             PredictedPhysics2DData currentProjection;
             using (BuildVisibilityPhysics2DProjectionMarker.Auto())
             {
-                CollectHiddenPieces(currentHierarchy, timeline, tick);
                 currentProjection = PredictionPhysicsVisibility.Project(
                     currentGlobal,
-                    _hiddenPiecesScratch);
+                    GetHiddenPiecesAt(receiver, timeline, currentHierarchy, tick));
             }
             PredictedPhysics2DData baselineProjection = default;
             bool changed;
@@ -288,13 +340,13 @@ namespace PurrNet.Prediction
                 {
                     using (BuildVisibilityPhysics2DProjectionMarker.Auto())
                     {
-                        CollectHiddenPieces(
-                            baselineHierarchy,
-                            timeline,
-                            baselineTick);
                         baselineProjection = PredictionPhysicsVisibility.Project(
                             baselineGlobal,
-                            _hiddenPiecesScratch);
+                            GetHiddenPiecesAt(
+                                receiver,
+                                timeline,
+                                baselineHierarchy,
+                                baselineTick));
                     }
                     changed = physics2d.RunWriteProjectedState(
                         receiver,

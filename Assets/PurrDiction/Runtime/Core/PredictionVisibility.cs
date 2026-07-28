@@ -64,13 +64,13 @@ namespace PurrNet.Prediction
 
             foreach (var rootId in _currentExceptions)
             {
-                if (!WasVisibleAt(rootId, tick))
+                if (!result.Contains(rootId) && !WasVisibleAt(rootId, tick))
                     result.Add(rootId);
             }
 
             foreach (var rootId in _transitions.Keys)
             {
-                if (!WasVisibleAt(rootId, tick))
+                if (!result.Contains(rootId) && !WasVisibleAt(rootId, tick))
                     result.Add(rootId);
             }
         }

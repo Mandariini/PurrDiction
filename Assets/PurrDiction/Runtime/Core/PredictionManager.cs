@@ -372,6 +372,7 @@ namespace PurrNet.Prediction
             _systemsCount = 0;
             DisposeInputBlockCache();
             InvalidateInputBlockCache();
+            DisposeAllPlayerInputWindowCaches();
             DisposeCachedInputPayload();
             _nextSystemId = 0;
             foreach (var queue in _clientTicks.Values)
@@ -1060,7 +1061,7 @@ namespace PurrNet.Prediction
                         false);
 
                     using (WriteInputHistoryMarker.Auto())
-                        WriteVisibilityInputHistory(frame, baselineTick, timeline);
+                        WriteVisibilityInputHistory(player, frame, baselineTick, timeline);
 
                     using (WriteStateDeltasMarker.Auto())
                     {
