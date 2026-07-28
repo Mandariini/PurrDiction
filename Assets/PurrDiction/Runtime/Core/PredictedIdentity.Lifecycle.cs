@@ -105,6 +105,30 @@ namespace PurrNet.Prediction
             return moduleSetChanged || modulesChanged || identityChanged;
         }
 
+        internal bool RunCanOmitUnchangedState(ulong baselineTick)
+        {
+            return HasUnchangedStateBaseline(baselineTick) &&
+                   HasUnchangedStateBaselineModules(baselineTick);
+        }
+
+        internal bool RunCanReadUnchangedState(ulong baselineTick)
+        {
+            return lastVerifiedTick.HasValue &&
+                   lastVerifiedTick.Value >= baselineTick &&
+                   HasUnchangedStateBaseline(baselineTick) &&
+                   HasUnchangedStateBaselineModules(baselineTick);
+        }
+
+        internal void RunReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            ReadUnchangedDynamicModuleSnapshot(tick, baselineTick, serverTick);
+            ReadUnchangedModules(tick, baselineTick, serverTick);
+            ReadUnchangedState(tick, baselineTick, serverTick);
+        }
+
         internal void RunReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
         {
             ReadDynamicModuleSnapshot(tick, packer, baselineTick, serverTick);

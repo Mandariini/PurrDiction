@@ -72,7 +72,7 @@ namespace PurrNet.Prediction
         internal override void OnCoreInitialize()
         {
             var tickRate = predictionManager.tickRate;
-            var bufferSize = (int)Math.Max(tickRate / 10f, 2);
+            var bufferSize = PredictionManager.GetViewInterpolationMaxBufferSize(tickRate);
 
             _history = new History<MODULE_STATE<TState>>(tickRate * 10);
 
@@ -155,12 +155,18 @@ namespace PurrNet.Prediction
 
             if (_viewState.HasValue)
             {
+                int depthBeforeAdd = _interpolatedState.bufferSize;
                 _interpolatedState.Add(_viewState.Value);
+                if (_interpolatedState.bufferSize <= depthBeforeAdd && predictionManager)
+                    predictionManager.ReportViewBufferTrim();
                 _viewState = null;
             }
 
             var result = _interpolatedState.Advance(delta);
             viewState = result.state;
+
+            if (_interpolatedState.bufferSize == 0 && predictionManager)
+                predictionManager.ReportViewBufferStarved();
 
             UpdateView(viewState, verifiedState);
         }
@@ -197,6 +203,13 @@ namespace PurrNet.Prediction
         {
             var copy = fullPredictedState.DeepCopy();
             ModifyRollbackViewState(ref copy.state, delta, accumulateError);
+
+            bool refreshOnly = predictionManager && predictionManager.refreshViewLatchOnly;
+            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _viewState.HasValue))
+            {
+                copy.Dispose();
+                return;
+            }
 
             _viewState?.Dispose();
             _viewState = copy;
@@ -278,6 +291,13 @@ namespace PurrNet.Prediction
             if (!store.ReadOrPrevious(baselineTick, out var baseline))
                 baseline = default;
 
+            if (baselineTick > 0 &&
+                baseline.HasSameContents(ref fullPredictedState))
+            {
+                Packer<bool>.Write(packer, false);
+                return false;
+            }
+
             Packer<bool>.Write(packer, true);
             DeltaPacker<ModulePredictedState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
             DeltaPacker<TState>.Write(packer, baseline.state, fullPredictedState.state);
@@ -298,12 +318,18 @@ namespace PurrNet.Prediction
                 newState = default;
                 DeltaPacker<ModulePredictedState>.Read(packer, baseline.prediction, ref newState.prediction);
                 DeltaPacker<TState>.Read(packer, baseline.state, ref newState.state);
-                StoreVerified(serverTick, ref newState);
             }
             else
             {
                 newState = baseline.DeepCopy();
             }
+
+            ApplyVerifiedState(tick, serverTick, ref newState);
+        }
+
+        private void ApplyVerifiedState(ulong tick, ulong serverTick, ref MODULE_STATE<TState> newState)
+        {
+            StoreVerified(serverTick, ref newState);
 
             if (identity.UsesSoftCorrectionTimeline())
             {
@@ -326,6 +352,24 @@ namespace PurrNet.Prediction
             fullPredictedState = newState;
             if (!LatestHistoryMatches(tick, ref fullPredictedState))
                 _history.Write(tick, fullPredictedState.DeepCopy());
+        }
+
+        protected override bool HasUnchangedStateBaseline(ulong baselineTick)
+            => verifiedHistory.ReadOrPrevious(baselineTick, out _);
+
+        protected override void ReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            if (!verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
+            {
+                throw new InvalidOperationException(
+                    $"Missing module state baseline at tick {baselineTick}.");
+            }
+
+            var newState = baseline.DeepCopy();
+            ApplyVerifiedState(tick, serverTick, ref newState);
         }
 
         protected virtual void OnVerifiedStateReceived(ulong tick, in TState predicted, in TState verified) { }

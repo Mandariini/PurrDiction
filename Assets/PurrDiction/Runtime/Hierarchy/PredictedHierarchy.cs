@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using PurrNet.Logging;
+using PurrNet.Packing;
 using PurrNet.Pooling;
 using UnityEngine;
 
@@ -34,6 +35,96 @@ namespace PurrNet.Prediction
         readonly Dictionary<PredictedObjectID, PredictedObjectID> _cascadeParentScratch = new ();
         readonly Dictionary<PredictedObjectID, bool> _cascadeReachScratch = new ();
 
+        readonly Dictionary<PredictedObjectID, HashSet<PredictedObjectID>> _visibilityParentsByRoot = new ();
+        readonly Dictionary<PredictedObjectID, HashSet<PredictedObjectID>> _visibilityChildrenByRoot = new ();
+        readonly Queue<PredictedObjectID> _visibilityDependencyQueue = new ();
+
+        bool _visibilityDependencyCacheDirty = true;
+        bool _hasCrossRootVisibilityDependencies;
+
+        internal bool hasCrossRootVisibilityDependencies
+        {
+            get
+            {
+                if (_visibilityDependencyCacheDirty)
+                    RefreshVisibilityDependencyCache();
+                return _hasCrossRootVisibilityDependencies;
+            }
+        }
+
+        void InvalidateVisibilityTopology()
+        {
+            _visibilityDependencyCacheDirty = true;
+            if (predictionManager)
+                predictionManager.HandleVisibilityTopologyChanged();
+        }
+
+        internal void NotifyVisibilityParentLinkInvalidated()
+        {
+            InvalidateVisibilityTopology();
+        }
+
+        readonly Stack<HashSet<PredictedObjectID>> _visibilityDependencySetPool = new ();
+
+        void RecycleVisibilityDependencyGraph(
+            Dictionary<PredictedObjectID, HashSet<PredictedObjectID>> graph)
+        {
+            foreach (var dependencies in graph.Values)
+            {
+                dependencies.Clear();
+                _visibilityDependencySetPool.Push(dependencies);
+            }
+
+            graph.Clear();
+        }
+
+        void RefreshVisibilityDependencyCache()
+        {
+            RecycleVisibilityDependencyGraph(_visibilityParentsByRoot);
+            RecycleVisibilityDependencyGraph(_visibilityChildrenByRoot);
+            _hasCrossRootVisibilityDependencies = false;
+
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+            {
+                var record = _spawnedPrefabs[i];
+                var parentObject = EffectiveParentObject(record);
+                if (!parentObject.HasValue ||
+                    !_recordsById.TryGetValue(parentObject.Value, out var parentRecord) ||
+                    parentRecord.rootId.Equals(record.rootId))
+                {
+                    continue;
+                }
+
+                _hasCrossRootVisibilityDependencies = true;
+                AddVisibilityDependency(
+                    _visibilityParentsByRoot,
+                    record.rootId,
+                    parentRecord.rootId);
+                AddVisibilityDependency(
+                    _visibilityChildrenByRoot,
+                    parentRecord.rootId,
+                    record.rootId);
+            }
+
+            _visibilityDependencyCacheDirty = false;
+        }
+
+        void AddVisibilityDependency(
+            Dictionary<PredictedObjectID, HashSet<PredictedObjectID>> graph,
+            PredictedObjectID rootId,
+            PredictedObjectID dependency)
+        {
+            if (!graph.TryGetValue(rootId, out var dependencies))
+            {
+                dependencies = _visibilityDependencySetPool.Count > 0
+                    ? _visibilityDependencySetPool.Pop()
+                    : new HashSet<PredictedObjectID>();
+                graph.Add(rootId, dependencies);
+            }
+
+            dependencies.Add(dependency);
+        }
+
         private uint _nextInstanceId = 2;
 
         protected override PredictedHierarchyState GetInitialState()
@@ -61,9 +152,15 @@ namespace PurrNet.Prediction
 
         private bool _isRollingBack = false;
 
+        readonly HashSet<PredictedObjectID> _verifiedApplyEntrants = new ();
+
+        internal bool WasMaterializedByVerifiedApply(PredictedObjectID id)
+            => _verifiedApplyEntrants.Contains(id);
+
         protected override void SetUnityState(PredictedHierarchyState state)
         {
             _isRollingBack = true;
+            _verifiedApplyEntrants.Clear();
 
             var target = state.spawnedPrefabs;
 
@@ -145,6 +242,12 @@ namespace PurrNet.Prediction
                         ResurrectPiece(records[r], proto);
                 }
 
+                for (var r = 0; r < records.Count; r++)
+                {
+                    if (_instanceMap.ContainsKey(records[r].instanceId))
+                        _verifiedApplyEntrants.Add(records[r].instanceId);
+                }
+
                 ListPool<InstanceDetails>.Destroy(records);
             }
 
@@ -161,6 +264,7 @@ namespace PurrNet.Prediction
             _nextInstanceId = state.nextInstanceId;
 
             _isRollingBack = false;
+            InvalidateVisibilityTopology();
         }
 
         internal static bool SameAttach(PredictedComponentID? a, PredictedComponentID? b)
@@ -512,6 +616,11 @@ namespace PurrNet.Prediction
                 if (_instanceMap.Remove(record.instanceId, out var other))
                     PurrLogger.LogError($"Duplicate instance ID {record.instanceId} for prefab {prefabId}. Existing GameObject: `{other.name}`, New GameObject: `{pieceGo.name}`", other);
 
+                // This id is now live. Any pool entry still claiming it was bypassed (fuzzy
+                // fallback served a different tree, or this piece was instantiated fresh), so
+                // relinquish the claim rather than let the pool resurrect a stale duplicate.
+                _pool.ReleaseClaim(record.instanceId);
+
                 _instanceMap[record.instanceId] = pieceGo;
                 _goToId[pieceGo] = record.instanceId;
 
@@ -623,6 +732,8 @@ namespace PurrNet.Prediction
             if (_instanceMap.Remove(record.instanceId, out var other))
                 PurrLogger.LogError($"Duplicate instance ID {record.instanceId}. Existing GameObject: `{other.name}`, New GameObject: `{pieceGo.name}`", other);
 
+            _pool.ReleaseClaim(record.instanceId);
+
             _instanceMap[record.instanceId] = pieceGo;
             _goToId[pieceGo] = record.instanceId;
 
@@ -655,12 +766,17 @@ namespace PurrNet.Prediction
 
             int frame = Time.frameCount;
             var currentParent = go.transform.parent;
+            bool hasStamp = _policyRefreshStamp.TryGetValue(go, out var stamp);
+            bool topologyChanged = !hasStamp || stamp.parent != currentParent;
 
-            if (!_policyRefreshStamp.TryGetValue(go, out var stamp) || stamp.frame != frame || stamp.parent != currentParent)
+            if (!hasStamp || stamp.frame != frame || topologyChanged)
             {
                 _policyRefreshStamp[go] = (frame, currentParent);
                 RefreshDescendantPolicies(go);
             }
+
+            if (topologyChanged)
+                InvalidateVisibilityTopology();
 
             if (_isRollingBack || _suppressParentWarnings || predictionManager.isReplaying)
                 return;
@@ -692,6 +808,8 @@ namespace PurrNet.Prediction
             if (_isCleaningUp || !_goToId.Remove(go, out var instanceId))
                 return;
 
+            _policyRefreshStamp.Remove(go);
+            predictionManager.CapturePendingVisibilityDelete(instanceId);
             _instanceMap.Remove(instanceId);
             _isSceneObject.Remove(instanceId);
             RemoveRecord(instanceId);
@@ -1064,6 +1182,7 @@ namespace PurrNet.Prediction
             if (!_instanceMap.TryGetValue(id, out var instance) || !instance)
             {
                 PurrLogger.LogError($"Deleting {id} which has a record but no live instance; removing the stale record.");
+                predictionManager.CapturePendingVisibilityDelete(id);
                 _instanceMap.Remove(id);
                 RemoveRecord(id);
                 return;
@@ -1257,6 +1376,7 @@ namespace PurrNet.Prediction
 
                 _spawnedPrefabs.RemoveRange(w, _spawnedPrefabs.Count - w);
                 _removedRecordScratch.Clear();
+                InvalidateVisibilityTopology();
             }
         }
 
@@ -1274,6 +1394,7 @@ namespace PurrNet.Prediction
 
                 _instanceMap.Remove(piece.id);
                 _goToId.Remove(piece.gameObject);
+                _policyRefreshStamp.Remove(piece.gameObject);
                 memberSet.Remove(piece.id);
 
                 if (removeRecords)
@@ -1336,6 +1457,7 @@ namespace PurrNet.Prediction
                 if (_spawnedPrefabs[i].instanceId.Equals(id))
                 {
                     _spawnedPrefabs.RemoveAt(i);
+                    InvalidateVisibilityTopology();
                     return;
                 }
             }
@@ -1353,6 +1475,7 @@ namespace PurrNet.Prediction
         {
             if (_goToId.TryGetValue(trs.gameObject, out var poid))
             {
+                predictionManager.CapturePendingVisibilityDelete(poid);
                 currentState.toDelete.Add(poid);
                 return;
             }
@@ -1373,6 +1496,222 @@ namespace PurrNet.Prediction
         {
             if (id.TryGetGameObject(predictionManager, out var go))
                 Delete(go);
+        }
+
+        internal void CollectSpawnedRoots(HashSet<PredictedObjectID> roots)
+        {
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+                roots.Add(_spawnedPrefabs[i].rootId);
+        }
+
+        internal bool ContainsSpawnedRoot(PredictedObjectID rootId)
+        {
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+            {
+                if (_spawnedPrefabs[i].rootId.Equals(rootId))
+                    return true;
+            }
+
+            return false;
+        }
+
+        internal void ApplyRemoteVisibilityDelete(PredictedObjectID objectId)
+        {
+            DeleteNow(objectId);
+        }
+
+        internal static bool StateContainsInstance(
+            in PredictedHierarchyState state,
+            PredictedObjectID instanceId)
+        {
+            if (state.spawnedPrefabs.isDisposed)
+                return false;
+
+            for (var i = 0; i < state.spawnedPrefabs.Count; i++)
+            {
+                if (state.spawnedPrefabs[i].instanceId.Equals(instanceId))
+                    return true;
+            }
+
+            return false;
+        }
+
+        internal void ExpandVisibilityDependencies(HashSet<PredictedObjectID> roots)
+        {
+            ExpandVisibilityGraph(roots, _visibilityParentsByRoot);
+        }
+
+        internal void ExpandVisibilityDependents(HashSet<PredictedObjectID> roots)
+        {
+            ExpandVisibilityGraph(roots, _visibilityChildrenByRoot);
+        }
+
+        void ExpandVisibilityGraph(
+            HashSet<PredictedObjectID> roots,
+            Dictionary<PredictedObjectID, HashSet<PredictedObjectID>> graph)
+        {
+            if (_visibilityDependencyCacheDirty)
+                RefreshVisibilityDependencyCache();
+
+            _visibilityDependencyQueue.Clear();
+            foreach (var rootId in roots)
+                _visibilityDependencyQueue.Enqueue(rootId);
+
+            while (_visibilityDependencyQueue.Count > 0)
+            {
+                var rootId = _visibilityDependencyQueue.Dequeue();
+                if (!graph.TryGetValue(rootId, out var dependencies))
+                    continue;
+
+                foreach (var dependency in dependencies)
+                {
+                    if (roots.Add(dependency))
+                        _visibilityDependencyQueue.Enqueue(dependency);
+                }
+            }
+        }
+
+        internal static PredictedHierarchyState BuildVisibilityProjection(
+            in PredictedHierarchyState source,
+            PlayerVisibilityTimeline timeline,
+            ulong tick)
+        {
+            int sourceCount = source.spawnedPrefabs.isDisposed ? 0 : source.spawnedPrefabs.Count;
+            int deleteCount = source.toDelete.isDisposed ? 0 : source.toDelete.Count;
+            var spawned = DisposableList<InstanceDetails>.Create(sourceCount);
+            var deletes = DisposableList<PredictedObjectID>.Create(deleteCount);
+
+            bool hasPreviousRoot = false;
+            bool previousRootVisible = false;
+            PredictedObjectID previousRoot = default;
+
+            for (var i = 0; i < sourceCount; i++)
+            {
+                var record = source.spawnedPrefabs[i];
+                var rootId = record.rootId;
+                if (!hasPreviousRoot || !rootId.Equals(previousRoot))
+                {
+                    previousRoot = rootId;
+                    previousRootVisible = timeline.WasVisibleAt(rootId, tick);
+                    hasPreviousRoot = true;
+                }
+
+                if (previousRootVisible)
+                    spawned.Add(record);
+            }
+
+            Dictionary<PredictedObjectID, PredictedObjectID> rootByPiece = null;
+            try
+            {
+                if (deleteCount > 1)
+                {
+                    rootByPiece =
+                        DictionaryPool<PredictedObjectID, PredictedObjectID>.Instantiate();
+                    for (var i = 0; i < sourceCount; i++)
+                    {
+                        var record = source.spawnedPrefabs[i];
+                        rootByPiece[record.instanceId] = record.rootId;
+                    }
+                }
+
+                for (var i = 0; i < deleteCount; i++)
+                {
+                    var deleteId = source.toDelete[i];
+                    PredictedObjectID rootId;
+                    bool resolved = rootByPiece != null
+                        ? rootByPiece.TryGetValue(deleteId, out rootId)
+                        : TryResolveRoot(in source, deleteId, out rootId);
+
+                    if (resolved && timeline.WasVisibleAt(rootId, tick))
+                        deletes.Add(deleteId);
+                }
+            }
+            finally
+            {
+                if (rootByPiece != null)
+                {
+                    DictionaryPool<PredictedObjectID, PredictedObjectID>.Destroy(
+                        rootByPiece);
+                }
+            }
+
+            return new PredictedHierarchyState(spawned, deletes, source.nextInstanceId);
+        }
+
+        internal static void CollectSpawnedRoots(
+            in PredictedHierarchyState state,
+            HashSet<PredictedObjectID> roots)
+        {
+            if (state.spawnedPrefabs.isDisposed)
+                return;
+
+            for (var i = 0; i < state.spawnedPrefabs.Count; i++)
+                roots.Add(state.spawnedPrefabs[i].rootId);
+        }
+
+        internal static bool StateContainsRoot(in PredictedHierarchyState state, PredictedObjectID rootId)
+        {
+            if (state.spawnedPrefabs.isDisposed)
+                return false;
+
+            for (var i = 0; i < state.spawnedPrefabs.Count; i++)
+            {
+                if (state.spawnedPrefabs[i].rootId.Equals(rootId))
+                    return true;
+            }
+
+            return false;
+        }
+
+        static bool TryResolveRoot(
+            in PredictedHierarchyState state,
+            PredictedObjectID pieceId,
+            out PredictedObjectID rootId)
+        {
+            if (!state.spawnedPrefabs.isDisposed)
+            {
+                for (var i = 0; i < state.spawnedPrefabs.Count; i++)
+                {
+                    var record = state.spawnedPrefabs[i];
+                    if (!record.instanceId.Equals(pieceId))
+                        continue;
+
+                    rootId = record.rootId;
+                    return true;
+                }
+            }
+
+            rootId = default;
+            return false;
+        }
+
+        internal void RunWriteFirstVisibilityState(
+            ulong tick,
+            BitPacker packer,
+            in PredictedHierarchyState projection)
+        {
+            WriteFirstDynamicModuleSnapshot(tick, packer);
+            WriteFirstStateModules(tick, packer);
+            WriteFirstProjectedState(tick, packer, projection);
+        }
+
+        internal bool RunWriteVisibilityState(
+            PlayerID receiver,
+            BitPacker packer,
+            ulong baselineTick,
+            in PredictedIdentityState baselinePrediction,
+            in PredictedHierarchyState baseline,
+            in PredictedHierarchyState current)
+        {
+            bool moduleSetChanged = WriteDynamicModuleSnapshot(receiver, packer, baselineTick);
+            bool modulesChanged = WriteModules(receiver, packer, baselineTick);
+            bool hierarchyChanged = WriteProjectedState(
+                packer,
+                baselinePrediction,
+                baseline,
+                current);
+
+            return moduleSetChanged || modulesChanged || hierarchyChanged;
         }
 
         public void Cleanup()
@@ -1427,6 +1766,11 @@ namespace PurrNet.Prediction
             _pendingSceneReservations.Clear();
             _policyRefreshStamp.Clear();
             _parentingWarned.Clear();
+            _verifiedApplyEntrants.Clear();
+            _visibilityParentsByRoot.Clear();
+            _visibilityChildrenByRoot.Clear();
+            _visibilityDependencyQueue.Clear();
+            InvalidateVisibilityTopology();
             _pool.Clear(predictionManager);
         }
 

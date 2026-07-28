@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Runtime.CompilerServices;
 using JetBrains.Annotations;
 using PurrNet.Modules;
@@ -88,6 +88,20 @@ namespace PurrNet.Prediction
         {
             PredictedIdentityState metadata = default;
             ReadPredictionMetadata(packer, baselineTick, serverTick, ref metadata);
+            SetOwner(metadata.owner);
+        }
+
+        internal override bool HasUnchangedStateBaseline(ulong baselineTick)
+            => TryGetPredictionMetadataBaseline(baselineTick, out _);
+
+        internal override void ReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            if (!TryGetPredictionMetadataBaseline(baselineTick, out var metadata))
+                throw new InvalidOperationException($"Missing metadata baseline at tick {baselineTick}.");
+            StoreVerifiedMetadata(serverTick, in metadata);
             SetOwner(metadata.owner);
         }
 

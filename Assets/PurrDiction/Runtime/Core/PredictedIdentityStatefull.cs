@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using JetBrains.Annotations;
 using PurrNet.Logging;
 using PurrNet.Modules;
@@ -126,7 +126,7 @@ namespace PurrNet.Prediction
             ResetStateToInitialState();
             GetLatestUnityState();
 
-            var interpolationBuffer = (int)Mathf.Max(world.tickRate / (float)10, 2);
+            var interpolationBuffer = PredictionManager.GetViewInterpolationMaxBufferSize(world.tickRate);
 
             if (_interpolatedState == null)
             {
@@ -222,6 +222,13 @@ namespace PurrNet.Prediction
             var copy = fullPredictedState.DeepCopy();
             ModifyRollbackViewState(ref copy.state, delta, accumulateError);
 
+            bool refreshOnly = predictionManager && predictionManager.refreshViewLatchOnly;
+            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _viewState.HasValue))
+            {
+                copy.Dispose();
+                return;
+            }
+
             _viewState?.Dispose();
             _viewState = copy;
         }
@@ -292,12 +299,104 @@ namespace PurrNet.Prediction
             Packer<STATE>.Write(packer, fullPredictedState.state);
         }
 
-        private void RefreshVerifiedFromLive(ulong tick)
+        internal void RefreshVerifiedFromLive(ulong tick)
         {
             if (_verifiedHistory.Count > 0 && _verifiedHistory.MostRecentTick >= tick)
                 return;
 
             StoreVerified(tick, ref fullPredictedState);
+        }
+
+        internal bool TryGetVerifiedState(
+            ulong tick,
+            out PredictedIdentityState prediction,
+            out STATE state)
+        {
+            if (_verifiedHistory != null && _verifiedHistory.ReadOrPrevious(tick, out var fullState))
+            {
+                prediction = fullState.prediction;
+                state = fullState.state;
+                return true;
+            }
+
+            prediction = default;
+            state = default;
+            return false;
+        }
+
+        internal bool RestoreVerifiedState(ulong tick)
+        {
+            if (_verifiedHistory == null ||
+                !_verifiedHistory.ReadOrPrevious(tick, out var verified))
+            {
+                return false;
+            }
+
+            var copy = verified.DeepCopy();
+            WriteOwnedStateIfChanged(tick, ref copy);
+            Rollback(tick);
+            return true;
+        }
+
+        internal void WriteFirstProjectedState(ulong tick, BitPacker packer, in STATE projectedState)
+        {
+            RefreshVerifiedFromLive(tick);
+            Packer<PredictedIdentityState>.Write(packer, fullPredictedState.prediction);
+            Packer<STATE>.Write(packer, projectedState);
+        }
+
+        internal bool WriteProjectedState(
+            BitPacker packer,
+            in PredictedIdentityState baselinePrediction,
+            in STATE projectedBaseline,
+            in STATE projectedCurrent)
+        {
+            int pos = packer.positionInBits;
+            int changedPosition = packer.AdvanceBits(1);
+
+            bool changed = DeltaPacker<PredictedIdentityState>.Write(
+                packer,
+                baselinePrediction,
+                fullPredictedState.prediction);
+            changed |= DeltaPacker<STATE>.Write(packer, projectedBaseline, projectedCurrent);
+
+            packer.WriteAt(changedPosition, changed);
+            if (!changed)
+                packer.SetBitPosition(changedPosition + 1);
+
+            TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
+            return changed;
+        }
+
+        internal void RunWriteFirstProjectedState(
+            ulong tick,
+            BitPacker packer,
+            in STATE projectedState)
+        {
+            WriteFirstDynamicModuleSnapshot(tick, packer);
+            WriteFirstStateModules(tick, packer);
+            WriteFirstProjectedState(tick, packer, projectedState);
+        }
+
+        internal bool RunWriteProjectedState(
+            PlayerID receiver,
+            BitPacker packer,
+            ulong baselineTick,
+            in PredictedIdentityState baselinePrediction,
+            in STATE projectedBaseline,
+            in STATE projectedCurrent)
+        {
+            bool moduleSetChanged = WriteDynamicModuleSnapshot(
+                receiver,
+                packer,
+                baselineTick);
+            bool modulesChanged = WriteModules(receiver, packer, baselineTick);
+            bool stateChanged = WriteProjectedState(
+                packer,
+                baselinePrediction,
+                projectedBaseline,
+                projectedCurrent);
+            return moduleSetChanged || modulesChanged || stateChanged;
         }
 
         internal override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
@@ -320,18 +419,25 @@ namespace PurrNet.Prediction
         internal override bool WriteCurrentState(PlayerID target, BitPacker packer, ulong baselineTick)
         {
             RefreshVerifiedFromLive(predictionManager.localTick);
+            int pos = packer.positionInBits;
 
             if (baselineTick > 0 && _verifiedHistory.MostRecentTick <= baselineTick)
             {
                 Packer<bool>.Write(packer, false);
-                TickBandwidthProfiler.OnWroteState(myType, 1, this);
+                TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
                 return false;
             }
 
-            int pos = packer.positionInBits;
-
             if (!_verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
                 baseline = default;
+
+            if (baselineTick > 0 &&
+                baseline.HasSameContents(ref fullPredictedState))
+            {
+                Packer<bool>.Write(packer, false);
+                TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
+                return false;
+            }
 
             Packer<bool>.Write(packer, true);
             DeltaPacker<PredictedIdentityState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
@@ -341,6 +447,13 @@ namespace PurrNet.Prediction
             return true;
         }
 
+        /// <summary>
+        /// Serializes the current state as a delta against the receiver's acknowledged baseline.
+        /// Must be a pure function of the two states: ReadDeltaState must reconstruct the exact
+        /// current state from the written bits and the same baseline. Records whose state matches
+        /// the baseline may be omitted from the frame entirely, in which case the receiver carries
+        /// the baseline forward without invoking either method.
+        /// </summary>
         protected virtual void WriteDeltaState(BitPacker packer, in STATE baseline, in STATE current)
         {
             DeltaPacker<STATE>.Write(packer, baseline, current);
@@ -363,12 +476,19 @@ namespace PurrNet.Prediction
                 newState = default;
                 DeltaPacker<PredictedIdentityState>.Read(packer, baseline.prediction, ref newState.prediction);
                 ReadDeltaState(packer, in baseline.state, ref newState.state);
-                StoreVerified(serverTick, ref newState);
             }
             else
             {
                 newState = baseline.DeepCopy();
             }
+
+            ApplyVerifiedState(tick, serverTick, ref newState);
+            TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
+        }
+
+        private void ApplyVerifiedState(ulong tick, ulong serverTick, ref FULL_STATE<STATE> newState)
+        {
+            StoreVerified(serverTick, ref newState);
 
             if (UsesSoftCorrectionTimeline())
             {
@@ -388,7 +508,26 @@ namespace PurrNet.Prediction
             }
 
             WriteOwnedStateIfChanged(tick, ref newState);
-            TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
+        }
+
+        internal override bool HasUnchangedStateBaseline(ulong baselineTick)
+            => _verifiedHistory != null &&
+               _verifiedHistory.ReadOrPrevious(baselineTick, out _);
+
+        internal override void ReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            if (_verifiedHistory == null ||
+                !_verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
+            {
+                throw new InvalidOperationException(
+                    $"Missing verified state baseline at tick {baselineTick}.");
+            }
+
+            var newState = baseline.DeepCopy();
+            ApplyVerifiedState(tick, serverTick, ref newState);
         }
 
         private void StoreVerified(ulong serverTick, ref FULL_STATE<STATE> state)
@@ -441,11 +580,17 @@ namespace PurrNet.Prediction
 
             if (_viewState.HasValue)
             {
+                int depthBeforeAdd = _interpolatedState.bufferSize;
                 _interpolatedState.Add(_viewState.Value);
+                if (_interpolatedState.bufferSize <= depthBeforeAdd && predictionManager)
+                    predictionManager.ReportViewBufferTrim();
                 _viewState = null;
             }
 
             viewState = _interpolatedState.Advance(deltaTime).state;
+
+            if (_interpolatedState.bufferSize == 0 && predictionManager)
+                predictionManager.ReportViewBufferStarved();
 
             if (_firstViewUpdate)
             {

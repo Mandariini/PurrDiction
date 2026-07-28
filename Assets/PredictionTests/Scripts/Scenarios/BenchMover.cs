@@ -22,9 +22,13 @@ public class BenchMover : PredictedIdentity<BenchMover.MoverInput, BenchMover.Mo
         public void Dispose() { }
     }
 
+    public static int inputChangePeriod = 1;
+
     protected override void GetFinalInput(ref MoverInput input)
     {
         var t = predictionManager.localTick;
+        if (inputChangePeriod > 1)
+            t -= t % (ulong)inputChangePeriod;
         var phase = (t + (ulong)(id.objectId.instanceId.value % 64)) * 0.1f;
         input.x = Mathf.Sin(phase);
         input.z = Mathf.Cos(phase);

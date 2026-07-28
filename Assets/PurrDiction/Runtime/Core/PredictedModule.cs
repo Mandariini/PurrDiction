@@ -107,9 +107,17 @@ namespace PurrNet.Prediction
         /// </summary>
         protected abstract void SaveState(ulong tick);
         internal bool WriteStateInternal(PlayerID receiver, BitPacker packer, ulong baselineTick) => WriteState(receiver, packer, baselineTick);
+        internal bool HasUnchangedStateBaselineInternal(ulong baselineTick)
+            => HasUnchangedStateBaseline(baselineTick);
+        internal void ReadUnchangedStateInternal(ulong tick, ulong baselineTick, ulong serverTick)
+            => ReadUnchangedState(tick, baselineTick, serverTick);
 
         /// <summary>
         /// Serializes the current state of the module as a delta against the shared baseline tick.
+        /// Must be a pure function of the baseline and current state: ReadState must reconstruct
+        /// the exact state from the written bits and the same baseline. Records whose state
+        /// matches the receiver's acknowledged baseline may be omitted from the frame entirely,
+        /// in which case the receiver carries the baseline forward without invoking ReadState.
         /// </summary>
         /// <returns>True if any data was written (i.e., state changed), otherwise False.</returns>
         protected abstract bool WriteState(PlayerID receiver, BitPacker packer, ulong baselineTick);
@@ -119,6 +127,14 @@ namespace PurrNet.Prediction
         /// Deserializes incoming network data and applies it to the module's state.
         /// </summary>
         protected abstract void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick);
+
+        protected virtual bool HasUnchangedStateBaseline(ulong baselineTick) => false;
+
+        protected virtual void ReadUnchangedState(ulong tick, ulong baselineTick, ulong serverTick)
+        {
+            throw new InvalidOperationException(
+                $"{GetType().Name} does not support unchanged-state carry-forward.");
+        }
 
         internal void WriteFirstStateInternal(ulong tick, BitPacker packer) => WriteFirstState(tick, packer);
 
