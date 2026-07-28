@@ -29,6 +29,7 @@ public class ServerLoadBenchmarkScenario : Scenario
     private GameObject _driverPrefab;
     private int _moverCount = 200;
     private int _inputEvery = 1;
+    private float _minClientApplyRate;
     private float _benchSeconds = 20f;
     private float _settleSeconds = 3f;
     private BenchmarkVisibilityMode _visibilityMode;
@@ -61,6 +62,12 @@ public class ServerLoadBenchmarkScenario : Scenario
         if (CommandLineUtils.TryGetArgument("-benchInputEvery", out var inputEvery)
             && int.TryParse(inputEvery, out var parsedInputEvery) && parsedInputEvery >= 0)
             _inputEvery = parsedInputEvery;
+
+        if (CommandLineUtils.TryGetArgument("-benchMinClientApplyRate", out var minApplyRate)
+            && float.TryParse(minApplyRate, NumberStyles.Float, CultureInfo.InvariantCulture,
+                out var parsedMinApplyRate)
+            && parsedMinApplyRate > 0)
+            _minClientApplyRate = parsedMinApplyRate;
 
         if (CommandLineUtils.TryGetArgument("-benchVisibilityMode", out var visibilityMode)
             && !TryParseVisibilityMode(visibilityMode, out _visibilityMode))
@@ -352,13 +359,34 @@ public class ServerLoadBenchmarkScenario : Scenario
             return ScenarioResult.Fail("server never completed the benchmark");
         }
 
-        return sampleClient
-            ? ScenarioResult.Ok(BuildClientReport(
-                clientPerf,
-                clientElapsedTicks,
-                clientFrameApplies,
-                clientWindowSeconds))
-            : ScenarioResult.Ok();
+        if (!sampleClient)
+            return ScenarioResult.Ok();
+
+        var clientReport = BuildClientReport(
+            clientPerf,
+            clientElapsedTicks,
+            clientFrameApplies,
+            clientWindowSeconds);
+
+        if (_minClientApplyRate > 0)
+        {
+            float applyRate = clientWindowSeconds > 0
+                ? clientFrameApplies / clientWindowSeconds
+                : 0f;
+            if (applyRate < _minClientApplyRate)
+            {
+                return ScenarioResult.Fail(
+                    "client verified-frame apply rate " +
+                    applyRate.ToString("0.##", CultureInfo.InvariantCulture) +
+                    "/s fell below the required " +
+                    _minClientApplyRate.ToString("0.##", CultureInfo.InvariantCulture) +
+                    $"/s (frameApplies={clientFrameApplies} over " +
+                    clientWindowSeconds.ToString("0.#", CultureInfo.InvariantCulture) +
+                    $"s) | {clientReport}");
+            }
+        }
+
+        return ScenarioResult.Ok(clientReport);
     }
 
     private async UniTask<ScenarioResult> Server(ScenarioContext ctx)

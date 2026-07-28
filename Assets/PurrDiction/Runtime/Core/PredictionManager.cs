@@ -643,6 +643,7 @@ namespace PurrNet.Prediction
                     clientFrame.sentVisibilityTick = 0;
                     clientFrame.maxUnreliableFrameBytes = maxUnreliableFrameBytes;
                     clientFrame.reliableFrame.Clear();
+                    clientFrame.baselineAdvance.Reset();
                     _clientFrames[i] = clientFrame;
                     found = true;
                     break;
@@ -870,7 +871,6 @@ namespace PurrNet.Prediction
         private BitPacker _cachedInputPayload;
         private ulong _cachedInputFirstTick;
         private uint _cachedInputTickCount;
-        private ulong _cachedInputFrameAck;
         private bool _cachedInputFragmented;
         private double _lastInputSendTime;
 
@@ -881,7 +881,6 @@ namespace PurrNet.Prediction
             _cachedInputPayload.WriteBitsWithoutConsumingIt(payload, payload.positionInBits);
             _cachedInputFirstTick = firstTick;
             _cachedInputTickCount = tickCount;
-            _cachedInputFrameAck = _verifiedServerTick;
             _cachedInputFragmented = payload.positionInBytes >= InputMtu;
         }
 
@@ -908,8 +907,8 @@ namespace PurrNet.Prediction
             payload.WriteBitsWithoutConsumingIt(_cachedInputPayload, _cachedInputPayload.positionInBits);
 
             if (_cachedInputFragmented)
-                SendInputToServerFragmented(_cachedInputFirstTick, _cachedInputTickCount, _cachedInputFrameAck, payload);
-            else SendInputToServer(_cachedInputFirstTick, _cachedInputTickCount, _cachedInputFrameAck, payload);
+                SendInputToServerFragmented(_cachedInputFirstTick, _cachedInputTickCount, _verifiedServerTick, payload);
+            else SendInputToServer(_cachedInputFirstTick, _cachedInputTickCount, _verifiedServerTick, payload);
         }
 
         private void FinalizeInputOnClient(DisposableList<PredictedIdentity> ownedIdentities)
@@ -999,6 +998,11 @@ namespace PurrNet.Prediction
                 if (ackLag > maxAckLag)
                     maxAckLag = ackLag;
 
+                clientFrame.baselineAdvance.Observe(
+                    localTick,
+                    baselineTick,
+                    ReliableRecoveryWindowTicks(tickRate));
+
                 if (clientFrame.reliableFrame.ShouldSuppress(baselineTick))
                 {
                     clientFrame.preparedFrameTick = 0;
@@ -1008,6 +1012,11 @@ namespace PurrNet.Prediction
                 }
 
                 clientFrame.preparedFrameTick = localTick;
+
+                if (!clientFrame.fullFrame && clientFrame.baselineAdvance.distressed)
+                {
+                    clientFrame.fullFrame = true;
+                }
 
                 if (!clientFrame.fullFrame && baselineTick > 0 &&
                     localTick > baselineTick && localTick - baselineTick > (ulong)(tickRate * 8))
@@ -1299,7 +1308,7 @@ namespace PurrNet.Prediction
                 var requiresReliableRecovery = RequiresReliableRecovery(
                     fullFrame,
                     deltaLen,
-                    clientFrame.maxUnreliableFrameBytes);
+                    clientFrame.maxUnreliableFrameBytes) || clientFrame.baselineAdvance.distressed;
 
                 ulong inputAck = 0;
                 ulong baselineTick = 0;
@@ -1386,6 +1395,12 @@ namespace PurrNet.Prediction
             int maxUnreliableFrameBytes)
         {
             return fullFrame || frameBytes > maxUnreliableFrameBytes;
+        }
+
+        internal static ulong ReliableRecoveryWindowTicks(int tickRate)
+        {
+            var half = (ulong)Math.Max(1, tickRate / 2);
+            return half > MaxInputWindow ? half : MaxInputWindow;
         }
 
         /// <summary>
