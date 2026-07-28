@@ -63,6 +63,11 @@ public class ServerLoadBenchmarkScenario : Scenario
             && int.TryParse(inputEvery, out var parsedInputEvery) && parsedInputEvery >= 0)
             _inputEvery = parsedInputEvery;
 
+        BenchMover.inputChangePeriod = 1;
+        if (CommandLineUtils.TryGetArgument("-benchInputPeriod", out var inputPeriod)
+            && int.TryParse(inputPeriod, out var parsedInputPeriod) && parsedInputPeriod >= 1)
+            BenchMover.inputChangePeriod = parsedInputPeriod;
+
         if (CommandLineUtils.TryGetArgument("-benchMinClientApplyRate", out var minApplyRate)
             && float.TryParse(minApplyRate, NumberStyles.Float, CultureInfo.InvariantCulture,
                 out var parsedMinApplyRate)

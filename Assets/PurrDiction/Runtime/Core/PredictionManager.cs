@@ -1112,6 +1112,10 @@ namespace PurrNet.Prediction
             public PredictedIdentity system;
             public int bitOrigin;
             public int bitLength;
+            // The payload bits match this system's entry in the previous tick's shared block, so
+            // a receiver that already decoded the previous tick can be sent a 1-bit repeat marker
+            // instead of the payload.
+            public bool samePayloadAsPrev;
         }
 
         private struct CachedInputBlock
@@ -1120,10 +1124,14 @@ namespace PurrNet.Prediction
             public uint version;
             public BitPacker packer;
             public List<CachedInputEntry> entries;
-            // Pre-framed (entryCount + repeated id/bitLength/bits) view of every entry, built once
-            // per tick. Lets a fully-visible ("pass-through") receiver's frame be assembled with a
-            // single bulk copy instead of an O(entries) per-receiver filter-and-reframe pass.
+            public bool sameIdsAsPrev;
+            // Pre-framed views of every entry, built once per tick, so a fully-visible
+            // ("pass-through") receiver's frame is assembled with a single bulk copy instead of an
+            // O(entries) per-receiver filter-and-reframe pass. The full form is self-contained and
+            // anchors a receiver's window; the dedup form elides ids and payloads that match the
+            // previous tick's block and is only valid when the receiver decodes that block first.
             public BitPacker framedPacker;
+            public BitPacker dedupFramedPacker;
         }
 
         private CachedInputBlock[] _inputBlockCache;
@@ -1143,6 +1151,7 @@ namespace PurrNet.Prediction
             {
                 _inputBlockCache[i].packer?.Dispose();
                 _inputBlockCache[i].framedPacker?.Dispose();
+                _inputBlockCache[i].dedupFramedPacker?.Dispose();
                 _inputBlockCache[i] = default;
             }
 
@@ -1190,21 +1199,121 @@ namespace PurrNet.Prediction
                 });
             }
 
+            ComputePrevTickDedup(ref slot, tick);
+
             slot.framedPacker ??= BitPackerPool.Get();
             var framed = slot.framedPacker;
             framed.ResetPositionAndMode(false);
+            Packer<bool>.Write(framed, false);
             Packer<PackedUInt>.Write(framed, (uint)slot.entries.Count);
             for (var i = 0; i < slot.entries.Count; i++)
             {
                 var entry = slot.entries[i];
                 Packer<PredictedComponentID>.Write(framed, entry.system.id);
+                Packer<bool>.Write(framed, false);
                 Packer<PackedUInt>.Write(framed, (uint)entry.bitLength);
                 framed.WriteBitDataWithoutConsumingIt(
                     new BitData(block, entry.bitOrigin, entry.bitLength));
             }
 
+            slot.dedupFramedPacker ??= BitPackerPool.Get();
+            var dedup = slot.dedupFramedPacker;
+            dedup.ResetPositionAndMode(false);
+            Packer<bool>.Write(dedup, slot.sameIdsAsPrev);
+            if (!slot.sameIdsAsPrev)
+                Packer<PackedUInt>.Write(dedup, (uint)slot.entries.Count);
+            for (var i = 0; i < slot.entries.Count; i++)
+            {
+                var entry = slot.entries[i];
+                if (!slot.sameIdsAsPrev)
+                    Packer<PredictedComponentID>.Write(dedup, entry.system.id);
+                Packer<bool>.Write(dedup, entry.samePayloadAsPrev);
+                if (entry.samePayloadAsPrev)
+                    continue;
+                Packer<PackedUInt>.Write(dedup, (uint)entry.bitLength);
+                dedup.WriteBitDataWithoutConsumingIt(
+                    new BitData(block, entry.bitOrigin, entry.bitLength));
+            }
+
             return slot;
         }
+
+        private readonly Dictionary<PredictedIdentity, int> _prevInputEntryLookup = new();
+
+        private void ComputePrevTickDedup(ref CachedInputBlock slot, ulong tick)
+        {
+            slot.sameIdsAsPrev = false;
+            if (tick == 0)
+                return;
+
+            var prevIndex = (int)((tick - 1) % (ulong)_inputBlockCache.Length);
+            ref var prevSlot = ref _inputBlockCache[prevIndex];
+            if (prevSlot.packer == null || prevSlot.tick != tick - 1 ||
+                prevSlot.version != _inputBlockVersion)
+            {
+                return;
+            }
+
+            var entries = slot.entries;
+            var prevEntries = prevSlot.entries;
+
+            bool sameIds = entries.Count == prevEntries.Count;
+            if (sameIds)
+            {
+                for (var i = 0; i < entries.Count; i++)
+                {
+                    if (!ReferenceEquals(entries[i].system, prevEntries[i].system))
+                    {
+                        sameIds = false;
+                        break;
+                    }
+                }
+            }
+
+            slot.sameIdsAsPrev = sameIds;
+
+            if (sameIds)
+            {
+                for (var i = 0; i < entries.Count; i++)
+                {
+                    var entry = entries[i];
+                    var prevEntry = prevEntries[i];
+                    entry.samePayloadAsPrev =
+                        new BitData(slot.packer, entry.bitOrigin, entry.bitLength).Equals(
+                            new BitData(prevSlot.packer, prevEntry.bitOrigin, prevEntry.bitLength));
+                    entries[i] = entry;
+                }
+                return;
+            }
+
+            _prevInputEntryLookup.Clear();
+            for (var i = 0; i < prevEntries.Count; i++)
+                _prevInputEntryLookup[prevEntries[i].system] = i;
+
+            for (var i = 0; i < entries.Count; i++)
+            {
+                var entry = entries[i];
+                if (_prevInputEntryLookup.TryGetValue(entry.system, out var prevIdx))
+                {
+                    var prevEntry = prevEntries[prevIdx];
+                    entry.samePayloadAsPrev =
+                        new BitData(slot.packer, entry.bitOrigin, entry.bitLength).Equals(
+                            new BitData(prevSlot.packer, prevEntry.bitOrigin, prevEntry.bitLength));
+                    entries[i] = entry;
+                }
+            }
+        }
+
+        private struct InputHistorySpan
+        {
+            public PredictedComponentID id;
+            public int bitOrigin;
+            public int bitLength;
+        }
+
+        private List<InputHistorySpan> _inputSpanPrev = new();
+        private List<InputHistorySpan> _inputSpanCurr = new();
+        private readonly Dictionary<PredictedComponentID, int> _inputSpanPrevLookup = new();
 
         private void ReadInputHistory(BitPacker frame, ulong serverTick)
         {
@@ -1216,37 +1325,122 @@ namespace PurrNet.Prediction
             ulong from = serverTick - tickCount.value;
             using var entryPayload = BitPackerPool.Get();
 
+            var prev = _inputSpanPrev;
+            var curr = _inputSpanCurr;
+            prev.Clear();
+            curr.Clear();
+
             for (uint k = 0; k < tickCount.value; k++)
             {
                 ulong t = from + 1 + k;
 
-                PackedUInt entryCount = default;
-                Packer<PackedUInt>.Read(frame, ref entryCount);
-
-                for (uint e = 0; e < entryCount.value; e++)
+                bool sameIds = Packer<bool>.Read(frame);
+                if (sameIds && k == 0)
                 {
-                    PredictedComponentID pid = default;
-                    Packer<PredictedComponentID>.Read(frame, ref pid);
-                    PackedUInt bits = default;
-                    Packer<PackedUInt>.Read(frame, ref bits);
+                    throw new InvalidOperationException(
+                        "Input history window opened with a same-ids block; the first tick of a " +
+                        "window must be self-contained.");
+                }
 
-                    int payloadLength = checked((int)bits.value);
-                    entryPayload.ResetPositionAndMode(false);
-                    entryPayload.WriteBits(frame, payloadLength);
-                    entryPayload.ResetPositionAndMode(true);
+                uint entryCount;
+                if (sameIds)
+                {
+                    entryCount = (uint)prev.Count;
+                }
+                else
+                {
+                    PackedUInt packedCount = default;
+                    Packer<PackedUInt>.Read(frame, ref packedCount);
+                    entryCount = packedCount.value;
+                }
+
+                bool lookupBuilt = false;
+                curr.Clear();
+
+                for (uint e = 0; e < entryCount; e++)
+                {
+                    PredictedComponentID pid;
+                    if (sameIds)
+                    {
+                        pid = prev[(int)e].id;
+                    }
+                    else
+                    {
+                        pid = default;
+                        Packer<PredictedComponentID>.Read(frame, ref pid);
+                    }
+
+                    bool repeat = Packer<bool>.Read(frame);
+                    int origin;
+                    int payloadLength;
+
+                    if (repeat)
+                    {
+                        if (sameIds)
+                        {
+                            origin = prev[(int)e].bitOrigin;
+                            payloadLength = prev[(int)e].bitLength;
+                        }
+                        else
+                        {
+                            if (!lookupBuilt)
+                            {
+                                _inputSpanPrevLookup.Clear();
+                                for (var i = 0; i < prev.Count; i++)
+                                    _inputSpanPrevLookup[prev[i].id] = i;
+                                lookupBuilt = true;
+                            }
+
+                            if (!_inputSpanPrevLookup.TryGetValue(pid, out var prevIdx))
+                            {
+                                throw new InvalidOperationException(
+                                    $"Input history record {pid} repeats a payload that is " +
+                                    "absent from the previous tick's block.");
+                            }
+
+                            origin = prev[prevIdx].bitOrigin;
+                            payloadLength = prev[prevIdx].bitLength;
+                        }
+                    }
+                    else
+                    {
+                        PackedUInt bits = default;
+                        Packer<PackedUInt>.Read(frame, ref bits);
+                        payloadLength = checked((int)bits.value);
+                        origin = frame.positionInBits;
+                        frame.SkipBits(payloadLength);
+                    }
+
+                    curr.Add(new InputHistorySpan
+                    {
+                        id = pid,
+                        bitOrigin = origin,
+                        bitLength = payloadLength
+                    });
 
                     if (_instanceMap.TryGetValue(pid, out var system))
+                    {
+                        entryPayload.ResetPositionAndMode(false);
+                        entryPayload.WriteBitDataWithoutConsumingIt(
+                            new BitData(frame, origin, payloadLength));
+                        entryPayload.ResetPositionAndMode(true);
                         system.ReadFirstInput(t, entryPayload);
 
-                    if (entryPayload.positionInBits > payloadLength)
-                    {
-                        throw new InvalidOperationException(
-                            $"Input history record {pid} consumed " +
-                            $"{entryPayload.positionInBits} bits, past its " +
-                            $"declared {bits.value}-bit payload.");
+                        if (entryPayload.positionInBits > payloadLength)
+                        {
+                            throw new InvalidOperationException(
+                                $"Input history record {pid} consumed " +
+                                $"{entryPayload.positionInBits} bits, past its " +
+                                $"declared {payloadLength}-bit payload.");
+                        }
                     }
                 }
+
+                (prev, curr) = (curr, prev);
             }
+
+            _inputSpanPrev = prev;
+            _inputSpanCurr = curr;
         }
 
         private void RollbackAllToVerified(ulong tick)
