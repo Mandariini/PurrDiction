@@ -15,13 +15,6 @@ using UnityEngine.SceneManagement;
 
 namespace PurrNet.Prediction
 {
-    [Serializable]
-    public struct InputQueueSettings
-    {
-        [Tooltip("When a client's input for the current tick has not arrived, reuse its last known input instead of simulating with default input.")]
-        public bool extrapolateForMissing;
-    }
-
     [DefaultExecutionOrder(1000)]
     [AddComponentMenu("PurrDiction/Prediction Manager")]
     public partial class PredictionManager : NetworkIdentity
@@ -51,10 +44,8 @@ namespace PurrNet.Prediction
             BuiltInSystems.Players |
             BuiltInSystems.Random;
         [SerializeField] private PredictedPrefabs _predictedPrefabs;
-        [SerializeField] private InputQueueSettings _inputQueueSettings = new()
-        {
-            extrapolateForMissing = true
-        };
+        [Tooltip("When a client's input for the current tick has not arrived, reuse its last known input instead of simulating with default input.")]
+        [SerializeField] private bool _extrapolateMissingInputs = true;
 
         [Header("Determinism")]
         [Tooltip("How the server responds when a client's deterministic state diverges. Per-identity overrides on DeterministicIdentity take precedence. Ignore has zero overhead.")]
@@ -426,7 +417,7 @@ namespace PurrNet.Prediction
                 _deltas.Dequeue().Dispose();
         }
 
-        private uint _nextSystemId = 0;
+        private uint _nextSystemId;
 
         public T RegisterSystem<T>() where T : PredictedIdentity
         {
@@ -734,7 +725,7 @@ namespace PurrNet.Prediction
                 bool controller = system.IsOwner(myPlayer, cachedIsServer);
                 if (controller)
                     ownedIdentities.Add(system);
-                system.PrepareInput(cachedIsServer, controller, localTick, _inputQueueSettings.extrapolateForMissing);
+                system.PrepareInput(cachedIsServer, controller, localTick, _extrapolateMissingInputs);
             }
 
             if (!cachedIsServer)
