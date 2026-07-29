@@ -282,9 +282,7 @@ MonoBehaviour:
   _updateViewMode: 1
   _builtInSystems: 31
   _predictedPrefabs: {fileID: 11400000, guid: 39c3ccb5e99d3c74d954336a5d3de783, type: 2}
-  _inputQueueSettings:
-    minInputs: 1
-    maxInputs: 4
+  _extrapolateMissingInputs: 1
 --- !u!4 &839157851
 Transform:
   m_ObjectHideFlags: 0

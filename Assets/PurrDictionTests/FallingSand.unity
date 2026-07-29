@@ -494,8 +494,7 @@ MonoBehaviour:
   _updateViewMode: 1
   _builtInSystems: -1
   _predictedPrefabs: {fileID: 11400000, guid: 079cc261e29382d4d8d5fb2f904403a0, type: 2}
-  _inputQueueSettings:
-    extrapolateForMissing: 1
+  _extrapolateMissingInputs: 1
     minInputs: 1
     maxInputs: 2
   _validateDeterministicData: 0
