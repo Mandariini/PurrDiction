@@ -121,6 +121,8 @@ namespace PurrNet.Prediction
             if (ev.me.TryGetIdentity<PredictedRigidbody2D>(predictionManager, out var me))
             {
                 var otherGo = ev.other.GetGameObject(predictionManager);
+                if (!otherGo && ev.other.objectId.instanceId.value != 0)
+                    return;
                 if (ev.isTrigger)
                 {
                     switch (ev.type)

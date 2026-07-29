@@ -82,10 +82,22 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-desyncScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<DesyncCorrectionScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-includeHistoryStressScenario"))
             gameObject.AddComponent<HistoryStressScenario>();
 
         gameObject.AddComponent<TrailIntegrityScenario>();
+        gameObject.AddComponent<DesyncCorrectionScenario>();
 
         gameObject.AddComponent<PieceLifecycleScenario>();
         gameObject.AddComponent<PieceReconnectScenario>();
@@ -326,18 +338,30 @@ public class PredictionBootstrap : Scenario
         if (ctx.isClient)
             _networkManager.StartClient();
 
-        try
+        float connectDeadline = Time.realtimeSinceStartup + _connectionTimeout;
+        int connectRetries = 0;
+        while (!IsConnected() && Time.realtimeSinceStartup < connectDeadline)
         {
-            await UniTaskUtils.WaitWithTimeout(IsConnected, _connectionTimeout, ctx.cancellationToken);
-            Debug.Log(
-                $"[PredictionTests] {_role} local connection ready " +
-                $"(server={_networkManager.isServer}, client={_networkManager.isClient}, players={_networkManager.playerCount}/{_expectedConnections})");
+            await UniTask.Delay(500, cancellationToken: ctx.cancellationToken);
+
+            if (!IsConnected() &&
+                ctx.isClient &&
+                _networkManager.clientState == ConnectionState.Disconnected)
+            {
+                _networkManager.StartClient();
+                connectRetries++;
+            }
         }
-        catch (TimeoutException)
+
+        if (!IsConnected())
         {
             return ScenarioResult.Fail(
-                $"local {_role} never connected (server={_networkManager.isServer}, client={_networkManager.isClient})");
+                $"local {_role} never connected (server={_networkManager.isServer}, client={_networkManager.isClient}, retries={connectRetries})");
         }
+
+        Debug.Log(
+            $"[PredictionTests] {_role} local connection ready " +
+            $"(server={_networkManager.isServer}, client={_networkManager.isClient}, players={_networkManager.playerCount}/{_expectedConnections}, retries={connectRetries})");
 
         try
         {

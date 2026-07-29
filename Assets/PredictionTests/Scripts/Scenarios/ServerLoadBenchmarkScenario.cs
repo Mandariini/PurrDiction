@@ -46,6 +46,23 @@ public class ServerLoadBenchmarkScenario : Scenario
     private ulong _windowDataReceived;
     private ulong _windowReliableFrames;
     private ulong _windowFullFrames;
+    private ulong _windowDeltaFrames;
+    private ulong _windowDeltaBytes;
+    private ulong _windowFullBytes;
+    private int _windowMaxDeltaBytes;
+    private ulong _windowDeleteBits;
+    private ulong _windowHierarchyBits;
+    private ulong _windowInputBits;
+    private ulong _windowStateBits;
+    private ulong _windowSuppressedTicks;
+    private ulong _windowLatchCycles;
+    private ulong _windowLatchTicks;
+    private ulong _windowMaxLatchTicks;
+    private ulong _clientFramesReceived;
+    private ulong _clientFullFramesReceived;
+    private ulong _clientRenderApplies;
+    private ulong _clientTickApplies;
+    private int _clientMaxApplyAge;
     private int _visibilityValidatedPlayers;
 
     public override void Setup(ScenarioContext ctx, NetworkManager manager)
@@ -258,6 +275,8 @@ public class ServerLoadBenchmarkScenario : Scenario
         ulong clientElapsedTicks = 0;
         long clientFrameApplies = 0;
         float clientWindowSeconds = 0f;
+        ulong clientStartFramesReceived = pm.framesReceivedTotal;
+        ulong clientStartFullFramesReceived = pm.fullFramesReceivedTotal;
         void OnClientFrameApplied() => clientFrameApplies++;
 
         if (sampleClient)
@@ -290,6 +309,11 @@ public class ServerLoadBenchmarkScenario : Scenario
             {
                 clientElapsedTicks = pm.localTick - clientStartTick;
                 clientWindowSeconds = Time.realtimeSinceStartup - clientWindowStart;
+                _clientFramesReceived = pm.framesReceivedTotal - clientStartFramesReceived;
+                _clientFullFramesReceived = pm.fullFramesReceivedTotal - clientStartFullFramesReceived;
+                _clientRenderApplies = pm.renderPhaseFrameAppliesTotal;
+                _clientTickApplies = pm.tickPhaseFrameAppliesTotal;
+                _clientMaxApplyAge = pm.maxFrameApplyAgeFrames;
                 clientPerf = sampler.Stop(pm);
             }
         }
@@ -491,6 +515,16 @@ public class ServerLoadBenchmarkScenario : Scenario
             var startTick = pm.localTick;
             var startReliableFrames = pm.reliableFramesSentTotal;
             var startFullFrames = pm.fullFramesSentTotal;
+            var startDeltaFrames = pm.deltaFramesWrittenTotal;
+            var startSuppressedTicks = pm.suppressedTicksTotal;
+            var startLatchCycles = pm.latchCyclesTotal;
+            var startLatchTicks = pm.latchTicksTotal;
+            var startDeltaBytes = pm.deltaFrameBytesTotal;
+            var startFullBytes = pm.fullFrameBytesTotal;
+            var startDeleteBits = pm.deltaSectionDeleteBitsTotal;
+            var startHierarchyBits = pm.deltaSectionHierarchyBitsTotal;
+            var startInputBits = pm.deltaSectionInputBitsTotal;
+            var startStateBits = pm.deltaSectionStateBitsTotal;
             double lagSum = 0;
             ulong lagMax = 0;
             int lagSamples = 0;
@@ -520,6 +554,18 @@ public class ServerLoadBenchmarkScenario : Scenario
                 elapsedTicks = pm.localTick - startTick;
                 _windowReliableFrames = pm.reliableFramesSentTotal - startReliableFrames;
                 _windowFullFrames = pm.fullFramesSentTotal - startFullFrames;
+                _windowDeltaFrames = pm.deltaFramesWrittenTotal - startDeltaFrames;
+                _windowSuppressedTicks = pm.suppressedTicksTotal - startSuppressedTicks;
+                _windowLatchCycles = pm.latchCyclesTotal - startLatchCycles;
+                _windowLatchTicks = pm.latchTicksTotal - startLatchTicks;
+                _windowMaxLatchTicks = pm.maxLatchTicks;
+                _windowDeltaBytes = pm.deltaFrameBytesTotal - startDeltaBytes;
+                _windowFullBytes = pm.fullFrameBytesTotal - startFullBytes;
+                _windowMaxDeltaBytes = pm.maxDeltaFrameBytes;
+                _windowDeleteBits = pm.deltaSectionDeleteBitsTotal - startDeleteBits;
+                _windowHierarchyBits = pm.deltaSectionHierarchyBitsTotal - startHierarchyBits;
+                _windowInputBits = pm.deltaSectionInputBitsTotal - startInputBits;
+                _windowStateBits = pm.deltaSectionStateBitsTotal - startStateBits;
                 perf = sampler.Stop(pm);
             }
             finally
@@ -790,6 +836,20 @@ public class ServerLoadBenchmarkScenario : Scenario
         sb.Append(" ackLagMax=").Append(lagMax);
         sb.Append(" reliableFrames=").Append(_windowReliableFrames);
         sb.Append(" fullFrames=").Append(_windowFullFrames);
+        sb.Append(" suppressedTicks=").Append(_windowSuppressedTicks);
+        sb.Append(" latchCycles=").Append(_windowLatchCycles);
+        sb.Append(" latchTicksAvg=").Append(
+            (_windowLatchCycles > 0 ? (double)_windowLatchTicks / _windowLatchCycles : 0)
+            .ToString("0.#", CultureInfo.InvariantCulture));
+        sb.Append(" maxLatchTicks=").Append(_windowMaxLatchTicks);
+        sb.Append(" deltaFrames=").Append(_windowDeltaFrames);
+        sb.Append(" deltaBytes=").Append(_windowDeltaBytes);
+        sb.Append(" fullBytes=").Append(_windowFullBytes);
+        sb.Append(" maxDeltaBytes=").Append(_windowMaxDeltaBytes);
+        sb.Append(" deleteKB=").Append((_windowDeleteBits / 8 / 1024).ToString(CultureInfo.InvariantCulture));
+        sb.Append(" hierarchyKB=").Append((_windowHierarchyBits / 8 / 1024).ToString(CultureInfo.InvariantCulture));
+        sb.Append(" inputKB=").Append((_windowInputBits / 8 / 1024).ToString(CultureInfo.InvariantCulture));
+        sb.Append(" stateKB=").Append((_windowStateBits / 8 / 1024).ToString(CultureInfo.InvariantCulture));
         sb.Append(" windowDataSent=").Append(_windowDataSent);
         sb.Append(" windowDataReceived=").Append(_windowDataReceived);
         sb.Append(" visibilityValidatedPlayers=")
@@ -814,6 +874,11 @@ public class ServerLoadBenchmarkScenario : Scenario
         sb.Append(" framesPerSecond=").Append(
             (windowSeconds > 0 ? frameApplies / windowSeconds : 0)
             .ToString("0.##", CultureInfo.InvariantCulture));
+        sb.Append(" framesReceived=").Append(_clientFramesReceived);
+        sb.Append(" fullFramesReceived=").Append(_clientFullFramesReceived);
+        sb.Append(" renderApplies=").Append(_clientRenderApplies);
+        sb.Append(" tickApplies=").Append(_clientTickApplies);
+        sb.Append(" maxApplyAge=").Append(_clientMaxApplyAge);
         AppendMarkerSections(sb, perf, elapsedTicks);
         return sb.ToString();
     }

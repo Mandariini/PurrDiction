@@ -8,6 +8,19 @@ namespace PurrNet.Prediction
 {
     public abstract class DeterministicIdentity<STATE> : PredictedIdentity where STATE : struct, IPredictedData<STATE>
     {
+        [Tooltip("How the server responds when this identity's deterministic state diverges on a client. Inherit uses the PredictionManager's global policy.")]
+        [SerializeField] private DesyncPolicyOverride _desyncPolicy = DesyncPolicyOverride.Inherit;
+
+        /// <summary>
+        /// Per-identity override of the PredictionManager's global desync policy.
+        /// Resolved once during Setup; changing it after the identity is set up has no effect.
+        /// </summary>
+        public DesyncPolicyOverride desyncPolicy
+        {
+            get => _desyncPolicy;
+            set => _desyncPolicy = value;
+        }
+
         public override bool isDeterministic => true;
 
         protected virtual void Simulate(ref STATE state, sfloat delta) { }
@@ -16,33 +29,13 @@ namespace PurrNet.Prediction
 
         internal override bool WriteCurrentState(PlayerID target, BitPacker packer, ulong baselineTick)
         {
-            bool metadataChanged = WritePredictionMetadata(packer, baselineTick, in fullPredictedState.prediction);
-
-            if (predictionManager.validateDeterministicData)
-            {
-                Packer<STATE>.Write(packer, fullPredictedState.state);
-                return true;
-            }
-
-            return metadataChanged;
+            return WritePredictionMetadata(packer, baselineTick, in fullPredictedState.prediction);
         }
 
         internal override void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
         {
             PredictedIdentityState prediction = default;
             ReadPredictionMetadata(packer, baselineTick, serverTick, ref prediction);
-
-            if (predictionManager.validateDeterministicData)
-            {
-                STATE read = default;
-                Packer<STATE>.Read(packer, ref read);
-
-                if (_hasPendingValidation)
-                    _pendingValidationState.Dispose();
-
-                _pendingValidationState = read;
-                _hasPendingValidation = true;
-            }
 
             if (_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
             {
@@ -86,25 +79,23 @@ namespace PurrNet.Prediction
             }
         }
 
-        private STATE _pendingValidationState;
-        private bool _hasPendingValidation;
-
-        internal override void ValidateDeterministicState(ulong serverTick)
+        internal override bool TryGetDeterministicStateHash(ulong tick, out ushort hash)
         {
-            if (!_hasPendingValidation)
-                return;
+            hash = 0;
+            if (_stateHistory == null || !_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
+                return false;
 
-            _hasPendingValidation = false;
+            using var packer = BitPackerPool.Get();
+            Packer<STATE>.Write(packer, stateAtTick.state);
+            hash = DeterministicStateHash.Compute(packer, tick);
+            return true;
+        }
 
-            if (!Packer.AreEqual(_pendingValidationState, fullPredictedState.state))
-            {
-                Debug.LogError(
-                    $"State mismatch (server tick: {serverTick}), should be:\n{_pendingValidationState.ToString()}\nBut its:\n{fullPredictedState.state.ToString()}");
-                Debug.Break();
-            }
-
-            _pendingValidationState.Dispose();
-            _pendingValidationState = default;
+        internal override string GetDeterministicStateString(ulong tick)
+        {
+            if (_stateHistory == null || !_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
+                return "<no state history at tick>";
+            return stateAtTick.state.ToString();
         }
 
         public PredictedHierarchy hierarchy { get; private set; }
@@ -150,13 +141,6 @@ namespace PurrNet.Prediction
 
         private void DisposeStateStorage()
         {
-            if (_hasPendingValidation)
-            {
-                _pendingValidationState.Dispose();
-                _pendingValidationState = default;
-                _hasPendingValidation = false;
-            }
-
             _viewState?.Dispose();
             _viewState = null;
 
@@ -205,6 +189,8 @@ namespace PurrNet.Prediction
         {
             myType = GetType();
             hierarchy = world.hierarchy;
+
+            resolvedDesyncPolicy = DesyncPolicyResolution.Resolve(_desyncPolicy, world.desyncPolicy);
 
             base.Setup(manager, world, id, owner);
 

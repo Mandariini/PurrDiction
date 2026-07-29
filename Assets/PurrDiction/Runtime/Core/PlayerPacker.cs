@@ -11,6 +11,10 @@ namespace PurrNet.Prediction
         public ulong preparedVisibilityTick;
         public ulong sentVisibilityTick;
         public int maxUnreliableFrameBytes;
+        public ulong reliableSentAtLocalTick;
+        public ulong reliableSentBaselineTick;
+        public ulong reliableSentInputAck;
+        public bool reliableSentFullFrame;
         public ReliableFrameDeliveryState reliableFrame;
         public BaselineAdvanceTracker baselineAdvance;
 
@@ -20,6 +24,10 @@ namespace PurrNet.Prediction
             preparedFrameTick = 0;
             preparedVisibilityTick = 0;
             sentVisibilityTick = 0;
+            reliableSentAtLocalTick = 0;
+            reliableSentBaselineTick = 0;
+            reliableSentInputAck = 0;
+            reliableSentFullFrame = false;
             reliableFrame.Clear();
             baselineAdvance.Reset();
         }
@@ -33,8 +41,16 @@ namespace PurrNet.Prediction
     /// </summary>
     internal struct BaselineAdvanceTracker
     {
+        // After a distress episode the link is likely to relapse as soon as regular deltas
+        // resume; re-evaluating on a fraction of the window keeps the recovery cadence bound
+        // to the ack round trip instead of the full detection window.
+        internal const ulong FastRearmWindowDivisor = 8;
+        internal const ulong MinFastRearmWindowTicks = 4;
+        internal const byte FastRearmHealthyWindowsToDecay = 16;
+
         private ulong _windowStartTick;
         private ulong _windowStartBaseline;
+        private byte _fastRearmWindows;
 
         public bool distressed { get; private set; }
 
@@ -55,12 +71,27 @@ namespace PurrNet.Prediction
                 return;
             }
 
+            if (_fastRearmWindows > 0)
+            {
+                var fastWindow = windowTicks / FastRearmWindowDivisor;
+                if (fastWindow < MinFastRearmWindowTicks)
+                    fastWindow = MinFastRearmWindowTicks;
+                if (fastWindow < windowTicks)
+                    windowTicks = fastWindow;
+            }
+
             ulong elapsed = localTick - _windowStartTick;
             if (elapsed < windowTicks)
                 return;
 
             ulong advanced = baselineTick - _windowStartBaseline;
             distressed = advanced * 2 < elapsed;
+
+            if (distressed)
+                _fastRearmWindows = FastRearmHealthyWindowsToDecay;
+            else if (_fastRearmWindows > 0)
+                _fastRearmWindows--;
+
             _windowStartTick = localTick;
             _windowStartBaseline = baselineTick;
         }
@@ -69,6 +100,7 @@ namespace PurrNet.Prediction
         {
             _windowStartTick = 0;
             _windowStartBaseline = 0;
+            _fastRearmWindows = 0;
             distressed = false;
         }
     }

@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using PurrNet.Modules;
 using PurrNet.Packing;
 using PurrNet.Pooling;
-using PurrNet.Utils;
 using Unity.Profiling;
 using UnityEngine;
 
@@ -94,7 +93,6 @@ namespace PurrNet.Prediction
         /// </summary>
         public virtual bool supportsSoftCorrection => false;
 
-        [Header("Predicted Identity")]
         [SerializeField, Tooltip("Use the nearest PredictionPolicyScope by default, or explicitly override it for this identity.")]
         private PredictionPolicySource _predictionPolicySource = PredictionPolicySource.UseScope;
 
@@ -801,6 +799,14 @@ namespace PurrNet.Prediction
 
         internal virtual bool HasInputAt(ulong tick) => false;
 
-        internal virtual void ValidateDeterministicState(ulong serverTick) { }
+        internal DesyncPolicy resolvedDesyncPolicy = DesyncPolicy.Ignore;
+
+        internal virtual bool TryGetDeterministicStateHash(ulong tick, out ushort hash)
+        {
+            hash = 0;
+            return false;
+        }
+
+        internal virtual string GetDeterministicStateString(ulong tick) => null;
     }
 }

@@ -127,6 +127,62 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void RelapseAfterDistressIsDetectedWithinAFastWindow()
+        {
+            var tracker = new BaselineAdvanceTracker();
+            const ulong window = 32;
+
+            ulong tick = 101;
+            for (; tick <= 101 + window * 2; tick++)
+                tracker.Observe(tick, 100, window);
+            Assert.That(tracker.distressed, Is.True);
+
+            ulong recoveredBaseline = tick - 2;
+            ulong fastWindow = window / BaselineAdvanceTracker.FastRearmWindowDivisor;
+            for (ulong i = 0; i < fastWindow; i++, tick++)
+                tracker.Observe(tick, recoveredBaseline + i, window);
+            Assert.That(tracker.distressed, Is.False);
+
+            ulong stalled = recoveredBaseline + fastWindow - 1;
+            for (ulong i = 0; i <= fastWindow; i++, tick++)
+                tracker.Observe(tick, stalled, window);
+
+            Assert.That(tracker.distressed, Is.True,
+                "relapse after a distress episode should be detected within a fast window");
+        }
+
+        [Test]
+        public void FastRearmDecaysBackToTheFullWindowAfterSustainedHealth()
+        {
+            var tracker = new BaselineAdvanceTracker();
+            const ulong window = 32;
+
+            ulong tick = 101;
+            for (; tick <= 101 + window * 2; tick++)
+                tracker.Observe(tick, 100, window);
+            Assert.That(tracker.distressed, Is.True);
+
+            ulong fastWindow = window / BaselineAdvanceTracker.FastRearmWindowDivisor;
+            ulong healthyTicks = fastWindow * (BaselineAdvanceTracker.FastRearmHealthyWindowsToDecay + 1);
+            ulong baseline = tick - 2;
+            for (ulong i = 0; i < healthyTicks; i++, tick++)
+                tracker.Observe(tick, baseline + i, window);
+            Assert.That(tracker.distressed, Is.False);
+
+            ulong stalledBaseline = baseline + healthyTicks - 1;
+            for (ulong i = 0; i < window / 2; i++, tick++)
+                tracker.Observe(tick, stalledBaseline, window);
+
+            Assert.That(tracker.distressed, Is.False,
+                "after sustained health the tracker should be back on the full window");
+
+            for (ulong i = 0; i <= window; i++, tick++)
+                tracker.Observe(tick, stalledBaseline, window);
+
+            Assert.That(tracker.distressed, Is.True);
+        }
+
+        [Test]
         public void BaselineRegressionResetsTheObservationWindow()
         {
             var tracker = new BaselineAdvanceTracker();

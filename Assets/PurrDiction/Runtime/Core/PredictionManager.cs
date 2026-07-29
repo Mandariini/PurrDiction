@@ -56,8 +56,11 @@ namespace PurrNet.Prediction
             extrapolateForMissing = true
         };
 
-        [Header("Debugging")]
-        [SerializeField] private bool _validateDeterministicData;
+        [Header("Determinism")]
+        [Tooltip("How the server responds when a client's deterministic state diverges. Per-identity overrides on DeterministicIdentity take precedence. Ignore has zero overhead.")]
+        [SerializeField] private DesyncPolicy _desyncPolicy = DesyncPolicy.Ignore;
+        [Tooltip("How often clients report deterministic state hashes to the server, in seconds. Only applies when the resolved policy of at least one identity is not Ignore.")]
+        [SerializeField, Min(0.05f)] private float _desyncCheckIntervalSeconds = 0.25f;
 
         public PredictedPrefabs predictedPrefabs
         {
@@ -69,7 +72,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        public bool validateDeterministicData => _validateDeterministicData;
+        public DesyncPolicy desyncPolicy => _desyncPolicy;
 
         static readonly ProfilerMarker SimulateMarker = new("PredictionManager.Simulate");
         static readonly ProfilerMarker SimulateInputsMarker = new("PredictionManager.PrepareSimulationInputs");
@@ -378,6 +381,8 @@ namespace PurrNet.Prediction
             foreach (var queue in _clientTicks.Values)
                 queue.Clear();
             _clientTicks.Clear();
+            foreach (var packer in _clientFrames)
+                packer.Dispose();
             _clientFrames.Clear();
             localTick = 1;
             localTickInContext = 1;
@@ -403,13 +408,22 @@ namespace PurrNet.Prediction
             ResetSlackController();
             reliableFramesSentTotal = 0;
             fullFramesSentTotal = 0;
+            deltaSectionDeleteBitsTotal = 0;
+            deltaSectionHierarchyBitsTotal = 0;
+            deltaSectionInputBitsTotal = 0;
+            deltaSectionStateBitsTotal = 0;
+            deltaFramesWrittenTotal = 0;
+            deltaFrameBytesTotal = 0;
+            maxDeltaFrameBytes = 0;
+            fullFrameBytesTotal = 0;
             renderPhaseFrameAppliesTotal = 0;
             tickPhaseFrameAppliesTotal = 0;
             maxFrameApplyAgeFrames = 0;
             refreshViewLatchOnly = false;
             ClearVerifiedStores();
             ClearVisibilityReplication();
-            _deltas.Clear();
+            while (_deltas.Count > 0)
+                _deltas.Dequeue().Dispose();
         }
 
         private uint _nextSystemId = 0;
@@ -629,6 +643,7 @@ namespace PurrNet.Prediction
                 var maxUnreliableFrameBytes = GetMaxUnreliableFrameBytes(mtu);
 
                 _clientTicks[player] = new InputQueue();
+                ClearDesyncTrackingForPlayer(player);
 
                 var found = false;
                 for (var i = 0; i < _clientFrames.Count; i++)
@@ -755,8 +770,15 @@ namespace PurrNet.Prediction
 
             using (SimulateInputsMarker.Auto())
             {
-                for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].RunPrepareSimulationInputs(localTick, delta);
+                try
+                {
+                    for (var i = 0; i < _systemsCount; i++)
+                        _systems[i].RunPrepareSimulationInputs(localTick, delta);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                }
             }
 
             var simulateMarker = SimulateMarker.Auto();
@@ -812,8 +834,15 @@ namespace PurrNet.Prediction
                 }
             }
 
-            for (var i = 0; i < _systemsCount; i++)
-                _systems[i].RunPostSimulate();
+            try
+            {
+                for (var i = 0; i < _systemsCount; i++)
+                    _systems[i].RunPostSimulate();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
 
             RestoreSpeculativeRelayStates();
 
@@ -913,8 +942,15 @@ namespace PurrNet.Prediction
 
         private void FinalizeInputOnClient(DisposableList<PredictedIdentity> ownedIdentities)
         {
-            for (var systemIdx = 0; systemIdx < _systemsCount; systemIdx++)
-                _systems[systemIdx].RunGetLatestUnityState();
+            try
+            {
+                for (var systemIdx = 0; systemIdx < _systemsCount; systemIdx++)
+                    _systems[systemIdx].RunGetLatestUnityState();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
 
             ulong firstTick = _inputAckTick + 1;
 
@@ -1005,10 +1041,42 @@ namespace PurrNet.Prediction
 
                 if (clientFrame.reliableFrame.ShouldSuppress(baselineTick))
                 {
+                    suppressedTicksTotal++;
+                    if (clientFrame.reliableSentAtLocalTick != 0 &&
+                        (localTick - clientFrame.reliableSentAtLocalTick) % RecoveryHedgeIntervalTicks == 0)
+                    {
+                        var latchedLen = clientFrame.packer.ToByteData().length;
+                        if (latchedLen <= clientFrame.maxUnreliableFrameBytes)
+                        {
+                            SendFrameToRemote(
+                                player,
+                                clientFrame.reliableSentAtLocalTick,
+                                clientFrame.reliableSentBaselineTick,
+                                clientFrame.reliableSentInputAck,
+                                clientFrame.reliableSentFullFrame,
+                                false,
+                                0,
+                                false,
+                                0,
+                                new BitPackerWithLength(latchedLen, clientFrame.packer));
+                        }
+                    }
                     clientFrame.preparedFrameTick = 0;
                     clientFrame.preparedVisibilityTick = 0;
                     _clientFrames[j] = clientFrame;
                     continue;
+                }
+
+                if (clientFrame.reliableSentAtLocalTick != 0)
+                {
+                    ulong latchTicks = localTick > clientFrame.reliableSentAtLocalTick
+                        ? localTick - clientFrame.reliableSentAtLocalTick
+                        : 0;
+                    latchCyclesTotal++;
+                    latchTicksTotal += latchTicks;
+                    if (latchTicks > maxLatchTicks)
+                        maxLatchTicks = latchTicks;
+                    clientFrame.reliableSentAtLocalTick = 0;
                 }
 
                 clientFrame.preparedFrameTick = localTick;
@@ -1060,7 +1128,11 @@ namespace PurrNet.Prediction
                 }
                 else
                 {
+                    long sectionStart = frame.positionInBits;
                     WritePendingVisibilityDeleteSection(player, frame, localTick);
+                    deltaSectionDeleteBitsTotal += (ulong)(frame.positionInBits - sectionStart);
+
+                    sectionStart = frame.positionInBits;
                     WriteAddressedHierarchy(
                         player,
                         timeline,
@@ -1068,10 +1140,14 @@ namespace PurrNet.Prediction
                         localTick,
                         baselineTick,
                         false);
+                    deltaSectionHierarchyBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
+                    sectionStart = frame.positionInBits;
                     using (WriteInputHistoryMarker.Auto())
                         WriteVisibilityInputHistory(player, frame, baselineTick, timeline);
+                    deltaSectionInputBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
+                    sectionStart = frame.positionInBits;
                     using (WriteStateDeltasMarker.Auto())
                     {
                         WriteAddressedStateSection(
@@ -1083,6 +1159,8 @@ namespace PurrNet.Prediction
                             false,
                             false);
                     }
+                    deltaSectionStateBitsTotal += (ulong)(frame.positionInBits - sectionStart);
+                    deltaFramesWrittenTotal++;
                 }
             }
 
@@ -1106,6 +1184,28 @@ namespace PurrNet.Prediction
         /// Diagnostic only.
         /// </summary>
         public ulong fullFramesSentTotal { get; private set; }
+
+        /// <summary>
+        /// Reliable-frame suppression latch accounting: ticks spent suppressed, completed latch
+        /// cycles, cumulative and worst latch duration in ticks. Diagnostic only.
+        /// </summary>
+        public ulong suppressedTicksTotal { get; private set; }
+        public ulong latchCyclesTotal { get; private set; }
+        public ulong latchTicksTotal { get; private set; }
+        public ulong maxLatchTicks { get; private set; }
+
+        /// <summary>
+        /// Cumulative bits written into each section of per-client delta frames, plus delta and
+        /// full frame byte totals and the largest single delta frame. Diagnostic only.
+        /// </summary>
+        public ulong deltaSectionDeleteBitsTotal { get; private set; }
+        public ulong deltaSectionHierarchyBitsTotal { get; private set; }
+        public ulong deltaSectionInputBitsTotal { get; private set; }
+        public ulong deltaSectionStateBitsTotal { get; private set; }
+        public ulong deltaFramesWrittenTotal { get; private set; }
+        public ulong deltaFrameBytesTotal { get; private set; }
+        public int maxDeltaFrameBytes { get; private set; }
+        public ulong fullFrameBytesTotal { get; private set; }
 
         internal struct CachedInputEntry
         {
@@ -1540,13 +1640,26 @@ namespace PurrNet.Prediction
                 }
 
                 if (requiresReliableRecovery)
+                {
                     SendFrameToRemoteReliable(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
+                    if (deltaLen <= clientFrame.maxUnreliableFrameBytes)
+                        SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
+                }
                 else SendFrameToRemote(player, localTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
 
                 if (requiresReliableRecovery)
                     reliableFramesSentTotal++;
                 if (fullFrame)
+                {
                     fullFramesSentTotal++;
+                    fullFrameBytesTotal += (ulong)deltaLen;
+                }
+                else
+                {
+                    deltaFrameBytesTotal += (ulong)deltaLen;
+                    if (deltaLen > maxDeltaFrameBytes)
+                        maxDeltaFrameBytes = deltaLen;
+                }
 
                 clientFrame.sentVisibilityTick = localTick;
                 clientFrame.preparedVisibilityTick = 0;
@@ -1555,7 +1668,13 @@ namespace PurrNet.Prediction
                 MarkPendingVisibilityDeletesSent(player, localTick);
 
                 if (requiresReliableRecovery)
+                {
                     clientFrame.reliableFrame.MarkSent(localTick);
+                    clientFrame.reliableSentAtLocalTick = localTick;
+                    clientFrame.reliableSentBaselineTick = baselineTick;
+                    clientFrame.reliableSentInputAck = inputAck;
+                    clientFrame.reliableSentFullFrame = fullFrame;
+                }
 
                 clientFrame.preparedFrameTick = 0;
                 if (fullFrame)
@@ -1596,6 +1715,8 @@ namespace PurrNet.Prediction
             var half = (ulong)Math.Max(1, tickRate / 2);
             return half > MaxInputWindow ? half : MaxInputWindow;
         }
+
+        internal const ulong RecoveryHedgeIntervalTicks = 4;
 
         /// <summary>
         /// Is the prediction manager currently replaying a frame?
@@ -1761,9 +1882,19 @@ namespace PurrNet.Prediction
             HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
         }
 
+        /// <summary>
+        /// Client-side counts of frames received from the server, split by kind. Diagnostic only.
+        /// </summary>
+        public ulong framesReceivedTotal { get; private set; }
+        public ulong fullFramesReceivedTotal { get; private set; }
+
         private void HandleFrameFromServer(ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
         {
             delta.packer.SkipBytes(delta.originalLength);
+
+            framesReceivedTotal++;
+            if (fullFrame)
+                fullFramesReceivedTotal++;
 
             if (inputAck > _inputAckTick)
                 _inputAckTick = inputAck;
@@ -2268,20 +2399,12 @@ namespace PurrNet.Prediction
                     else
                     {
                         RollbackToFrame(frame.packer, frame.serverTick, frame.baselineTick, frame.serverTick);
-
-                        if (_validateDeterministicData)
-                        {
-                            for (var i = 0; i < _systemsCount; i++)
-                            {
-                                if (_systems[i].isDeterministic)
-                                    _systems[i].ValidateDeterministicState(frame.serverTick);
-                            }
-                        }
-
                         SimulateFrame(frame.serverTick, HistorySaveMode.VerifiedFrame);
                         SaveEnteringState(frame.serverTick + 1);
                         _verifiedServerTick = frame.serverTick;
                     }
+
+                    MaybeSendDesyncReport(frame.serverTick);
 
                     applied = true;
                     isVerified = false;
@@ -2570,8 +2693,15 @@ namespace PurrNet.Prediction
 
             using (SimulateInputsMarker.Auto())
             {
-                for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].RunPrepareSimulationInputs(verifiedTick, delta);
+                try
+                {
+                    for (var i = 0; i < _systemsCount; i++)
+                        _systems[i].RunPrepareSimulationInputs(verifiedTick, delta);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogException(e);
+                }
             }
 
             var simulateMarker = SimulateMarker.Auto();
@@ -2619,11 +2749,25 @@ namespace PurrNet.Prediction
                 }
             }
 
-            for (var i = 0; i < _systemsCount; i++)
-                _systems[i].RunPostSimulate();
+            try
+            {
+                for (var i = 0; i < _systemsCount; i++)
+                    _systems[i].RunPostSimulate();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
 
-            for (var j = 0; j < _systemsCount; j++)
-                _systems[j].RunGetLatestUnityState();
+            try
+            {
+                for (var j = 0; j < _systemsCount; j++)
+                    _systems[j].RunGetLatestUnityState();
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+            }
 
             RestoreSpeculativeRelayStates();
 

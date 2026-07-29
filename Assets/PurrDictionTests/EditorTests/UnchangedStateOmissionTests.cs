@@ -773,10 +773,10 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void DeterministicValidationControlsSectionOmission()
+        public void DesyncHealForcesSingleFullDeterministicRecord()
         {
-            var managerObject = new GameObject("Deterministic sparse manager");
-            var identityObject = new GameObject("Deterministic sparse identity");
+            var managerObject = new GameObject("Deterministic heal manager");
+            var identityObject = new GameObject("Deterministic heal identity");
             try
             {
                 var manager = CreateManager(managerObject);
@@ -798,35 +798,51 @@ namespace PurrNet.Prediction.Tests.Editor
                 SetLocalTick(manager, 12);
                 RegisterSystem(manager, identity);
 
-                using (var validationOff = BitPackerPool.Get())
+                using (var noHeal = BitPackerPool.Get())
                 {
                     WriteAddressedStateSection(
                         manager,
                         new PlayerVisibilityTimeline(),
-                        validationOff,
+                        noHeal,
                         tick: 12,
                         baselineTick: 10,
                         fullFrame: false);
-                    validationOff.ResetPositionAndMode(true);
+                    noHeal.ResetPositionAndMode(true);
                     PackedUInt count = default;
-                    Packer<PackedUInt>.Read(validationOff, ref count);
+                    Packer<PackedUInt>.Read(noHeal, ref count);
                     Assert.That(count.value, Is.Zero);
                 }
 
-                SetField(
+                var heals = GetField<Dictionary<PlayerID, HashSet<PredictedComponentID>>>(
                     typeof(PredictionManager),
                     manager,
-                    "_validateDeterministicData",
-                    true);
-                using var validationOn = BitPackerPool.Get();
+                    "_pendingDesyncHeals");
+                heals[default] = new HashSet<PredictedComponentID> { id };
+
+                using (var healed = BitPackerPool.Get())
+                {
+                    WriteAddressedStateSection(
+                        manager,
+                        new PlayerVisibilityTimeline(),
+                        healed,
+                        tick: 12,
+                        baselineTick: 10,
+                        fullFrame: false);
+                    AssertSingleRecord(healed, id, expectedFullState: true);
+                }
+
+                using var consumed = BitPackerPool.Get();
                 WriteAddressedStateSection(
                     manager,
                     new PlayerVisibilityTimeline(),
-                    validationOn,
+                    consumed,
                     tick: 12,
                     baselineTick: 10,
                     fullFrame: false);
-                AssertSingleRecord(validationOn, id, expectedFullState: false);
+                consumed.ResetPositionAndMode(true);
+                PackedUInt afterCount = default;
+                Packer<PackedUInt>.Read(consumed, ref afterCount);
+                Assert.That(afterCount.value, Is.Zero);
             }
             finally
             {

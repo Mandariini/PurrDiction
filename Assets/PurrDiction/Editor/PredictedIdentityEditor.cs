@@ -16,6 +16,10 @@ namespace PurrNet.Prediction.Editor
     {
         static GUIStyle _box;
         bool _showPredictedModules = false;
+        bool _overridesVisible = false;
+
+        static readonly string[] _defaultOverrideProps = { "m_Script", "_predictionPolicySource", "_predictionPolicy" };
+        static readonly string[] _defaultOverridePropsWithDesync = { "m_Script", "_predictionPolicySource", "_predictionPolicy", "_desyncPolicy" };
 
         public override VisualElement CreateInspectorGUI()
         {
@@ -24,7 +28,31 @@ namespace PurrNet.Prediction.Editor
 
         public override void OnInspectorGUI()
         {
+#if TRI_INSPECTOR_PACKAGE || ODIN_INSPECTOR
             base.OnInspectorGUI();
+#else
+            var source = serializedObject.FindProperty("_predictionPolicySource");
+            var policy = serializedObject.FindProperty("_predictionPolicy");
+
+            if (source == null || policy == null)
+            {
+                base.OnInspectorGUI();
+            }
+            else
+            {
+                serializedObject.Update();
+                var desync = serializedObject.FindProperty("_desyncPolicy");
+
+                using (new EditorGUI.DisabledScope(true))
+                    EditorGUILayout.PropertyField(serializedObject.FindProperty("m_Script"));
+
+                DrawPropertiesExcluding(
+                    serializedObject,
+                    desync != null ? _defaultOverridePropsWithDesync : _defaultOverrideProps);
+                DrawOverrideDefaults(source, policy, desync);
+                serializedObject.ApplyModifiedProperties();
+            }
+#endif
 
             GUILayout.Space(10);
             GUILayout.Label($"Predicted State", EditorStyles.boldLabel);
@@ -99,6 +127,55 @@ namespace PurrNet.Prediction.Editor
                         MessageType.Warning);
                 }
             }
+        }
+
+        private void DrawOverrideDefaults(
+            SerializedProperty source,
+            SerializedProperty policy,
+            SerializedProperty desync)
+        {
+            string label = "Override Defaults";
+
+            bool sourceMixed = source.hasMultipleDifferentValues;
+            bool sourceOverridden = source.enumValueIndex == (int)PredictionPolicySource.OverrideScope;
+            bool desyncMixed = desync != null && desync.hasMultipleDifferentValues;
+            bool desyncOverridden = desync != null && desync.enumValueIndex != 0;
+
+            if (sourceMixed || sourceOverridden || desyncMixed || desyncOverridden)
+            {
+                label += " (";
+                label += sourceMixed ? "P*" : (sourceOverridden ? "P" : "");
+                if ((sourceMixed || sourceOverridden) && (desyncMixed || desyncOverridden))
+                    label += ",";
+                label += desyncMixed ? "D*" : (desyncOverridden ? "D" : "");
+                label += ")";
+            }
+
+            _overridesVisible = EditorGUILayout.BeginFoldoutHeaderGroup(_overridesVisible, label);
+
+            if (_overridesVisible)
+            {
+                EditorGUI.indentLevel++;
+
+                EditorGUI.showMixedValue = source.hasMultipleDifferentValues;
+                EditorGUILayout.PropertyField(source, new GUIContent("Prediction Policy Source"));
+                EditorGUI.showMixedValue = false;
+
+                EditorGUI.showMixedValue = policy.hasMultipleDifferentValues;
+                EditorGUILayout.PropertyField(policy, new GUIContent("Prediction Policy"));
+                EditorGUI.showMixedValue = false;
+
+                if (desync != null)
+                {
+                    EditorGUI.showMixedValue = desync.hasMultipleDifferentValues;
+                    EditorGUILayout.PropertyField(desync, new GUIContent("Desync Policy"));
+                    EditorGUI.showMixedValue = false;
+                }
+
+                EditorGUI.indentLevel--;
+            }
+
+            EditorGUILayout.EndFoldoutHeaderGroup();
         }
 
         private void DrawPredictedModules(PredictedIdentity predictedIdentity)

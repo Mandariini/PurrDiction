@@ -956,6 +956,8 @@ namespace PurrNet.Prediction
                                      baselineScratch.hasBaseline,
                                      baselineScratch.roots,
                                      baselineScratch.pieces);
+                if (!writeFull && TryConsumeDesyncHeal(player, system.id))
+                    writeFull = true;
                 bool changed;
 
                 if (!TryWriteAggregateVisibilityState(
@@ -1454,14 +1456,6 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            if (applyUnityState &&
-                !eventHandler &&
-                _validateDeterministicData &&
-                system.isDeterministic)
-            {
-                system.RunRollback(stateTick);
-            }
-
             bool softCorrected = system.UsesSoftCorrectionTimeline();
             if (!softCorrected)
                 system.RunClearFuture(stateTick);
@@ -1528,6 +1522,7 @@ namespace PurrNet.Prediction
             _hierarchyBaselineScratchByPlayer.Remove(player);
             _hiddenPiecesScratchByPlayer.Remove(player);
             DisposePlayerInputWindowCache(player);
+            ClearDesyncTrackingForPlayer(player);
         }
 
         void ClearVisibilityReplication()
