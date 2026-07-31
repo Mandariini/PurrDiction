@@ -87,7 +87,7 @@ namespace PurrNet.Prediction
 
             using var packer = BitPackerPool.Get();
             Packer<STATE>.Write(packer, stateAtTick.state);
-            hash = DeterministicStateHash.Compute(packer, tick);
+            hash = DeterministicStateHash.Compute(tick, packer);
             return true;
         }
 
