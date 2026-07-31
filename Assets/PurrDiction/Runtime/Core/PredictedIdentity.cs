@@ -508,6 +508,12 @@ namespace PurrNet.Prediction
             return predictionManager.isSimulating;
         }
 
+        [UsedByIL]
+        public bool CanRunSimulationOnly(string methodName)
+        {
+            return predictionManager && predictionManager.CanRunSimulationOnly(this, methodName);
+        }
+
         public virtual void OnPreSetup() {  }
 
         internal virtual void OnPrepareSimulationInputs(ulong tick, float delta) {  }

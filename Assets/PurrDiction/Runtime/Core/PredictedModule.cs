@@ -64,6 +64,12 @@ namespace PurrNet.Prediction
 
         internal virtual void OnCoreInitialize() { }
 
+        [UsedByIL]
+        public bool CanRunSimulationOnly(string methodName)
+        {
+            return predictionManager && predictionManager.CanRunSimulationOnly(identity, methodName);
+        }
+
         /// <summary>
         /// Called immediately after the module is constructed and registered.
         /// Use this for initialization logic that requires the identity or manager to be set.
