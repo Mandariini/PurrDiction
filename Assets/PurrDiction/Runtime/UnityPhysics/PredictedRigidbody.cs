@@ -35,6 +35,9 @@ namespace PurrNet.Prediction
     [AddComponentMenu("PurrDiction/Unity Rigidbody/Predicted Rigidbody")]
     public class PredictedRigidbody : PredictedIdentity<UnityRigidbodyState>, IPredictedPhysicsCallbacks
     {
+        [Tooltip("Fraction of the remaining velocity error corrected per second when using SoftCorrection.")]
+        [SerializeField, Min(0f)] private float _softVelocityCorrectionRate = 8f;
+
 #if UNITY_PHYSICS_3D
         [SerializeField, PurrLock] private Rigidbody _rigidbody;
         [SerializeField, PurrLock] private FloatAccuracy _floatAccuracy = FloatAccuracy.Medium;
@@ -68,28 +71,41 @@ namespace PurrNet.Prediction
         {
 #if UNITY_6000
             get => _rigidbody.linearVelocity;
-            set => _rigidbody.linearVelocity = value;
+            set
+            {
+                if (_rigidbody.isKinematic)
+                    return;
+
+                _rigidbody.linearVelocity = value;
+            }
 #else
             get => _rigidbody.velocity;
-            set => _rigidbody.velocity = value;
+            set
+            {
+                if (_rigidbody.isKinematic)
+                    return;
+
+                _rigidbody.velocity = value;
+            }
 #endif
         }
 
         public Vector3 velocity
         {
-#if UNITY_6000
-            get => _rigidbody.linearVelocity;
-            set => _rigidbody.linearVelocity = value;
-#else
-            get => _rigidbody.velocity;
-            set => _rigidbody.velocity = value;
-#endif
+            get => linearVelocity;
+            set => linearVelocity = value;
         }
 
         public Vector3 angularVelocity
         {
             get => _rigidbody.angularVelocity;
-            set => _rigidbody.angularVelocity = value;
+            set
+            {
+                if (_rigidbody.isKinematic)
+                    return;
+
+                _rigidbody.angularVelocity = value;
+            }
         }
 
         public bool isKinematic
@@ -104,14 +120,286 @@ namespace PurrNet.Prediction
         }
 
         private bool _defaultKinematic;
+        private CollisionDetectionMode _defaultCollisionMode;
+        private PredictionPolicy _appliedKinematicPolicy = PredictionPolicy.FullPrediction;
+
+        private bool _replayFrozen;
+        private bool _frozenKinematic;
+        private bool _constraintsFrozen;
+        private RigidbodyConstraints _frozenConstraints;
+        private Vector3 _frozenLinearVelocity;
+        private Vector3 _frozenAngularVelocity;
+        private Vector3 _softLinearVelocityError;
+        private Vector3 _softAngularVelocityError;
+        private bool _hasSoftVelocityError;
+
+        private struct AppliedVelocityTotals
+        {
+            public Vector3 linear;
+            public Vector3 angular;
+        }
+
+        private AppliedCorrectionRing<AppliedVelocityTotals> _appliedRing;
+        private Vector3 _appliedLinearTotal;
+        private Vector3 _appliedAngularTotal;
+
+        public override bool controlsTransformPolicy => true;
+        public override bool supportsSoftCorrection => true;
 
         private void Awake()
         {
+            if (!_rigidbody)
+                _rigidbody = GetComponent<Rigidbody>();
             _defaultKinematic = _rigidbody.isKinematic;
+            _defaultCollisionMode = _rigidbody.collisionDetectionMode;
+        }
+
+        internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
+        {
+            if (!_rigidbody)
+                _rigidbody = GetComponent<Rigidbody>();
+            if (_rigidbody && !preservesStateOnSetup)
+                RestoreDefaultPhysicsMode();
+
+            base.Setup(manager, world, id, owner);
+
+            if (!_rigidbody)
+                return;
+
+            if (_replayFrozen)
+            {
+                if (predictionManager && predictionManager.isReplaying)
+                    return;
+
+                ClearStaleFreeze();
+            }
+
+            if (!preservesStateOnSetup)
+                RestoreDefaultPhysicsMode();
+            _appliedKinematicPolicy = PredictionPolicy.FullPrediction;
+            ApplyEffectiveKinematic();
+        }
+
+        private void ApplyEffectiveKinematic()
+        {
+            if (isServer || !_rigidbody)
+                return;
+
+            var effective = EffectivePolicy();
+            if (effective == _appliedKinematicPolicy)
+                return;
+            var previous = _appliedKinematicPolicy;
+            _appliedKinematicPolicy = effective;
+
+            if (_replayFrozen)
+                return;
+
+            if (effective == PredictionPolicy.ServerRelay)
+                ForceRelayKinematic();
+            else if (previous == PredictionPolicy.ServerRelay)
+                RestoreAuthoritativePhysicsState();
+        }
+
+        internal override void SyncEffectivePolicySideEffects()
+        {
+            if (TracksEffectivePolicyChanges())
+                ApplyEffectiveKinematic();
+        }
+
+        private void ForceRelayKinematic()
+        {
+            if (!_rigidbody.isKinematic)
+            {
+                linearVelocity = default;
+                angularVelocity = default;
+            }
+
+            if (_rigidbody.collisionDetectionMode is CollisionDetectionMode.Continuous or CollisionDetectionMode.ContinuousDynamic)
+                _rigidbody.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
+            _rigidbody.isKinematic = true;
+        }
+
+        private void ClearStaleFreeze()
+        {
+            _replayFrozen = false;
+            if (_constraintsFrozen)
+            {
+                _rigidbody.constraints = _frozenConstraints;
+                _constraintsFrozen = false;
+            }
+            RestoreDefaultPhysicsMode();
+        }
+
+        private void RestoreDefaultPhysicsMode()
+        {
+            _rigidbody.isKinematic = _defaultKinematic;
+            _rigidbody.collisionDetectionMode = _defaultCollisionMode;
+        }
+
+        private void RestoreAuthoritativePhysicsState()
+        {
+            ref var state = ref currentState;
+            _rigidbody.isKinematic = state.isKinematic;
+            _rigidbody.collisionDetectionMode = state.isKinematic &&
+                                                _defaultCollisionMode is CollisionDetectionMode.Continuous or
+                                                    CollisionDetectionMode.ContinuousDynamic
+                ? CollisionDetectionMode.ContinuousSpeculative
+                : _defaultCollisionMode;
+            _rigidbody.useGravity = state.useGravity;
+
+            if (state.isKinematic)
+                return;
+
+#if UNITY_6000
+            _rigidbody.linearVelocity = state.linearVelocity;
+#else
+            _rigidbody.velocity = state.linearVelocity;
+#endif
+            _rigidbody.angularVelocity = state.angularVelocity;
+        }
+
+        protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
+        {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
+            ClearSoftVelocityCorrection();
+
+            SyncControlledTransformPolicy(newPolicy);
+
+            ApplyEffectiveKinematic();
+        }
+
+        private void ClearSoftVelocityCorrection()
+        {
+            _softLinearVelocityError = default;
+            _softAngularVelocityError = default;
+            _hasSoftVelocityError = false;
+            _appliedRing?.Clear();
+            _appliedLinearTotal = default;
+            _appliedAngularTotal = default;
+        }
+
+        internal override void OnReplayStart()
+        {
+            if (_replayFrozen)
+                return;
+
+            _replayFrozen = true;
+            _frozenKinematic = _rigidbody.isKinematic;
+            _frozenLinearVelocity = linearVelocity;
+            _frozenAngularVelocity = angularVelocity;
+            _constraintsFrozen = !_frozenKinematic;
+
+            if (_constraintsFrozen)
+            {
+                _frozenConstraints = _rigidbody.constraints;
+                _rigidbody.constraints = RigidbodyConstraints.FreezeAll;
+                linearVelocity = default;
+                angularVelocity = default;
+            }
+        }
+
+        internal override void OnReplayEnd()
+        {
+            if (!_replayFrozen)
+                return;
+
+            _replayFrozen = false;
+
+            if (_constraintsFrozen)
+            {
+                _rigidbody.constraints = _frozenConstraints;
+                _constraintsFrozen = false;
+            }
+
+            if (!isServer && UsesServerRelayTimeline())
+            {
+                ForceRelayKinematic();
+                return;
+            }
+
+            _rigidbody.isKinematic = _frozenKinematic;
+            if (!_frozenKinematic)
+            {
+                linearVelocity = _frozenLinearVelocity;
+                angularVelocity = _frozenAngularVelocity;
+            }
+        }
+
+        internal override void SaveStateInHistory(ulong tick)
+        {
+            base.SaveStateInHistory(tick);
+
+            if (isServer || !UsesSoftCorrectionTimeline())
+                return;
+
+            _appliedRing ??= new AppliedCorrectionRing<AppliedVelocityTotals>(
+                Mathf.Max(1, predictionManager.tickRate * 10));
+            _appliedRing.Record(tick, new AppliedVelocityTotals
+            {
+                linear = _appliedLinearTotal,
+                angular = _appliedAngularTotal
+            });
+        }
+
+        protected override void OnVerifiedStateReceived(ulong tick, in UnityRigidbodyState predicted, in UnityRigidbodyState verified)
+        {
+            if (_replayFrozen)
+                _frozenKinematic = verified.isKinematic;
+            else if (_rigidbody.isKinematic != verified.isKinematic)
+                _rigidbody.isKinematic = verified.isKinematic;
+            useGravity = verified.useGravity;
+
+            var pendingLinear = verified.linearVelocity - predicted.linearVelocity;
+            var pendingAngular = verified.angularVelocity - predicted.angularVelocity;
+
+            if (_appliedRing != null && _appliedRing.TryGetBaseline(tick, out var baseline))
+            {
+                pendingLinear -= _appliedLinearTotal - baseline.linear;
+                pendingAngular -= _appliedAngularTotal - baseline.angular;
+            }
+
+            _softLinearVelocityError = pendingLinear;
+            _softAngularVelocityError = pendingAngular;
+            _hasSoftVelocityError = pendingLinear.sqrMagnitude > 1e-6f ||
+                                    pendingAngular.sqrMagnitude > 1e-6f;
+        }
+
+        protected override void Simulate(ref UnityRigidbodyState state, float delta)
+        {
+            if (!_hasSoftVelocityError || _rigidbody.isKinematic)
+                return;
+
+            float blend = 1f - Mathf.Exp(-Mathf.Max(0f, _softVelocityCorrectionRate) * delta);
+            var linearStep = _softLinearVelocityError * blend;
+            var angularStep = _softAngularVelocityError * blend;
+
+            _softLinearVelocityError -= linearStep;
+            _softAngularVelocityError -= angularStep;
+            _appliedLinearTotal += linearStep;
+            _appliedAngularTotal += angularStep;
+
+            if (_softLinearVelocityError.sqrMagnitude < 1e-6f &&
+                _softAngularVelocityError.sqrMagnitude < 1e-6f)
+            {
+                _softLinearVelocityError = default;
+                _softAngularVelocityError = default;
+                _hasSoftVelocityError = false;
+            }
+
+            linearVelocity += linearStep;
+            angularVelocity += angularStep;
+            state.linearVelocity = linearVelocity;
+            state.angularVelocity = angularVelocity;
         }
 
         public override void OnPreSetup()
         {
+            if (!_rigidbody)
+                _rigidbody = GetComponent<Rigidbody>();
+            if (!_rigidbody)
+                return;
+
+            RestoreDefaultPhysicsMode();
             if (_rigidbody.isKinematic)
                 return;
 
@@ -125,39 +413,38 @@ namespace PurrNet.Prediction
                 _eventMask = PhysicsEventMask.None;
         }
 
-        protected override bool WriteDeltaState(PlayerID target, BitPacker packer, DeltaModule deltaModule)
+        protected override void WriteDeltaState(BitPacker packer, in UnityRigidbodyState baseline, in UnityRigidbodyState current)
         {
             switch (_floatAccuracy)
             {
                 case FloatAccuracy.Purrfect:
-                    return base.WriteDeltaState(target, packer, deltaModule);
+                    base.WriteDeltaState(packer, in baseline, in current);
+                    break;
                 case FloatAccuracy.Medium:
-                {
-                    var key = new DeltaKey<UnityRigidbodyCompressedState>(predictionManager.sceneId, id);
-                    return deltaModule.WriteReliable(packer, target, key, new UnityRigidbodyCompressedState(currentState));
-                }
+                    DeltaPacker<UnityRigidbodyCompressedState>.Write(packer,
+                        new UnityRigidbodyCompressedState(baseline),
+                        new UnityRigidbodyCompressedState(current));
+                    break;
                 case FloatAccuracy.Low:
-                {
-                    var key = new DeltaKey<UnityRigidbodyHalfState>(predictionManager.sceneId, id);
-                    var res = deltaModule.WriteReliable(packer, target, key, new UnityRigidbodyHalfState(currentState));
-                    return res;
-                }
+                    DeltaPacker<UnityRigidbodyHalfState>.Write(packer,
+                        new UnityRigidbodyHalfState(baseline),
+                        new UnityRigidbodyHalfState(current));
+                    break;
                 default: throw new ArgumentOutOfRangeException();
             }
         }
 
-        protected override void ReadDeltaState(BitPacker packer, DeltaModule deltaModule, ref UnityRigidbodyState state)
+        protected override void ReadDeltaState(BitPacker packer, in UnityRigidbodyState baseline, ref UnityRigidbodyState state)
         {
             switch (_floatAccuracy)
             {
                 case FloatAccuracy.Purrfect:
-                    base.ReadDeltaState(packer, deltaModule, ref state);
+                    base.ReadDeltaState(packer, in baseline, ref state);
                     break;
                 case FloatAccuracy.Medium:
                 {
-                    var key = new DeltaKey<UnityRigidbodyCompressedState>(sceneId, id);
                     UnityRigidbodyCompressedState compressedState = default;
-                    deltaModule.ReadReliable(packer, key, ref compressedState);
+                    DeltaPacker<UnityRigidbodyCompressedState>.Read(packer, new UnityRigidbodyCompressedState(baseline), ref compressedState);
 
                     state.linearVelocity = compressedState.linearVelocity;
                     state.angularVelocity = compressedState.angularVelocity;
@@ -168,9 +455,8 @@ namespace PurrNet.Prediction
                 }
                 case FloatAccuracy.Low:
                 {
-                    var key = new DeltaKey<UnityRigidbodyHalfState>(sceneId, id);
                     UnityRigidbodyHalfState halfState = default;
-                    deltaModule.ReadReliable(packer, key, ref halfState);
+                    DeltaPacker<UnityRigidbodyHalfState>.Read(packer, new UnityRigidbodyHalfState(baseline), ref halfState);
 
                     state.linearVelocity = halfState.linearVelocity;
                     state.angularVelocity = halfState.angularVelocity;
@@ -207,7 +493,7 @@ namespace PurrNet.Prediction
         /// <param name="mode">Type of torque to apply.</param>
         public void AddTorque(Vector3 torque, ForceMode mode = ForceMode.Force)
         {
-            _rigidbody.angularVelocity += mode switch
+            angularVelocity += mode switch
             {
                 ForceMode.Force => torque / _rigidbody.mass * predictionManager.tickDelta,
                 ForceMode.Acceleration => torque * predictionManager.tickDelta,
@@ -247,10 +533,8 @@ namespace PurrNet.Prediction
         /// <param name="mode">Type of force to apply.</param>
         public void AddForceAtPosition(Vector3 force, Vector3 position, ForceMode mode = ForceMode.Force)
         {
-            // Apply linear force
             AddForce(force, mode);
 
-            // Calculate and apply torque
             Vector3 relativePosition = position - _rigidbody.worldCenterOfMass;
             Vector3 torque = Vector3.Cross(relativePosition, force);
             AddTorque(torque, mode);
@@ -269,17 +553,13 @@ namespace PurrNet.Prediction
             Vector3 explosionToObject = _rigidbody.position - explosionPosition;
             float distance = explosionToObject.magnitude;
 
-            // Normalize without division by zero
             Vector3 direction = distance > 0.01f ? explosionToObject / distance : Vector3.up;
 
-            // Add upward modifier
             direction += Vector3.up * upwardsModifier;
             direction.Normalize();
 
-            // Calculate force based on distance
             float force = explosionForce * (1.0f - Mathf.Clamp01(distance / explosionRadius));
 
-            // Apply force
             AddForceAtPosition(direction * force, _rigidbody.position, mode);
         }
 
@@ -291,7 +571,20 @@ namespace PurrNet.Prediction
         public override void ResetState()
         {
             base.ResetState();
-            _rigidbody.isKinematic = _defaultKinematic;
+            ClearSoftVelocityCorrection();
+            _replayFrozen = false;
+            if (_constraintsFrozen)
+            {
+                _rigidbody.constraints = _frozenConstraints;
+                _constraintsFrozen = false;
+            }
+            RestoreDefaultPhysicsMode();
+        }
+
+        public override void ResetInterpolation()
+        {
+            base.ResetInterpolation();
+            ClearSoftVelocityCorrection();
         }
 
         protected override UnityRigidbodyState GetInitialState()
@@ -308,6 +601,9 @@ namespace PurrNet.Prediction
 
         protected override void GetUnityState(ref UnityRigidbodyState state)
         {
+            if (!isServer && UsesServerRelayTimeline())
+                return;
+
             state.isKinematic = isKinematic;
             state.linearVelocity = linearVelocity;
             state.angularVelocity = angularVelocity;
@@ -317,6 +613,21 @@ namespace PurrNet.Prediction
 
         protected override void SetUnityState(UnityRigidbodyState state)
         {
+            if (_replayFrozen)
+            {
+                _frozenKinematic = state.isKinematic;
+                _frozenLinearVelocity = state.linearVelocity;
+                _frozenAngularVelocity = state.angularVelocity;
+                useGravity = state.useGravity;
+                return;
+            }
+
+            if (!isServer && UsesServerRelayTimeline())
+            {
+                useGravity = state.useGravity;
+                return;
+            }
+
             isKinematic = state.isKinematic;
             useGravity = state.useGravity;
             if (!state.isKinematic)
@@ -338,7 +649,7 @@ namespace PurrNet.Prediction
             if (!_eventMask.HasFlag(PhysicsEventMask.CollisionEnter))
                 return;
 
-            if (!predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
+            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
             predictionManager.physics3d.RegisterEvent(PhysicsEventType.Enter, this, other);
@@ -349,7 +660,7 @@ namespace PurrNet.Prediction
             if (!_eventMask.HasFlag(PhysicsEventMask.CollisionExit))
                 return;
 
-            if (!predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
+            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
             predictionManager.physics3d.RegisterEvent(PhysicsEventType.Exit, this, other);
@@ -360,7 +671,7 @@ namespace PurrNet.Prediction
             if (!_eventMask.HasFlag(PhysicsEventMask.CollisionStay))
                 return;
 
-            if (!predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
+            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
             predictionManager.physics3d.RegisterEvent(PhysicsEventType.Stay, this, other);
@@ -371,7 +682,7 @@ namespace PurrNet.Prediction
             if (!_eventMask.HasFlag(PhysicsEventMask.TriggerEnter))
                 return;
 
-            if (!predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
+            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
             if (_ignoreTriggerOnTrigger && other.isTrigger)
@@ -385,7 +696,7 @@ namespace PurrNet.Prediction
             if (!_eventMask.HasFlag(PhysicsEventMask.TriggerExit))
                 return;
 
-            if (!predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
+            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
             if (_ignoreTriggerOnTrigger && other.isTrigger)
@@ -399,7 +710,7 @@ namespace PurrNet.Prediction
             if (!_eventMask.HasFlag(PhysicsEventMask.TriggerStay))
                 return;
 
-            if (!predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
+            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
             if (_ignoreTriggerOnTrigger && other.isTrigger)

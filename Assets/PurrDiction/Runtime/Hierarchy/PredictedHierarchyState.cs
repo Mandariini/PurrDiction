@@ -1,4 +1,4 @@
-﻿using PurrNet.Packing;
+using PurrNet.Packing;
 using PurrNet.Pooling;
 
 namespace PurrNet.Prediction

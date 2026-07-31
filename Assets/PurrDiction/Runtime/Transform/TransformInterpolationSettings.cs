@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace PurrNet.Prediction
 {
-    [CreateAssetMenu(fileName = "InterpolationSettings", menuName = "PurrNet/Purrdiction/InterpolationSettings", order = -402)]
+    [CreateAssetMenu(fileName = "InterpolationSettings", menuName = "PurrNet/PurrDiction/InterpolationSettings", order = -402)]
     public class TransformInterpolationSettings : ScriptableObject
     {
         public bool useInterpolation = true;

@@ -26,8 +26,10 @@ namespace PurrNet.Prediction
     {
         public PredictedIdentity identity { get; private set; }
         [Obsolete("Use predictionManager instead. This was a bad naming convention on me - Bobsi")]
-        public PredictionManager manager { get; private set; }
-        public PredictionManager predictionManager => manager;
+        public PredictionManager manager => predictionManager;
+#pragma warning disable CS0618 // Type or member is obsolete
+        public PredictionManager predictionManager { get; private set; }
+#pragma warning restore CS0618 // Type or member is obsolete
 
         /// <summary>
         /// The index of this module within the parent identity's module list.
@@ -35,10 +37,19 @@ namespace PurrNet.Prediction
         /// </summary>
         public int moduleIndex { get; internal set; }
 
+        /// <summary>
+        /// Simulation tick when this dynamic module instance joined its identity. Static modules
+        /// and modules reconstructed from authoritative topology use zero.
+        /// </summary>
+        internal ulong registeredAtTick { get; set; }
+
+        internal readonly uint typeHash;
+
         public PredictedModule(PredictedIdentity identity)
         {
             this.identity = identity;
-            this.manager = identity.predictionManager;
+            this.predictionManager = identity.predictionManager;
+            this.typeHash = Hasher.PrepareType(GetType());
 
             identity.RegisterModule(this);
 
@@ -95,19 +106,35 @@ namespace PurrNet.Prediction
         /// Saves the current state of the module into history for the specified tick.
         /// </summary>
         protected abstract void SaveState(ulong tick);
-        internal bool WriteStateInternal(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)=> WriteState(receiver, packer, deltaModule);
+        internal bool WriteStateInternal(PlayerID receiver, BitPacker packer, ulong baselineTick) => WriteState(receiver, packer, baselineTick);
+        internal bool HasUnchangedStateBaselineInternal(ulong baselineTick)
+            => HasUnchangedStateBaseline(baselineTick);
+        internal void ReadUnchangedStateInternal(ulong tick, ulong baselineTick, ulong serverTick)
+            => ReadUnchangedState(tick, baselineTick, serverTick);
 
         /// <summary>
-        /// Serializes the current state of the module for network transmission.
+        /// Serializes the current state of the module as a delta against the shared baseline tick.
+        /// Must be a pure function of the baseline and current state: ReadState must reconstruct
+        /// the exact state from the written bits and the same baseline. Records whose state
+        /// matches the receiver's acknowledged baseline may be omitted from the frame entirely,
+        /// in which case the receiver carries the baseline forward without invoking ReadState.
         /// </summary>
         /// <returns>True if any data was written (i.e., state changed), otherwise False.</returns>
-        protected abstract bool WriteState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule);
-        internal void ReadStateInternal(ulong tick, BitPacker packer, DeltaModule deltaModule) => ReadState(tick, packer, deltaModule);
+        protected abstract bool WriteState(PlayerID receiver, BitPacker packer, ulong baselineTick);
+        internal void ReadStateInternal(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick) => ReadState(tick, packer, baselineTick, serverTick);
 
         /// <summary>
         /// Deserializes incoming network data and applies it to the module's state.
         /// </summary>
-        protected abstract void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule);
+        protected abstract void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick);
+
+        protected virtual bool HasUnchangedStateBaseline(ulong baselineTick) => false;
+
+        protected virtual void ReadUnchangedState(ulong tick, ulong baselineTick, ulong serverTick)
+        {
+            throw new InvalidOperationException(
+                $"{GetType().Name} does not support unchanged-state carry-forward.");
+        }
 
         internal void WriteFirstStateInternal(ulong tick, BitPacker packer) => WriteFirstState(tick, packer);
 
@@ -116,12 +143,12 @@ namespace PurrNet.Prediction
         /// Unlike WriteState, this does not use delta compression.
         /// </summary>
         protected abstract void WriteFirstState(ulong tick, BitPacker packer);
-        internal void ReadFirstStateInternal(ulong tick, BitPacker packer) => ReadFirstState(tick, packer);
+        internal void ReadFirstStateInternal(ulong tick, BitPacker packer, ulong serverTick) => ReadFirstState(tick, packer, serverTick);
 
         /// <summary>
         /// Reads the full initial state of the module.
         /// </summary>
-        protected abstract void ReadFirstState(ulong tick, BitPacker packer);
+        protected abstract void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick);
         internal void ClearFutureInternal(ulong tick) => ClearFuture(tick);
 
         /// <summary>
@@ -147,6 +174,7 @@ namespace PurrNet.Prediction
         /// <summary>
         /// Updates the interpolation state used for smooth visual rollback.
         /// </summary>
+        /// <param name="delta"></param>
         /// <param name="accumulateError">If true, the difference between predicted and actual state is added to an error accumulator for smoothing.</param>
         protected virtual void UpdateInterpolation(float delta, bool accumulateError) { }
         internal void ResetInterpolationInternal() => ResetInterpolation();
@@ -156,5 +184,55 @@ namespace PurrNet.Prediction
         /// Typically called on teleport or spawn.
         /// </summary>
         protected virtual void ResetInterpolation() { }
+
+        /// <summary>
+        /// Removes this module from its parent identity.
+        /// Only valid for modules registered during simulation.
+        /// Modules created before the first simulation tick are not removable.
+        /// </summary>
+        public void Dispose()
+        {
+            if (identity != null)
+                identity.RemoveModuleInternal(this);
+        }
+
+        internal void OnRemovedInternal()
+        {
+            OnDisposed();
+            onDisposed?.Invoke();
+        }
+
+        internal void ReleaseStateForPoolInternal()
+        {
+            ReleaseStateForPool();
+        }
+
+        internal void TriggerDestroyedEvent()
+        {
+            Destroyed();
+        }
+
+        /// <summary>
+        /// Invoked when the module is removed from its identity.
+        /// Use this to drop any external references to the module.
+        /// </summary>
+        public event Action onDisposed;
+
+        /// <summary>
+        /// Called when the module is being removed from the identity.
+        /// Override to release any owned resources.
+        /// </summary>
+        protected virtual void OnDisposed() { }
+
+        /// <summary>
+        /// Called when the owning identity is parked in a prefab pool but the module instance is kept for reuse.
+        /// </summary>
+        protected virtual void ReleaseStateForPool() { }
+
+        /// <summary>
+        /// Invoked when the owning identity is being despawned and cleaned up.
+        /// Allows for any necessary teardown or resource release to be handled.
+        /// </summary>
+        protected virtual void Destroyed() { }
     }
 }

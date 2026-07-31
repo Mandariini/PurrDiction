@@ -1,3 +1,4 @@
+using PurrNet.Logging;
 using PurrNet.Modules;
 using PurrNet.Packing;
 using PurrNet.Prediction.Profiler;
@@ -43,7 +44,38 @@ namespace PurrNet.Prediction
         {
             base.Setup(manager, world, id, owner);
 
-            _inputHistory = new History<INPUT>(world.tickRate * 5);
+            if (_inputHistory == null)
+                _inputHistory = new History<INPUT>(world.tickRate * 5);
+            DisposeInputStorage();
+        }
+
+        internal override void ReleasePredictionStateForPool()
+        {
+            base.ReleasePredictionStateForPool();
+            DisposeInputStorage();
+        }
+
+        protected override void OnDestroy()
+        {
+            base.OnDestroy();
+            DisposeInputStorage();
+        }
+
+        private void DisposeInputStorage()
+        {
+            _inputHistory?.Clear();
+            _currentInput.Dispose();
+            _currentInput = default;
+            _nextInput.Dispose();
+            _nextInput = default;
+            _lastInput?.Dispose();
+            _lastInput = null;
+            if (_queuedInput.HasValue)
+            {
+                var queuedInput = _queuedInput.Value;
+                queuedInput.Dispose();
+                _queuedInput = null;
+            }
         }
 
         internal override void OnPrepareSimulationInputs(ulong tick, float delta)
@@ -107,8 +139,17 @@ namespace PurrNet.Prediction
         {
             if (isLocal)
             {
-                GetFinalInput(ref _nextInput);
-                SanitizeInput(ref _nextInput);
+                try
+                {
+                    GetFinalInput(ref _nextInput);
+                    SanitizeInput(ref _nextInput);
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogException(e);
+                    _nextInput = GetDefaultInput();
+                }
+
                 _lastInput?.Dispose();
                 _lastInput = _nextInput;
                 _inputHistory.Write(tick, Packer.Copy(_nextInput));
@@ -129,7 +170,18 @@ namespace PurrNet.Prediction
                 }
 
                 var input = _queuedInput.Value;
-                SanitizeInput(ref input);
+
+                try
+                {
+                    SanitizeInput(ref input);
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogException(e);
+                    input.Dispose();
+                    input = GetDefaultInput();
+                }
+
                 _lastInput?.Dispose();
                 _lastInput = input;
                 _inputHistory.Write(tick, Packer.Copy(input));
@@ -139,7 +191,7 @@ namespace PurrNet.Prediction
 
         protected virtual void Update()
         {
-            if(isController)
+            if (isController)
                 UpdateInput(ref _nextInput);
         }
 
@@ -157,43 +209,9 @@ namespace PurrNet.Prediction
             PreSimulate(_lastInput.GetValueOrDefault(), ref state, delta);
         }
 
-        DeltaKey<INPUT, STATE> key => new DeltaKey<INPUT, STATE>(sceneId, id);
-
-        internal override void WriteInput(ulong localTick, PlayerID receiver, BitPacker input, DeltaModule deltaModule, bool reliable)
+        internal override bool HasInputAt(ulong tick)
         {
-            int pos = input.positionInBits;
-
-            if (_inputHistory.TryGet(localTick, out var savedInput))
-            {
-                Packer<bool>.Write(input, true);
-
-                if (reliable)
-                     deltaModule.WriteReliable(input, receiver, key, savedInput);
-                else deltaModule.Write(input, receiver, key, savedInput);
-            }
-            else
-            {
-                Packer<bool>.Write(input, false);
-            }
-
-            TickBandwidthProfiler.OnWroteInput(myType, input.positionInBits - pos, this);
-        }
-
-        internal override void ReadInput(ulong tick, PlayerID sender, BitPacker packer, DeltaModule deltaModule, bool reliable)
-        {
-            var pos = packer.positionInBits;
-
-            if (Packer<bool>.Read(packer))
-            {
-                INPUT input = default;
-                if (reliable)
-                    deltaModule.ReadReliable(packer, key, ref input);
-                else deltaModule.Read(packer, key, sender, ref input);
-                _inputHistory.Write(tick, input);
-            }
-            else _inputHistory.Remove(tick);
-
-            TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);
+            return _inputHistory != null && _inputHistory.TryGet(tick, out _);
         }
 
         public override void WriteFirstInput(ulong localTick, BitPacker packer)
@@ -233,19 +251,33 @@ namespace PurrNet.Prediction
         /// <param name="input"></param>
         protected virtual void SanitizeInput(ref INPUT input) { }
 
-        internal override void QueueInput(BitPacker packer, PlayerID sender, DeltaModule deltaModule, bool reliable)
+        internal override void QueueInput(BitPacker packer, PlayerID sender)
         {
             int pos = packer.positionInBits;
             if (Packer<bool>.Read(packer))
             {
                 INPUT input = default;
-
-                if (reliable)
-                     deltaModule.ReadReliable(packer, key, ref input);
-                else deltaModule.Read(packer, key, sender, ref input);
+                Packer<INPUT>.Read(packer, ref input);
 
                 var sanitizedInput = input;
-                SanitizeInput(ref sanitizedInput);
+
+                try
+                {
+                    SanitizeInput(ref sanitizedInput);
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogException(e);
+                    sanitizedInput.Dispose();
+                    sanitizedInput = GetDefaultInput();
+                }
+
+                if (_queuedInput.HasValue)
+                {
+                    var queuedInput = _queuedInput.Value;
+                    queuedInput.Dispose();
+                }
+
                 _queuedInput = sanitizedInput;
             }
             TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);

@@ -1,0 +1,398 @@
+name: Prediction Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      clientCount:
+        description: "Total player count to exercise"
+        required: true
+        default: "5"
+      connectionDelaySeconds:
+        description: "Seconds to wait after server starts before launching clients"
+        required: true
+        default: "1"
+      timeoutMinutes:
+        description: "Hard timeout for the whole job, in minutes"
+        required: true
+        default: "30"
+      profileTimeoutSeconds:
+        description: "Seconds before one profile is treated as hung"
+        required: true
+        default: "420"
+      jobTempLeakValidation:
+        description: "Enable Unity JobTemp allocation diagnostics (high overhead)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  prediction-tests:
+    name: ${{ matrix.mode }} mode
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.timeoutMinutes || '30') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # "server" runs a pure server process + N client processes.
+        # "host" runs a host (server+client in one process) + N-1 client processes.
+        mode: [server, host]
+
+    env:
+      CLIENT_COUNT: ${{ inputs.clientCount || '5' }}
+      CONNECT_DELAY: ${{ inputs.connectionDelaySeconds || '1' }}
+      PROFILE_TIMEOUT_SECONDS: ${{ inputs.profileTimeoutSeconds || '420' }}
+      JOB_TEMP_LEAK_VALIDATION: ${{ inputs.jobTempLeakValidation && 'true' || 'false' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore Library cache
+        id: cache-library
+        uses: actions/cache/restore@v4
+        with:
+          path: Library
+          key: Library-PurrDiction-IL2CPP-${{ hashFiles('Assets/**', 'Packages/**', 'ProjectSettings/**') }}
+          restore-keys: |
+            Library-PurrDiction-IL2CPP-
+
+      - name: Build StandaloneLinux64 player (IL2CPP)
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+          UNITY_SERIAL: ${{ secrets.UNITY_SERIAL }}
+        with:
+          targetPlatform: StandaloneLinux64
+          buildName: PurrDictionTests
+          buildsPath: build
+          unityVersion: auto
+          # IL2CPP also exercises the FP/prediction IL post-processors through the
+          # IL -> C++ converter, which surfaces codegen issues Mono tolerates.
+          customParameters: -standaloneBuildSubtarget Player -scriptingBackend IL2CPP
+
+      - name: Save Library cache
+        if: always() && steps.cache-library.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: Library
+          key: ${{ steps.cache-library.outputs.cache-primary-key }}
+
+      - name: Inspect build output
+        run: ls -la build/StandaloneLinux64/
+
+      - name: Run scenarios
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -u
+          BIN="$PWD/build/StandaloneLinux64/PurrDictionTests"
+          sudo chmod +x "$BIN" || chmod +x "$BIN" || true
+
+          TOTAL_COUNT="$CLIENT_COUNT"
+
+          if [ "$MODE" = "host" ]; then
+            EXTERNAL_CLIENTS=$((TOTAL_COUNT - 1))
+            if [ "$EXTERNAL_CLIENTS" -lt 1 ]; then
+              echo "::error::Host mode needs at least 1 external client (clientCount must be >= 2). Got $TOTAL_COUNT"
+              exit 1
+            fi
+          else
+            EXTERNAL_CLIENTS="$TOTAL_COUNT"
+          fi
+
+          if ! [[ "$PROFILE_TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || [ "$PROFILE_TIMEOUT_SECONDS" -lt 30 ]; then
+            echo "::error::profileTimeoutSeconds must be an integer >= 30. Got '$PROFILE_TIMEOUT_SECONDS'"
+            exit 1
+          fi
+
+          RUN=(xvfb-run -a --server-args="-screen 0 1024x768x24")
+          FAIL=0
+          DIAGNOSTIC_ARGS=()
+          if [ "$JOB_TEMP_LEAK_VALIDATION" = "true" ]; then
+            DIAGNOSTIC_ARGS=(-diag-job-temp-memory-leak-validation)
+          fi
+
+          terminate_process_tree() {
+            local pid="$1"
+            local child
+            for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+              terminate_process_tree "$child"
+            done
+            kill -TERM "$pid" 2>/dev/null || true
+          }
+
+          force_kill_process_tree() {
+            local pid="$1"
+            local child
+            for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+              force_kill_process_tree "$child"
+            done
+            kill -KILL "$pid" 2>/dev/null || true
+          }
+
+          run_profile() {
+            PROFILE="$1"
+            PORT="$2"
+            shift 2
+            LATENCY_ARGS=("$@")
+
+            RESULTS_DIR="$PWD/test-results/$PROFILE"
+            LOGS_DIR="$PWD/test-logs/$PROFILE"
+            mkdir -p "$RESULTS_DIR" "$LOGS_DIR"
+            TIMEOUT_MARKER="$RESULTS_DIR/.timed-out"
+            rm -f "$TIMEOUT_MARKER"
+
+            echo "::group::Launching $MODE process ($PROFILE)"
+            "${RUN[@]}" "$BIN" -batchmode -nographics \
+              "${DIAGNOSTIC_ARGS[@]}" \
+              -role "$MODE" -count "$TOTAL_COUNT" -port "$PORT" \
+              -connectTimeout 180 \
+              "${LATENCY_ARGS[@]}" \
+              -results "$RESULTS_DIR/$MODE.json" \
+              -logFile "$LOGS_DIR/$MODE.log" &
+            SERVER_PID=$!
+            echo "$MODE PID: $SERVER_PID"
+            echo "::endgroup::"
+
+            sleep "$CONNECT_DELAY"
+
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+              echo "::error::$MODE process died before clients could start ($PROFILE)"
+              tail -n 200 "$LOGS_DIR/$MODE.log" || true
+              FAIL=1
+              return
+            fi
+
+            READY=0
+            for _ in $(seq 1 60); do
+              if grep -q '\[PredictionTests\].*local connection ready' "$LOGS_DIR/$MODE.log" 2>/dev/null; then
+                READY=1
+                break
+              fi
+              if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+
+            if [ "$READY" -ne 1 ]; then
+              echo "::error::$MODE process did not become locally ready before clients started ($PROFILE)"
+              tail -n 200 "$LOGS_DIR/$MODE.log" || true
+              terminate_process_tree "$SERVER_PID"
+              wait "$SERVER_PID" 2>/dev/null || true
+              FAIL=1
+              return
+            fi
+
+            CLIENT_PIDS=()
+            for i in $(seq 1 "$EXTERNAL_CLIENTS"); do
+              echo "::group::Launching client $i ($PROFILE)"
+              "${RUN[@]}" "$BIN" -batchmode -nographics \
+                "${DIAGNOSTIC_ARGS[@]}" \
+                -role client -count "$TOTAL_COUNT" -port "$PORT" \
+                -connectTimeout 180 \
+                "${LATENCY_ARGS[@]}" \
+                -results "$RESULTS_DIR/client-$i.json" \
+                -logFile "$LOGS_DIR/client-$i.log" &
+              PID=$!
+              CLIENT_PIDS+=("$PID")
+              echo "Client $i PID: $PID"
+              echo "::endgroup::"
+              if [ "$i" -lt "$EXTERNAL_CLIENTS" ]; then
+                sleep 1
+              fi
+            done
+
+            ALL_PIDS=("$SERVER_PID" "${CLIENT_PIDS[@]}")
+            (
+              sleep "$PROFILE_TIMEOUT_SECONDS"
+              echo "::error::$MODE profile '$PROFILE' exceeded ${PROFILE_TIMEOUT_SECONDS}s; terminating test processes"
+              date -u > "$TIMEOUT_MARKER"
+              for pid in "${ALL_PIDS[@]}"; do
+                terminate_process_tree "$pid"
+              done
+              sleep 10
+              for pid in "${ALL_PIDS[@]}"; do
+                force_kill_process_tree "$pid"
+              done
+            ) &
+            WATCHDOG_PID=$!
+
+            for pid in "${CLIENT_PIDS[@]}"; do
+              if wait "$pid"; then
+                echo "Client PID $pid exited 0 ($PROFILE)"
+              else
+                code=$?
+                echo "::error::Client PID $pid exited $code ($PROFILE)"
+                FAIL=1
+              fi
+            done
+
+            if wait "$SERVER_PID"; then
+              echo "$MODE process exited 0 ($PROFILE)"
+            else
+              code=$?
+              echo "::error::$MODE process exited $code ($PROFILE)"
+              FAIL=1
+            fi
+
+            if kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+              kill "$WATCHDOG_PID" 2>/dev/null || true
+            fi
+            wait "$WATCHDOG_PID" 2>/dev/null || true
+
+            if [ -f "$TIMEOUT_MARKER" ]; then
+              echo "::error::$MODE profile '$PROFILE' timed out after ${PROFILE_TIMEOUT_SECONDS}s"
+              FAIL=1
+              echo "::group::Logs at timeout ($PROFILE)"
+              for f in "$LOGS_DIR"/*.log; do
+                [ -e "$f" ] || continue
+                echo "----- $f (last 200 lines) -----"
+                tail -n 200 "$f" || true
+              done
+              echo "::endgroup::"
+            fi
+
+            echo "::group::Result files ($PROFILE)"
+            for f in "$RESULTS_DIR"/*.json; do
+              [ -e "$f" ] || continue
+              echo "----- $f -----"
+              cat "$f"
+              echo
+            done
+            echo "::endgroup::"
+
+            if command -v jq >/dev/null 2>&1; then
+              for f in "$RESULTS_DIR"/*.json; do
+                [ -e "$f" ] || continue
+                if jq -e 'any(.[]; .result.success == false)' "$f" >/dev/null; then
+                  echo "::error::$f contains a failed scenario"
+                  FAIL=1
+                fi
+              done
+            fi
+          }
+
+          run_profile default 37001 -latencyMin 40 -latencyMax 80
+          run_profile no-latency 37002 -latencyMax 0
+          run_profile high-jitter 37003 -latencyMin 120 -latencyMax 250
+          run_profile loss 37004 -latencyMin 40 -latencyMax 80 -packetLoss 5
+          run_profile heavy-loss 37005 -latencyMin 80 -latencyMax 160 -packetLoss 15
+
+          exit $FAIL
+
+      - name: Render results to job summary
+        if: always()
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -u
+          shopt -s globstar nullglob
+          files=(test-results/**/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            {
+              echo "## Prediction Test Results"
+              echo ""
+              echo "_No result files were produced._"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          JQ_LIB='
+            def humanBytes:
+              if . == null then "—"
+              elif . < 1024 then "\(.) B"
+              elif . < 1048576 then "\(((. * 10) / 1024 | floor) / 10) KB"
+              else "\(((. * 100) / 1048576 | floor) / 100) MB" end;
+            def humanDuration:
+              if . == null then "—"
+              elif . < 1000 then "\(((. * 10) | floor) / 10)ms"
+              else "\(((. * 100) / 1000 | floor) / 100)s" end;
+            def statusIcon:
+              if . then ":white_check_mark:" else ":x:" end;
+          '
+
+          total=0
+          passed=0
+          for f in "${files[@]}"; do
+            count=$(jq 'length' "$f")
+            pass=$(jq '[.[] | select(.result.success == true)] | length' "$f")
+            total=$((total + count))
+            passed=$((passed + pass))
+          done
+          failed=$((total - passed))
+
+          {
+            echo "## Prediction Test Results — ${MODE} mode"
+            echo ""
+            if [ "$failed" -eq 0 ]; then
+              echo "### :white_check_mark: All scenarios passed (${passed}/${total})"
+            else
+              echo "### :x: ${failed} failure(s) — ${passed}/${total} passed"
+            fi
+            echo ""
+
+            for f in "${files[@]}"; do
+              proc="${f#test-results/}"
+              proc="${proc%.json}"
+              pcount=$(jq 'length' "$f")
+              ppass=$(jq '[.[] | select(.result.success == true)] | length' "$f")
+              pfail=$((pcount - ppass))
+
+              case "$proc" in
+                */client-*) is_client=1 ;;
+                *)        is_client=0 ;;
+              esac
+
+              if [ "$is_client" -eq 1 ]; then
+                if [ "$pfail" -eq 0 ]; then
+                  echo "#### \`${proc}\` — ${ppass}/${pcount} passed :white_check_mark:"
+                  echo ""
+                  echo "_All scenarios passed; rows omitted._"
+                  echo ""
+                  continue
+                fi
+                echo "#### \`${proc}\` — ${pfail} failed (${ppass}/${pcount} passed)"
+              else
+                echo "#### \`${proc}\` — ${ppass}/${pcount} passed"
+              fi
+              echo ""
+              echo "| # | Scenario | Status | Duration | Sent | Received | Message |"
+              echo "|---|---|---|---|---|---|---|"
+
+              FILTER='to_entries[]'
+              if [ "$is_client" -eq 1 ]; then
+                FILTER='to_entries[] | select(.value.result.success == false)'
+              fi
+
+              jq -r "$JQ_LIB"'
+                '"$FILTER"' |
+                "| \(.key) | \(.value.name // "?") | \(.value.result.success | statusIcon) | \(.value.durationInMs | humanDuration) | \(.value.dataSent | humanBytes) | \(.value.dataReceived | humanBytes) | \((.value.result.message // "") | gsub("\\|"; "&#124;") | gsub("[\\r\\n]+"; " ")) |"
+              ' "$f"
+              echo ""
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tail logs on failure
+        if: failure()
+        run: |
+          shopt -s globstar nullglob
+          for f in test-logs/**/*.log; do
+            [ -e "$f" ] || continue
+            echo "::group::$f (last 200 lines)"
+            tail -n 200 "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Upload test results and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prediction-test-artifacts-${{ matrix.mode }}
+          path: |
+            test-results/
+            test-logs/
+          if-no-files-found: warn
+          retention-days: 14

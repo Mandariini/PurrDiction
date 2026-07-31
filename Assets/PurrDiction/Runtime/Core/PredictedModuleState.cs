@@ -7,42 +7,146 @@ namespace PurrNet.Prediction
 {
     public abstract class PredictedModule<TState> : PredictedModule where TState : struct, IPredictedData<TState>
     {
-        internal FULL_STATE<TState> fullPredictedState;
-        
+        /// <summary>
+        /// Override when OnVerifiedStateReceived accumulates a smooth correction for this module.
+        /// Modules that do not opt in snap their live state to the verified value when their parent
+        /// identity uses SoftCorrection, rather than silently ignoring authoritative state.
+        /// </summary>
+        public virtual bool supportsSoftCorrection => false;
+
+        internal MODULE_STATE<TState> fullPredictedState;
+
         /// <summary>
         /// The current simulation relevant state
         /// </summary>
         public ref TState currentState => ref fullPredictedState.state;
 
-        private History<FULL_STATE<TState>> _history = new History<FULL_STATE<TState>>();
-        
-        private InterpolatedWithDispose<FULL_STATE<TState>> _interpolatedState;
-        private FULL_STATE<TState>? _viewState;
+        private History<MODULE_STATE<TState>> _history;
+
+        private InterpolatedWithDispose<MODULE_STATE<TState>> _interpolatedState;
+        private MODULE_STATE<TState>? _viewState;
 
         public TState viewState;
-        
+
         /// <summary>
         /// The last fully verified state received from the server (or authoritative state if local).
         /// Returns null if no history exists yet.
         /// </summary>
-        public TState? verifiedState => _history.Count > 0 ? _history[^1].state : null;
+        public TState? verifiedState
+        {
+            get
+            {
+                if (identity.lastVerifiedTick.HasValue &&
+                    _history != null &&
+                    _history.ReadOrPrevious(identity.lastVerifiedTick.Value, out var state))
+                {
+                    return state.state;
+                }
+
+                return null;
+            }
+        }
 
         public PredictedModule(PredictedIdentity identity) : base(identity) { }
 
+        /// <summary>
+        /// Stable key retained for source compatibility with custom predicted modules.
+        /// </summary>
         protected ModuleDeltaKey<PredictedIdentityState> predictionKey => new ModuleDeltaKey<PredictedIdentityState>(identity.id, moduleIndex);
+
+        private ModuleDeltaKey<ModulePredictedState> modulePredictionKey => new ModuleDeltaKey<ModulePredictedState>(identity.id, moduleIndex);
         protected ModuleDeltaKey<TState> stateKey => new ModuleDeltaKey<TState>(identity.id, moduleIndex);
+
+        public override string ToString()
+        {
+            return $"State:\n{fullPredictedState.state}";
+        }
+
+        private void ResetStateToInitialState()
+        {
+            fullPredictedState.prediction.wasOnSimulationStartCalled = false;
+            fullPredictedState.state.Dispose();
+            fullPredictedState.state = GetInitialState();
+        }
 
         internal override void OnCoreInitialize()
         {
-            var tickRate = manager.tickRate;
-            var bufferSize = (int)Math.Max(tickRate / 10f, 2);
-            
-            _interpolatedState = new InterpolatedWithDispose<FULL_STATE<TState>>(
-                FULLInterpolate, 
-                1f / tickRate, 
-                fullPredictedState.DeepCopy(), 
+            var tickRate = predictionManager.tickRate;
+            var bufferSize = PredictionManager.GetViewInterpolationMaxBufferSize(tickRate);
+
+            _history = new History<MODULE_STATE<TState>>(tickRate * 10);
+
+            _interpolatedState = new InterpolatedWithDispose<MODULE_STATE<TState>>(
+                FULLInterpolate,
+                1f / tickRate,
+                fullPredictedState.DeepCopy(),
                 bufferSize
             );
+        }
+
+        private History<MODULE_STATE<TState>> _verifiedHistory;
+        private int _verifiedHistoryIndex = -1;
+
+        private History<MODULE_STATE<TState>> verifiedHistory
+        {
+            get
+            {
+                if (_verifiedHistory == null || _verifiedHistoryIndex != moduleIndex)
+                {
+                    _verifiedHistory = predictionManager.GetVerifiedHistory<MODULE_STATE<TState>>(identity.id, 1 + moduleIndex, out _);
+                    _verifiedHistoryIndex = moduleIndex;
+                }
+
+                return _verifiedHistory;
+            }
+        }
+
+        private void RefreshVerifiedFromLive(ulong tick)
+        {
+            var store = verifiedHistory;
+            if (store.Count > 0 && store.MostRecentTick >= tick)
+                return;
+
+            StoreVerified(tick, ref fullPredictedState);
+        }
+
+        private void StoreVerified(ulong serverTick, ref MODULE_STATE<TState> state)
+        {
+            var store = verifiedHistory;
+            store.PruneByTickWindow(serverTick);
+
+            int lastIndex = store.Count - 1;
+            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            {
+                var latest = store[lastIndex];
+                if (latest.HasSameContents(ref state))
+                    return;
+            }
+
+            store.Write(serverTick, state.DeepCopy());
+        }
+
+        protected override void Setup(PredictedIdentity parent, PredictionManager world)
+        {
+            base.Setup(parent, world);
+
+            _verifiedHistory = null;
+            _verifiedHistoryIndex = -1;
+
+            bool preserveSoftCorrection = parent.preservesStateOnSetup &&
+                                          parent.UsesSoftCorrectionTimeline() &&
+                                          _interpolatedState != null &&
+                                          _history != null;
+
+            if (preserveSoftCorrection)
+                return;
+
+            ResetStateToInitialState();
+            _history?.Clear();
+            _viewState?.Dispose();
+            _viewState = null;
+
+            _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
         }
 
         protected sealed override void UpdateView(float delta)
@@ -51,31 +155,28 @@ namespace PurrNet.Prediction
 
             if (_viewState.HasValue)
             {
+                int depthBeforeAdd = _interpolatedState.bufferSize;
                 _interpolatedState.Add(_viewState.Value);
+                if (_interpolatedState.bufferSize <= depthBeforeAdd && predictionManager)
+                    predictionManager.ReportViewBufferTrim();
                 _viewState = null;
             }
 
             var result = _interpolatedState.Advance(delta);
             viewState = result.state;
-            
+
+            if (_interpolatedState.bufferSize == 0 && predictionManager)
+                predictionManager.ReportViewBufferStarved();
+
             UpdateView(viewState, verifiedState);
         }
-        
-        /// <summary>
-        /// Override this to apply visual updates based on the interpolated state.
-        /// (e.g., transforming a GameObject based on viewState.position).
-        /// </summary>
-        /// <param name="viewState">The smooth, interpolated state for the current frame.</param>
-        /// <param name="verifiedState">The latest authoritative state, useful for comparisons or error correction.</param>
+
         protected virtual void UpdateView(TState viewState, TState? verifiedState) { }
-        
+
         /// <summary>
-        /// Override to handle interpolation between states manually
+        /// Produces a transient, non-owning view state. Implementations must not allocate
+        /// disposable members in the returned value.
         /// </summary>
-        /// <param name="from">State to interpolate from</param>
-        /// <param name="to">State to interpolate to</param>
-        /// <param name="t">Step</param>
-        /// <returns>The interpolated state at the given step</returns>
         protected virtual TState Interpolate(TState from, TState to, float t)
         {
             var offset = to.Add(to, from.Negate(from));
@@ -83,10 +184,10 @@ namespace PurrNet.Prediction
             return from.Add(from, scaled);
         }
 
-        private FULL_STATE<TState> FULLInterpolate(FULL_STATE<TState> from, FULL_STATE<TState> to, float t)
+        private MODULE_STATE<TState> FULLInterpolate(MODULE_STATE<TState> from, MODULE_STATE<TState> to, float t)
         {
             var state = Interpolate(from.state, to.state, t);
-            return new FULL_STATE<TState>
+            return new MODULE_STATE<TState>
             {
                 state = state,
                 prediction = from.prediction
@@ -97,20 +198,23 @@ namespace PurrNet.Prediction
         {
             _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
         }
-        
+
         protected override void UpdateInterpolation(float delta, bool accumulateError)
         {
             var copy = fullPredictedState.DeepCopy();
             ModifyRollbackViewState(ref copy.state, delta, accumulateError);
 
+            bool refreshOnly = predictionManager && predictionManager.refreshViewLatchOnly;
+            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _viewState.HasValue))
+            {
+                copy.Dispose();
+                return;
+            }
+
             _viewState?.Dispose();
             _viewState = copy;
         }
 
-        /// <summary>
-        /// Allows modification of the state used for rollback interpolation before it is committed.
-        /// Useful for accumulating prediction error into the visual state to smooth out corrections.
-        /// </summary>
         protected virtual void ModifyRollbackViewState(ref TState state, float delta, bool accumulateError) { }
 
         protected override void Simulate(ulong tick, float delta)
@@ -123,77 +227,152 @@ namespace PurrNet.Prediction
             Simulate(ref fullPredictedState.state, delta);
         }
 
-        /// <summary>
-        /// Called exactly once before the very first simulation tick executes.
-        /// </summary>
         protected virtual void SimulationStart() { }
-        
-        /// <summary>
-        /// Executes the simulation logic for this module.
-        /// Modify the <paramref name="state"/> directly to advance the simulation. Or use the `currentState`
-        /// </summary>
-        /// <param name="state">Reference to the current simulation state.</param>
-        /// <param name="delta">Time in seconds since the last tick.</param>
+
+        protected virtual TState GetInitialState() => default;
+
         protected virtual void Simulate(ref TState state, float delta) { }
 
         protected override void Rollback(ulong tick)
         {
             if (_history.ReadOrPrevious(tick, out var result))
             {
+                fullPredictedState.Dispose();
                 fullPredictedState = result.DeepCopy();
             }
         }
 
         protected override void SaveState(ulong tick)
         {
-            if (RuntimeHelpers.IsReferenceOrContainsReferences<TState>() && _history.Count > 0)
-            {
-                var lastIdx = _history.Count - 1;
-                if (Packer.AreEqual(_history[lastIdx].state, fullPredictedState.state))
-                    return;
-            }
+            if (LatestHistoryMatches(tick, ref fullPredictedState))
+                return;
 
             _history.Write(tick, fullPredictedState.DeepCopy());
         }
 
-        protected override bool WriteState(PlayerID receiver, BitPacker packer, DeltaModule deltaModule)
+        private bool LatestHistoryMatches(ulong tick, ref MODULE_STATE<TState> state)
         {
-            int pos = packer.positionInBits;
-            int flagPos = packer.AdvanceBits(1);
+            if (_history == null || _history.Count <= 0)
+                return false;
 
-            bool changed = deltaModule.WriteReliable(packer, receiver, predictionKey, fullPredictedState.prediction);
-            changed |= deltaModule.WriteReliable(packer, receiver, stateKey, fullPredictedState.state);
+            _history.PruneByTickWindow(tick);
 
-            packer.WriteAt(flagPos, changed);
-            
-            if (!changed)
-                packer.SetBitPosition(flagPos + 1);
+            int lastIndex = _history.Count - 1;
+            if (_history.GetEntryTick(lastIndex) > tick)
+                return false;
 
-            return changed;
+            var last = _history[lastIndex];
+            return last.HasSameContents(ref state);
         }
 
-        protected override void ReadState(ulong tick, BitPacker packer, DeltaModule deltaModule)
+        private void WriteOwnedStateIfChanged(ulong tick, ref MODULE_STATE<TState> state)
         {
-            int pos = packer.positionInBits;
+            if (LatestHistoryMatches(tick, ref state))
+            {
+                state.Dispose();
+                state = default;
+                return;
+            }
+
+            _history.Write(tick, state);
+        }
+
+        protected override bool WriteState(PlayerID receiver, BitPacker packer, ulong baselineTick)
+        {
+            RefreshVerifiedFromLive(predictionManager.localTick);
+            var store = verifiedHistory;
+
+            if (baselineTick > 0 && store.MostRecentTick <= baselineTick)
+            {
+                Packer<bool>.Write(packer, false);
+                return false;
+            }
+
+            if (!store.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
+
+            if (baselineTick > 0 &&
+                baseline.HasSameContents(ref fullPredictedState))
+            {
+                Packer<bool>.Write(packer, false);
+                return false;
+            }
+
+            Packer<bool>.Write(packer, true);
+            DeltaPacker<ModulePredictedState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
+            DeltaPacker<TState>.Write(packer, baseline.state, fullPredictedState.state);
+            return true;
+        }
+
+        protected override void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
+        {
             bool changed = Packer<bool>.Read(packer);
+
+            if (!verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
+                baseline = default;
+
+            MODULE_STATE<TState> newState;
 
             if (changed)
             {
-                deltaModule.ReadReliable(packer, predictionKey, ref fullPredictedState.prediction);
-                deltaModule.ReadReliable(packer, stateKey, ref fullPredictedState.state);
-                _history.Write(tick, fullPredictedState.DeepCopy());
+                newState = default;
+                DeltaPacker<ModulePredictedState>.Read(packer, baseline.prediction, ref newState.prediction);
+                DeltaPacker<TState>.Read(packer, baseline.state, ref newState.state);
             }
             else
             {
-                packer.SetBitPosition(pos);
-                deltaModule.ReadReliable(packer, predictionKey, ref fullPredictedState.prediction);
-                
-                packer.SetBitPosition(pos);
-                deltaModule.ReadReliable(packer, stateKey, ref fullPredictedState.state);
-                
-                _history.Write(tick, fullPredictedState.DeepCopy());
+                newState = baseline.DeepCopy();
             }
+
+            ApplyVerifiedState(tick, serverTick, ref newState);
         }
+
+        private void ApplyVerifiedState(ulong tick, ulong serverTick, ref MODULE_STATE<TState> newState)
+        {
+            StoreVerified(serverTick, ref newState);
+
+            if (identity.UsesSoftCorrectionTimeline())
+            {
+                if (supportsSoftCorrection && _history.ReadOrPrevious(tick, out var predictedAtTick))
+                {
+                    OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
+                }
+                else
+                {
+                    fullPredictedState.Dispose();
+                    fullPredictedState = newState.DeepCopy();
+                    ResetInterpolation();
+                }
+
+                WriteOwnedStateIfChanged(tick, ref newState);
+                return;
+            }
+
+            fullPredictedState.Dispose();
+            fullPredictedState = newState;
+            if (!LatestHistoryMatches(tick, ref fullPredictedState))
+                _history.Write(tick, fullPredictedState.DeepCopy());
+        }
+
+        protected override bool HasUnchangedStateBaseline(ulong baselineTick)
+            => verifiedHistory.ReadOrPrevious(baselineTick, out _);
+
+        protected override void ReadUnchangedState(
+            ulong tick,
+            ulong baselineTick,
+            ulong serverTick)
+        {
+            if (!verifiedHistory.ReadOrPrevious(baselineTick, out var baseline))
+            {
+                throw new InvalidOperationException(
+                    $"Missing module state baseline at tick {baselineTick}.");
+            }
+
+            var newState = baseline.DeepCopy();
+            ApplyVerifiedState(tick, serverTick, ref newState);
+        }
+
+        protected virtual void OnVerifiedStateReceived(ulong tick, in TState predicted, in TState verified) { }
 
         protected override void WriteFirstState(ulong tick, BitPacker packer)
         {
@@ -202,20 +381,54 @@ namespace PurrNet.Prediction
             if (tick > 0 && _history.ReadOrPrevious(tick, out var historyState))
                 savedState = historyState;
 
-            Packer<PredictedIdentityState>.Write(packer, savedState.prediction);
+            var store = verifiedHistory;
+            if (store.Count == 0 || store.MostRecentTick < tick)
+                StoreVerified(tick, ref savedState);
+
+            Packer<ModulePredictedState>.Write(packer, savedState.prediction);
             Packer<TState>.Write(packer, savedState.state);
         }
 
-        protected override void ReadFirstState(ulong tick, BitPacker packer)
+        protected override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
         {
-            Packer<PredictedIdentityState>.Read(packer, ref fullPredictedState.prediction);
-            Packer<TState>.Read(packer, ref fullPredictedState.state);
-            _history.Write(tick, fullPredictedState.DeepCopy());
+            MODULE_STATE<TState> newState = default;
+            Packer<ModulePredictedState>.Read(packer, ref newState.prediction);
+            Packer<TState>.Read(packer, ref newState.state);
+            StoreVerified(serverTick, ref newState);
+            fullPredictedState.Dispose();
+            fullPredictedState = newState;
+            if (!LatestHistoryMatches(tick, ref fullPredictedState))
+                _history.Write(tick, fullPredictedState.DeepCopy());
         }
 
         protected override void ClearFuture(ulong tick)
         {
             _history.ClearFuture(tick);
+        }
+
+        protected override void ReleaseStateForPool()
+        {
+            DisposeStateStorage();
+        }
+
+        protected override void OnDisposed()
+        {
+            base.OnDisposed();
+            DisposeStateStorage();
+            _interpolatedState = null;
+        }
+
+        private void DisposeStateStorage()
+        {
+            _history?.Clear();
+            _viewState?.Dispose();
+            _viewState = null;
+            _interpolatedState?.Teleport(default);
+            _verifiedHistory = null;
+            _verifiedHistoryIndex = -1;
+            fullPredictedState.Dispose();
+            fullPredictedState = default;
+            viewState = default;
         }
     }
 }

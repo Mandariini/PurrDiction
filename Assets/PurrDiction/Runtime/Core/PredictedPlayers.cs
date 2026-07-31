@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using PurrNet.Modules;
 using PurrNet.Pooling;
 
 namespace PurrNet.Prediction
@@ -12,9 +13,37 @@ namespace PurrNet.Prediction
 
         public IReadOnlyList<PlayerID> players => currentState.players;
 
+        private ScenePlayersModule _scenePlayersModule;
+
         private void Awake()
         {
             extrapolateInput = false;
+        }
+
+        protected override void LateAwake()
+        {
+            _scenePlayersModule = predictionManager.networkManager.scenePlayersModule;
+        }
+
+        public PlayerID? GetPlayer(ulong? id) => TryGetPlayer(id, out var player) ? player : null;
+
+        public bool TryGetPlayer(ulong? id, out PlayerID player)
+        {
+            player = default;
+
+            if (!id.HasValue) return false;
+            var rawId = id.Value;
+
+            foreach (var p in players)
+            {
+                if (p.id == rawId)
+                {
+                    player = p;
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         protected override PredictedPlayersState GetInitialState()
@@ -27,29 +56,43 @@ namespace PurrNet.Prediction
 
         protected override void GetFinalInput(ref PredictedPlayersInput input)
         {
-            var toAdd = DisposableList<PlayerID>.Create(16);
-            var toRemove = DisposableList<PlayerID>.Create(16);
-
             var observers = predictionManager.observers;
-
+            var currentPlayers = currentState.players;
+        
+            bool needsAdd = false;
             for (var i = 0; i < observers.Count; i++)
             {
-                var player = observers[i];
-                if (!currentState.players.Contains(player))
-                    toAdd.Add(player);
+                if (!currentPlayers.Contains(observers[i])) { needsAdd = true; break; }
             }
-
-            var playersCount = currentState.players.Count;
-            var currentPlayers = currentState.players;
-            for (var i = 0; i < playersCount; i++)
+        
+            bool needsRemove = false;
+            for (var i = 0; i < currentPlayers.Count; i++)
             {
-                var current = currentPlayers[i];
-                if (!predictionManager.IsObserver(current))
-                    toRemove.Add(current);
+                if (!predictionManager.IsObserver(currentPlayers[i])) { needsRemove = true; break; }
             }
-
-            input.addPlayers = toAdd;
-            input.removePlayers = toRemove;
+        
+            if (needsAdd)
+            {
+                var toAdd = DisposableList<PlayerID>.Create(16);
+                for (var i = 0; i < observers.Count; i++)
+                {
+                    if (!currentPlayers.Contains(observers[i]))
+                        toAdd.Add(observers[i]);
+                }
+                input.addPlayers = toAdd;
+            }
+        
+            if (needsRemove)
+            {
+                var toRemove = DisposableList<PlayerID>.Create(16);
+                for (var i = 0; i < currentPlayers.Count; i++)
+                {
+                    var current = currentPlayers[i];
+                    if (!predictionManager.IsObserver(current))
+                        toRemove.Add(current);
+                }
+                input.removePlayers = toRemove;
+            }
         }
 
         protected override void Simulate(PredictedPlayersInput input, ref PredictedPlayersState state, float delta)

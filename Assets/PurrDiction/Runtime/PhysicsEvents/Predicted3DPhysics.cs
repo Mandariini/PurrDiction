@@ -1,105 +1,9 @@
 using System;
-using PurrNet.Packing;
 using PurrNet.Pooling;
 using UnityEngine;
 
 namespace PurrNet.Prediction
 {
-    public struct PhysicsContactPoint : IPackedAuto
-    {
-        public Vector3 point;
-        public Vector3 normal;
-        public float separation;
-
-#if UNITY_PHYSICS_3D
-        public PhysicsContactPoint(ContactPoint contact)
-        {
-            point = contact.point;
-            normal = contact.normal;
-            separation = contact.separation;
-        }
-#endif
-    }
-
-    public struct PhysicsCollision : IDisposable, IDuplicate<PhysicsCollision>
-    {
-#if UNITY_PHYSICS_3D
-        public DisposableList<PhysicsContactPoint> contacts;
-        public Vector3 impulse;
-        public Vector3 relativeVelocity;
-
-        public void Dispose() => contacts.Dispose();
-
-        public PhysicsCollision Duplicate()
-        {
-            return new PhysicsCollision
-            {
-                contacts = contacts.Duplicate(),
-                impulse = impulse,
-                relativeVelocity = relativeVelocity
-            };
-        }
-#else
-        public void Dispose() {}
-
-        public PhysicsCollision Duplicate() => default;
-#endif
-    }
-
-    public struct PhysicsEvent : IPackedAuto, IDisposable, IDuplicate<PhysicsEvent>
-    {
-        public bool isTrigger;
-        public PhysicsEventType type;
-        public PredictedComponentID me;
-        public PredictedComponentID other;
-        public PhysicsCollision collision;
-
-        public void Dispose() => collision.Dispose();
-
-        public PhysicsEvent Duplicate()
-        {
-            return new PhysicsEvent
-            {
-                isTrigger = isTrigger,
-                type = type,
-                me = me,
-                other = other,
-                collision = collision.Duplicate()
-            };
-        }
-    }
-
-    public struct PredictedPhysicsData : IPredictedData<PredictedPhysicsData>, IDuplicate<PredictedPhysicsData>
-    {
-        public DisposableList<PhysicsEvent> events;
-
-        public void Dispose()
-        {
-            if (events.isDisposed)
-                return;
-
-            int count = events.Count;
-            for (var i = 0; i < count; i++)
-                events[i].Dispose();
-            events.Dispose();
-        }
-
-        public PredictedPhysicsData Duplicate()
-        {
-            return new PredictedPhysicsData
-            {
-                events = events.Duplicate()
-            };
-        }
-    }
-
-    public enum PhysicsEventType : byte
-    {
-        Enter,
-        Exit,
-        Stay
-    }
-
     public class Predicted3DPhysics : PredictedIdentity<PredictedPhysicsData>
     {
         internal override bool isEventHandler => true;
@@ -143,6 +47,8 @@ namespace PurrNet.Prediction
             if (ev.me.TryGetIdentity<IPredictedPhysicsCallbacks>(predictionManager, out var me))
             {
                 var otherGo = ev.other.GetGameObject(predictionManager);
+                if (!otherGo && ev.other.objectId.instanceId.value != 0)
+                    return;
                 if (ev.isTrigger)
                 {
                     switch (ev.type)
@@ -226,6 +132,59 @@ namespace PurrNet.Prediction
                     TriggerEvent(predictionManager, ev);
                 currentState = state;
             }
+        }
+
+        /// <summary>
+        /// Registers a physics event from custom/manual collision detection (e.g. raycasts, spherecasts).
+        /// Use this when the caller does not use Unity's built-in collision callbacks.
+        /// </summary>
+        /// <param name="type">The event type (Enter, Exit, Stay).</param>
+        /// <param name="caller">The predicted identity that detected the hit.</param>
+        /// <param name="other">The GameObject that was hit.</param>
+        /// <param name="isTrigger">Whether the hit was a trigger (no physics response) or solid collision.</param>
+        /// <param name="contactPoint">Contact point in world space. Required for solid collisions.</param>
+        /// <param name="contactNormal">Surface normal at contact. Required for solid collisions.</param>
+        /// <param name="relativeVelocity">Relative velocity at impact. Required for solid collisions.</param>
+        public void RegisterEvent(PhysicsEventType type, PredictedIdentity caller, GameObject other, bool isTrigger,
+            Vector3 contactPoint = default, Vector3 contactNormal = default, Vector3 relativeVelocity = default)
+        {
+            if (!PredictionManager.TryGetClosestPredictedID(other, out var otherId))
+                return;
+
+            var state = currentState;
+            PhysicsCollision collision = default;
+
+            if (!isTrigger)
+            {
+                var contacts = DisposableList<PhysicsContactPoint>.Create(1);
+                contacts.Add(new PhysicsContactPoint
+                {
+                    point = contactPoint,
+                    normal = contactNormal,
+                    separation = 0
+                });
+                collision = new PhysicsCollision
+                {
+                    contacts = contacts,
+                    impulse = default,
+                    relativeVelocity = relativeVelocity
+                };
+            }
+
+            var ev = new PhysicsEvent
+            {
+                isTrigger = isTrigger,
+                type = type,
+                me = caller.id,
+                other = otherId,
+                collision = collision
+            };
+
+            state.events.Add(ev);
+
+            if (!predictionManager.isVerifiedAndReplaying)
+                TriggerEvent(predictionManager, ev);
+            currentState = state;
         }
 
         public override void UpdateRollbackInterpolationState(float delta, bool accumulateError) { }

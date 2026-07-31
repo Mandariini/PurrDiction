@@ -329,6 +329,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 1a1392aa1bc3d3b4a9ef31b6e6d8d4b5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  _predictionPolicy: 0
   _playerPrefab: {fileID: 4749107768339329758, guid: c197bf28b4ea8354e90e3e33ffe4e713, type: 3}
   _destroyOnDisconnect: 1
   spawnPoints:
@@ -493,8 +494,7 @@ MonoBehaviour:
   _updateViewMode: 1
   _builtInSystems: -1
   _predictedPrefabs: {fileID: 11400000, guid: 079cc261e29382d4d8d5fb2f904403a0, type: 2}
-  _inputQueueSettings:
-    extrapolateForMissing: 1
+  _extrapolateMissingInputs: 1
     minInputs: 1
     maxInputs: 2
   _validateDeterministicData: 0
@@ -845,6 +845,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ec17ccfce8678b442b2b0375b706562e, type: 3}
   m_Name: 
   m_EditorClassIdentifier: PurrNet.Prediction.Tests::PurrNet.Prediction.Tests.TestFallingSand
+  _predictionPolicy: 1
   _gridSize: 256
   _seed: 65645
   _display: {fileID: 1211090609}
