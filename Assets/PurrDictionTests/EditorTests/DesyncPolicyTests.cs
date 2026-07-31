@@ -55,16 +55,16 @@ namespace PurrNet.Prediction.Tests.Editor
             Packer<int>.Write(packerA, 1234);
             Packer<int>.Write(packerB, 1234);
 
-            var sameTickA = DeterministicStateHash.Compute(packerA, 7);
-            var sameTickB = DeterministicStateHash.Compute(packerB, 7);
+            var sameTickA = DeterministicStateHash.Compute(7, packerA);
+            var sameTickB = DeterministicStateHash.Compute(7, packerB);
             Assert.That(sameTickA, Is.EqualTo(sameTickB));
 
-            var otherTick = DeterministicStateHash.Compute(packerA, 8);
+            var otherTick = DeterministicStateHash.Compute(8, packerA);
             Assert.That(otherTick, Is.Not.EqualTo(sameTickA));
 
             using var packerC = BitPackerPool.Get();
             Packer<int>.Write(packerC, 1235);
-            var otherState = DeterministicStateHash.Compute(packerC, 7);
+            var otherState = DeterministicStateHash.Compute(7, packerC);
             Assert.That(otherState, Is.Not.EqualTo(sameTickA));
         }
 
@@ -80,8 +80,27 @@ namespace PurrNet.Prediction.Tests.Editor
             dirty.SetBitPosition(3);
 
             Assert.That(
-                DeterministicStateHash.Compute(dirty, 3),
-                Is.EqualTo(DeterministicStateHash.Compute(clean, 3)));
+                DeterministicStateHash.Compute(3, dirty),
+                Is.EqualTo(DeterministicStateHash.Compute(3, clean)));
+        }
+
+        [Test]
+        public void HashHelperCannotBeDiscoveredAsAnUnsignedLongWriter()
+        {
+            var method = typeof(DeterministicStateHash).GetMethod(
+                nameof(DeterministicStateHash.Compute),
+                BindingFlags.Public | BindingFlags.Static);
+            Assert.That(method, Is.Not.Null);
+
+            var parameters = method.GetParameters();
+            Assert.That(parameters, Has.Length.EqualTo(2));
+            Assert.That(parameters[0].ParameterType, Is.EqualTo(typeof(ulong)));
+            Assert.That(parameters[1].ParameterType, Is.EqualTo(typeof(BitPacker)));
+            Assert.That(method.ReturnType, Is.EqualTo(typeof(ushort)));
+
+            Assert.That(Packer<ulong>.WriteFunc.Method.DeclaringType,
+                Is.EqualTo(typeof(PackUIntegers)),
+                "PurrDiction must not replace PurrNet's ulong writer during serializer discovery");
         }
 
         [Test]

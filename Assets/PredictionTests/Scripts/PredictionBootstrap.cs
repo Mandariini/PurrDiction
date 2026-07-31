@@ -39,6 +39,8 @@ public class PredictionBootstrap : Scenario
     private string _serverHost;
     private ushort? _port;
     private bool _profileScenarios;
+    private bool _useWebTransport;
+    private bool _autoStartRegression;
 
     private Scenario[] _scenarios;
     private ScenarioDetails?[] _results;
@@ -59,6 +61,14 @@ public class PredictionBootstrap : Scenario
         _predictionManager.predictedPrefabs = prefabs;
 
         LoadArgs();
+        SelectTransport();
+
+        _autoStartRegression = CommandLineUtils.HasFlag("-autoStartRegression");
+        if (_autoStartRegression)
+        {
+            ConfigureTransport();
+            ConfigureAutoStartFlags();
+        }
 
         if (CommandLineUtils.HasFlag("-serverLoadBenchmark"))
         {
@@ -93,9 +103,21 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-immediateRpcRegressionScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<ImmediatePredictionRpcRegressionScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-includeHistoryStressScenario"))
             gameObject.AddComponent<HistoryStressScenario>();
 
+        gameObject.AddComponent<ImmediatePredictionRpcRegressionScenario>();
         gameObject.AddComponent<TrailIntegrityScenario>();
         gameObject.AddComponent<DesyncCorrectionScenario>();
 
@@ -273,11 +295,62 @@ public class PredictionBootstrap : Scenario
             && int.TryParse(packetLoss, out var parsedPacketLoss))
             _packetLossChance = parsedPacketLoss;
 
+        if (CommandLineUtils.TryGetArgument("-tickRate", out var tickRate) &&
+            int.TryParse(tickRate, out var parsedTickRate) && parsedTickRate > 0)
+            _networkManager.tickRate = parsedTickRate;
+
+        if (CommandLineUtils.HasFlag("-mtuFragment"))
+            _networkManager.mtuExceededBehaviour = MTUExceededBehaviour.Fragment;
+
+        if (CommandLineUtils.TryGetArgument("-desyncPolicy", out var desyncPolicy))
+        {
+            if (!Enum.TryParse(desyncPolicy, true, out DesyncPolicy parsedDesyncPolicy) ||
+                !Enum.IsDefined(typeof(DesyncPolicy), parsedDesyncPolicy))
+            {
+                Debug.LogError($"Could not parse -desyncPolicy value '{desyncPolicy}'");
+                Application.Quit(-1);
+                return;
+            }
+
+            // PredictionManager resolves inherited policies during setup, after this bootstrap Awake.
+            JsonUtility.FromJsonOverwrite(
+                $"{{\"_desyncPolicy\":{(byte)parsedDesyncPolicy}}}",
+                _predictionManager);
+        }
+
         _profileScenarios = CommandLineUtils.HasFlag("-profileScenarios");
+        _useWebTransport = CommandLineUtils.HasFlag("-webTransport");
+    }
+
+    private void SelectTransport()
+    {
+        if (!_useWebTransport || _networkManager.transport is WebTransport)
+            return;
+
+        var webTransport = _networkManager.GetComponent<WebTransport>();
+        if (!webTransport)
+            webTransport = _networkManager.gameObject.AddComponent<WebTransport>();
+
+        _networkManager.transport = webTransport;
+        Debug.Log("[PredictionTests] Selected WebTransport from -webTransport");
     }
 
     private void ConfigureTransport()
     {
+        if (_networkManager.transport is WebTransport web)
+        {
+            if (_port.HasValue)
+                web.serverPort = _port.Value;
+
+            if (_role == NetworkRole.Client && !string.IsNullOrEmpty(_serverHost))
+                web.address = _serverHost;
+
+            if (_role != NetworkRole.Client)
+                web.maxConnections = Mathf.Max(web.maxConnections, _expectedConnections + 8);
+
+            return;
+        }
+
         if (_networkManager.transport is not UDPTransport udp)
             return;
 
@@ -299,6 +372,17 @@ public class PredictionBootstrap : Scenario
             simulatePacketLoss = _packetLossChance > 0,
             packetLossChance = Mathf.Max(1, _packetLossChance)
         };
+    }
+
+    private void ConfigureAutoStartFlags()
+    {
+        var runtimeFlag = _role == NetworkRole.Server ? StartFlags.ServerBuild : StartFlags.ClientBuild;
+        _networkManager.startServerFlags = _role is NetworkRole.Server or NetworkRole.Host
+            ? runtimeFlag
+            : StartFlags.None;
+        _networkManager.startClientFlags = _role is NetworkRole.Client or NetworkRole.Host
+            ? runtimeFlag
+            : StartFlags.None;
     }
 
     private bool TryResolveRole(out NetworkRole resolved)
@@ -329,14 +413,17 @@ public class PredictionBootstrap : Scenario
 
     public override async UniTask<ScenarioResult> RunScenario(ScenarioContext ctx)
     {
-        Assert.IsTrue(_networkManager.isOffline);
-        Assert.AreEqual(_networkManager.clientState, ConnectionState.Disconnected, "Client is not connected");
-        Assert.AreEqual(_networkManager.serverState, ConnectionState.Disconnected, "Server is not started");
+        if (!_autoStartRegression)
+        {
+            Assert.IsTrue(_networkManager.isOffline);
+            Assert.AreEqual(_networkManager.clientState, ConnectionState.Disconnected, "Client is not connected");
+            Assert.AreEqual(_networkManager.serverState, ConnectionState.Disconnected, "Server is not started");
 
-        if (ctx.isServer)
-            _networkManager.StartServer();
-        if (ctx.isClient)
-            _networkManager.StartClient();
+            if (ctx.isServer)
+                _networkManager.StartServer();
+            if (ctx.isClient)
+                _networkManager.StartClient();
+        }
 
         float connectDeadline = Time.realtimeSinceStartup + _connectionTimeout;
         int connectRetries = 0;

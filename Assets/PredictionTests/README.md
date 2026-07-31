@@ -7,6 +7,7 @@ Multi-process end-to-end tests for the prediction pipeline, modeled after PurrNe
 | Scenario | What it guards |
 |---|---|
 | `PredictionBootstrap` | Connection + PredictionManager spawn/tick on every peer |
+| `ImmediatePredictionRpcRegressionScenario` | Sustained bidirectional immediate RPC traffic matching PurrDiction's input/frame signatures, plus PurrLeague-shaped predicted transform/rigidbody/input/state identities and real `PredictedPlayerSpawner` state under the inherited desync policy; varies nested payload lengths across batch and MTU boundaries and validates every fixed field and payload byte after compression/fragmentation |
 | `BounceScenario` | Verified-gated physics events fire exactly once per physical event: a predicted rigidbody bounces and every peer's `isVerified`-gated, tick-deduped collision counter must equal the server's (repro for the multi-fire report) |
 | `DeterministicAlignmentScenario` | Deterministic identities stay tick-aligned with synced state across the join seam; timed deterministic spawns produce identical instance ids everywhere (PurrNet v1.20.0-beta.160 regression class) |
 | `PredictedPawnScenario` | Input round-trip, per-player owned identities, input-driven hierarchy spawns converge |
@@ -43,6 +44,21 @@ PurrDictionTests -batchmode -nographics -role client -count 3 -results client-2.
 ```
 
 Optional args: `-port`, `-serverHost`, `-connectTimeout`. Exit code is non-zero if any scenario fails. CI runs this via `.github/workflows/prediction-tests.yml` (server and host matrix, IL2CPP).
+
+Pass `-immediateRpcRegressionScenarioOnly` to run only bootstrap plus the immediate-RPC
+regression. Its default 180-prediction-tick burst can be changed with
+`-immediateRpcRegressionFrames`; the burst is paced by prediction ticks rather than uncapped
+headless render frames. Add `-immediateRpcRegressionWithoutPlayer` to disable the scene's
+`PredictedPlayerSpawner` and assert that the client receives the correct built-in
+`PredictedPlayers` membership while no owned gameplay identity exists.
+Pass `-webTransport` to replace the scene's UDP transport with WebTransport; CI combines these
+flags in a focused profile so the WebSocket-backed path is covered as well as UDP.
+`-tickRate` overrides the scene's default 20 Hz rate and `-mtuFragment` selects the global
+unreliable-fragment behavior. CI's focused UDP and WebTransport profiles use 60 Hz plus Fragment
+to match the PurrLeague project settings that exposed this regression. They also pass
+`-desyncPolicy Report`, which enables the new inherited deterministic-state reports while the
+immediate prediction RPC traffic is active. The policy accepts `Ignore`, `Report`, `Resync`, or
+`Correct`.
 
 Policy regression scenarios are included in the normal suite. Pass `-policyRegressionScenariosOnly`
 to run just the bootstrap and the three focused policy scenarios.
