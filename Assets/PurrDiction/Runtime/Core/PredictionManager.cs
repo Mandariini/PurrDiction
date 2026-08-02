@@ -443,9 +443,9 @@ namespace PurrNet.Prediction
                 {
                     var componentId = new PredictedComponentID(objectID, i);
                     bool preserveState = !reset && !component.isFreshSpawn && component.id.Equals(componentId);
-                    var incomingPolicy = component.ResolvePredictionPolicyForSetup();
+                    var incomingPolicy = component.ResolveEffectivePredictionPolicyForSetup(owner, this);
                     bool preserveSoftState = preserveState &&
-                                             component.previousRegisteredPredictionPolicy == PredictionPolicy.SoftCorrection &&
+                                             component.previousRegisteredEffectivePredictionPolicy == PredictionPolicy.SoftCorrection &&
                                              incomingPolicy == PredictionPolicy.SoftCorrection;
 
                     if (!preserveSoftState)
@@ -731,7 +731,7 @@ namespace PurrNet.Prediction
             if (!cachedIsServer)
             {
                 for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].SyncEffectivePolicySideEffects();
+                    _systems[i].SynchronizeEffectivePredictionPolicy();
             }
 
             using (SaveHistoryMarker.Auto())

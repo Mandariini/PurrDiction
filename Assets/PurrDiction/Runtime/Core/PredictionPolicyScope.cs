@@ -5,7 +5,7 @@ namespace PurrNet.Prediction
 {
     [DisallowMultipleComponent]
     [AddComponentMenu("PurrDiction/Prediction Policy Scope")]
-    public sealed class PredictionPolicyScope : MonoBehaviour
+    public class PredictionPolicyScope : MonoBehaviour
     {
         [SerializeField] private bool _inheritFromParent;
         [SerializeField] private PredictionPolicy _predictionPolicy = PredictionPolicy.FullPrediction;
@@ -46,13 +46,33 @@ namespace PurrNet.Prediction
             return _predictionPolicy;
         }
 
-        internal PredictionPolicy ResolvePolicyForSetup()
+        /// <summary>
+        /// Resolves the policy supplied to a descendant identity. Override
+        /// <see cref="ResolveLocalPolicy"/> to implement an identity-aware scope while retaining
+        /// parent-scope inheritance and automatic descendant refresh behavior.
+        /// </summary>
+        public PredictionPolicy ResolvePolicy(PredictedIdentity identity)
+        {
+            if (_inheritFromParent && TryGetParentScope(out var parent))
+                return parent.ResolvePolicy(identity);
+
+            return ResolveLocalPolicy(identity);
+        }
+
+        internal PredictionPolicy ResolvePolicyForSetup(PredictedIdentity identity)
         {
             if (_inheritFromParent && TryGetEnabledParentScope(out var parent))
-                return parent.ResolvePolicyForSetup();
+                return parent.ResolvePolicyForSetup(identity);
 
-            return _predictionPolicy;
+            return ResolveLocalPolicy(identity);
         }
+
+        /// <summary>
+        /// Returns the policy supplied by this scope for a particular descendant identity.
+        /// Ownership changes automatically cause registered identities to resolve this method again.
+        /// </summary>
+        protected virtual PredictionPolicy ResolveLocalPolicy(PredictedIdentity identity)
+            => _predictionPolicy;
 
         private bool TryGetEnabledParentScope(out PredictionPolicyScope scope)
         {

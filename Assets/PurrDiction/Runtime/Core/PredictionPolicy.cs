@@ -34,8 +34,9 @@ namespace PurrNet.Prediction
     /// Policies only alter behavior on clients; the server always simulates every identity normally.
     /// Deterministic identities can use FullPrediction, ServerRelay, and PredictedIfOwned without
     /// sending per-tick simulation state; ownership metadata is synchronized when it changes.
-    /// SoftCorrection requires authoritative state deltas and a non-deterministic identity that
-    /// explicitly implements verified-state correction through supportsSoftCorrection.
+    /// SoftCorrection uses authoritative state deltas when a non-deterministic identity explicitly
+    /// implements verified-state correction through supportsSoftCorrection. Policies requesting
+    /// soft correction automatically use ServerRelay for unsupported identities.
     /// </summary>
     public enum PredictionPolicy : byte
     {
@@ -60,6 +61,8 @@ namespace PurrNet.Prediction
         /// at the verified tick and blended back into the live simulation over time.
         /// Client state is convergent rather than authoritative — intended for physics objects whose
         /// exact pose is not gameplay-critical (debris, props, ragdolls).
+        /// Identities that do not support verified-state correction behave as ServerRelay while
+        /// retaining SoftCorrection as their configured policy.
         /// </summary>
         SoftCorrection = 2,
 
@@ -70,6 +73,16 @@ namespace PurrNet.Prediction
         /// while remote-owned copies just play verified server state. Ownership changes flip the mode
         /// automatically when the ownership change is received in the next verified frame.
         /// </summary>
-        PredictedIfOwned = 3
+        PredictedIfOwned = 3,
+
+        /// <summary>
+        /// Resolves per client to <see cref="FullPrediction"/> while the local player owns the
+        /// identity and <see cref="SoftCorrection"/> otherwise (including unowned). This keeps
+        /// locally controlled objects fully predicted while remote copies continue simulating
+        /// locally and converge toward verified server state without rollback. Only available to
+        /// non-deterministic identities that support soft correction; the non-owner branch uses
+        /// <see cref="ServerRelay"/> automatically for identities that do not support it.
+        /// </summary>
+        PredictedIfOwnedWithSoftFallback = 4
     }
 }

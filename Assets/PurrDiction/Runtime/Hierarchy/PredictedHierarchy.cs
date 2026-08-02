@@ -478,7 +478,10 @@ namespace PurrNet.Prediction
 
                 if (rootGo)
                 {
-                    if (!PreservesSoftCorrectionRootPose(rootGo, rootRecord.instanceId))
+                    if (!PreservesSoftCorrectionRootPose(
+                            rootGo,
+                            rootRecord.instanceId,
+                            rootRecord.owner))
                         ApplySpawnPose(rootGo.transform, parentTrs, rootRecord.spawnPosition, rootRecord.spawnRotation);
                     else if (parentTrs)
                         rootGo.transform.SetParent(parentTrs, true);
@@ -923,15 +926,19 @@ namespace PurrNet.Prediction
             return false;
         }
 
-        private bool PreservesSoftCorrectionRootPose(GameObject instance, PredictedObjectID instanceId)
+        private bool PreservesSoftCorrectionRootPose(
+            GameObject instance,
+            PredictedObjectID instanceId,
+            PlayerID? owner)
         {
             if (!predictionManager.isReplaying || !instance)
                 return false;
 
             return instance.TryGetComponent(out PredictedTransform predictedTransform) &&
                    predictedTransform.id.objectId.Equals(instanceId) &&
-                   predictedTransform.previousRegisteredPredictionPolicy == PredictionPolicy.SoftCorrection &&
-                   predictedTransform.ResolvePredictionPolicyForSetup() == PredictionPolicy.SoftCorrection;
+                   predictedTransform.previousRegisteredEffectivePredictionPolicy == PredictionPolicy.SoftCorrection &&
+                   predictedTransform.ResolveEffectivePredictionPolicyForSetup(owner, predictionManager) ==
+                       PredictionPolicy.SoftCorrection;
         }
 
         protected override void Simulate(ref PredictedHierarchyState state, float delta)

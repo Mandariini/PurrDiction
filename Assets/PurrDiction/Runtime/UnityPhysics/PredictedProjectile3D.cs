@@ -91,7 +91,7 @@ namespace PurrNet.Prediction
         {
             base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
             ClearSoftVelocityCorrection();
-            SyncControlledTransformPolicy(newPolicy);
+            SyncControlledTransformPolicy(predictionPolicy);
         }
 
         public override void ResetInterpolation()
