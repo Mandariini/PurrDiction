@@ -103,6 +103,17 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-triggerZoneScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<TriggerZoneListScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-immediateRpcRegressionScenarioOnly"))
         {
             _scenarios = new Scenario[]
@@ -120,6 +131,7 @@ public class PredictionBootstrap : Scenario
         gameObject.AddComponent<ImmediatePredictionRpcRegressionScenario>();
         gameObject.AddComponent<TrailIntegrityScenario>();
         gameObject.AddComponent<DesyncCorrectionScenario>();
+        gameObject.AddComponent<TriggerZoneListScenario>();
 
         gameObject.AddComponent<PieceLifecycleScenario>();
         gameObject.AddComponent<PieceReconnectScenario>();

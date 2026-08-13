@@ -273,6 +273,8 @@ namespace PurrNet.Prediction
 
             HashSetPool<GameObject>.Destroy(roots);
 
+            WarnAboutUndiscoveredIdentities();
+
             _queue.Clear();
 
             if ((_physicsProvider & PredictionPhysicsProvider.UnityPhysics2D) != 0 ||
@@ -280,6 +282,41 @@ namespace PurrNet.Prediction
             {
                 Time.fixedDeltaTime = tickDelta;
             }
+        }
+
+        /// <summary>
+        /// Identities that live in the manager's scene but were skipped by scene discovery
+        /// never get Setup: their state stays uninitialized and their physics events resolve
+        /// to id 0 (null 'other' in callbacks). This is always a setup mistake, so surface it.
+        /// </summary>
+        private void WarnAboutUndiscoveredIdentities()
+        {
+            var known = HashSetPool<PredictedIdentity>.Instantiate();
+            for (var i = 0; i < _queue.Count; i++)
+                known.Add(_queue[i]);
+
+            var all = UnityEngine.Object.FindObjectsByType<PredictedIdentity>(FindObjectsSortMode.None);
+            for (var i = 0; i < all.Length; i++)
+            {
+                var identity = all[i];
+
+                if (!identity ||
+                    identity.gameObject.scene.handle != gameObject.scene.handle ||
+                    identity.transform.root == transform.root ||
+                    identity.predictionManager ||
+                    known.Contains(identity))
+                {
+                    continue;
+                }
+
+                PurrLogger.LogWarning(
+                    $"PredictedIdentity '{identity.name}' ({identity.GetType().Name}) is in the scene but was not discovered during registration. " +
+                    "It will never simulate or sync, its state stays uninitialized, and physics events involving it pass a null 'other' to callbacks. " +
+                    "Spawn it with PredictionManager.hierarchy.Create, keep it in the scene file, or enable 'includeInstantiatedSceneObjects' in NetworkRules.",
+                    identity);
+            }
+
+            HashSetPool<PredictedIdentity>.Destroy(known);
         }
 
         private void RegisterScene()
@@ -3120,6 +3157,12 @@ namespace PurrNet.Prediction
 
         public static bool TryGetClosestPredictedID(GameObject go, out PredictedComponentID pid)
         {
+            if (!go)
+            {
+                pid = default;
+                return false;
+            }
+
             if (go.TryGetComponent<PredictedIdentity>(out var identity))
             {
                 pid = identity.id;
