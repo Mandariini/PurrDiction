@@ -34,6 +34,13 @@ namespace PurrNet.Prediction
         readonly HashSet<PredictedObjectID> _removedRecordScratch = new ();
         readonly Dictionary<PredictedObjectID, PredictedObjectID> _cascadeParentScratch = new ();
         readonly Dictionary<PredictedObjectID, bool> _cascadeReachScratch = new ();
+        readonly Dictionary<PredictedObjectID, List<InstanceDetails>> _cascadeGroups = new ();
+        readonly List<PredictedObjectID> _cascadeGroupOrder = new ();
+        readonly Dictionary<PredictedObjectID, int> _cascadeGroupDepth = new ();
+        readonly HashSet<PredictedObjectID> _cascadeMemberScratch = new ();
+        readonly List<InstanceDetails> _cascadeRootScratch = new ();
+        readonly Dictionary<PredictedObjectID, DecorationAnchor> _pendingDecorationRestores = new ();
+        readonly List<PredictedObjectID> _decorationRestoreScratch = new ();
 
         readonly Dictionary<PredictedObjectID, HashSet<PredictedObjectID>> _visibilityParentsByRoot = new ();
         readonly Dictionary<PredictedObjectID, HashSet<PredictedObjectID>> _visibilityChildrenByRoot = new ();
@@ -188,7 +195,40 @@ namespace PurrNet.Prediction
             }
 
             if (_removalScratch.Count > 0)
-                RemovePieceSet(_removalScratch, _removalSetScratch, true, false, false);
+            {
+                _cascadeGroups.Clear();
+                _cascadeGroupOrder.Clear();
+
+                for (var i = 0; i < _removalScratch.Count; i++)
+                {
+                    var removal = _removalScratch[i];
+                    var removalRoot = removal.rootId;
+
+                    if (!_cascadeGroups.TryGetValue(removalRoot, out var group))
+                    {
+                        group = ListPool<InstanceDetails>.Instantiate();
+                        _cascadeGroups[removalRoot] = group;
+                        _cascadeGroupOrder.Add(removalRoot);
+                    }
+
+                    group.Add(removal);
+                }
+
+                for (var g = 0; g < _cascadeGroupOrder.Count; g++)
+                {
+                    var group = _cascadeGroups[_cascadeGroupOrder[g]];
+
+                    _cascadeMemberScratch.Clear();
+                    for (var i = 0; i < group.Count; i++)
+                        _cascadeMemberScratch.Add(group[i].instanceId);
+
+                    RemovePieceSet(group, _cascadeMemberScratch, true, false, false);
+                    ListPool<InstanceDetails>.Destroy(group);
+                }
+
+                _cascadeGroups.Clear();
+                _cascadeGroupOrder.Clear();
+            }
 
             _additionGroups.Clear();
             _additionGroupOrder.Clear();
@@ -263,8 +303,162 @@ namespace PurrNet.Prediction
 
             _nextInstanceId = state.nextInstanceId;
 
+            RunDecorationRestores();
+
             _isRollingBack = false;
             InvalidateVisibilityTopology();
+        }
+
+        private struct DecorationAnchor
+        {
+            public PredictedObjectID? anchorId;
+            public int[] descendPath;
+            public Transform plainParent;
+            public bool isPlain;
+        }
+
+        private enum DecorationRestoreResult
+        {
+            KeepPending,
+            Restored,
+            Evict
+        }
+
+        private void CaptureDecoration(PredictedObjectID pieceId, GameObject go)
+        {
+            if (_isCleaningUp)
+                return;
+
+            var directParent = go.transform.parent;
+
+            if (directParent == null)
+            {
+                _pendingDecorationRestores.Remove(pieceId);
+                return;
+            }
+
+            if (go.TryGetComponent<PredictedParent>(out _))
+                return;
+
+            if (!_recordsById.TryGetValue(pieceId, out var record))
+                return;
+
+            if (!TryResolveParentLink(go, out var link))
+            {
+                _pendingDecorationRestores[pieceId] = new DecorationAnchor
+                {
+                    plainParent = directParent,
+                    isPlain = true
+                };
+                return;
+            }
+
+            if (SameAttach(link, GetDefaultParent(record)))
+            {
+                _pendingDecorationRestores.Remove(pieceId);
+                return;
+            }
+
+            if (!predictionManager.TryGetIdentity(link, out var anchorIdentity) || !anchorIdentity)
+                return;
+
+            var anchorTrs = anchorIdentity.transform;
+            int depth = 0;
+            var current = directParent;
+
+            while (current != null && current != anchorTrs)
+            {
+                depth++;
+                current = current.parent;
+            }
+
+            if (current == null)
+                return;
+
+            var descend = depth == 0 ? System.Array.Empty<int>() : new int[depth];
+            current = directParent;
+
+            for (var i = 0; i < depth; i++)
+            {
+                descend[i] = current.GetSiblingIndex();
+                current = current.parent;
+            }
+
+            _pendingDecorationRestores[pieceId] = new DecorationAnchor
+            {
+                anchorId = link.objectId,
+                descendPath = descend
+            };
+        }
+
+        private DecorationRestoreResult TryRestoreDecoration(PredictedObjectID pieceId, in DecorationAnchor anchor)
+        {
+            if (!_instanceMap.TryGetValue(pieceId, out var go) || !go)
+                return DecorationRestoreResult.KeepPending;
+
+            if (go.TryGetComponent<PredictedParent>(out _))
+                return DecorationRestoreResult.Evict;
+
+            Transform target;
+
+            if (anchor.isPlain)
+            {
+                if (!anchor.plainParent)
+                    return DecorationRestoreResult.Evict;
+
+                target = anchor.plainParent;
+            }
+            else
+            {
+                if (!anchor.anchorId.HasValue ||
+                    !_instanceMap.TryGetValue(anchor.anchorId.Value, out var anchorGo) || !anchorGo)
+                {
+                    return DecorationRestoreResult.KeepPending;
+                }
+
+                target = anchorGo.transform;
+                var path = anchor.descendPath;
+
+                for (var i = path.Length - 1; i >= 0; i--)
+                {
+                    if (path[i] >= target.childCount)
+                        break;
+
+                    target = target.GetChild(path[i]);
+                }
+            }
+
+            var trs = go.transform;
+
+            if (target == trs || target.IsChildOf(trs))
+                return DecorationRestoreResult.Evict;
+
+            if (trs.parent != target)
+            {
+                trs.SetParent(target, true);
+                NotifyInstanceParentChanged(go);
+            }
+
+            return DecorationRestoreResult.Restored;
+        }
+
+        private void RunDecorationRestores()
+        {
+            if (_pendingDecorationRestores.Count == 0)
+                return;
+
+            _decorationRestoreScratch.Clear();
+
+            foreach (var pending in _pendingDecorationRestores)
+            {
+                if (TryRestoreDecoration(pending.Key, pending.Value) != DecorationRestoreResult.KeepPending)
+                    _decorationRestoreScratch.Add(pending.Key);
+            }
+
+            for (var i = 0; i < _decorationRestoreScratch.Count; i++)
+                _pendingDecorationRestores.Remove(_decorationRestoreScratch[i]);
+
+            _decorationRestoreScratch.Clear();
         }
 
         internal static bool SameAttach(PredictedComponentID? a, PredictedComponentID? b)
@@ -784,6 +978,8 @@ namespace PurrNet.Prediction
             if (_isRollingBack || _suppressParentWarnings || predictionManager.isReplaying)
                 return;
 
+            _pendingDecorationRestores.Remove(instanceId);
+
             if (!_recordsById.TryGetValue(instanceId, out var record))
                 return;
 
@@ -1199,52 +1395,94 @@ namespace PurrNet.Prediction
             _removalSetScratch.Clear();
             CollectCascade(record);
 
+            _cascadeGroups.Clear();
+            _cascadeGroupOrder.Clear();
+            _cascadeGroupDepth.Clear();
+            _cascadeRootScratch.Clear();
+
+            for (var i = 0; i < _removalScratch.Count; i++)
+            {
+                var removal = _removalScratch[i];
+                var removalRoot = removal.rootId;
+                int depth = ChainDepthTo(removal.instanceId, record.instanceId);
+
+                if (!_cascadeGroups.TryGetValue(removalRoot, out var group))
+                {
+                    group = ListPool<InstanceDetails>.Instantiate();
+                    _cascadeGroups[removalRoot] = group;
+                    _cascadeGroupOrder.Add(removalRoot);
+                    _cascadeGroupDepth[removalRoot] = depth;
+                }
+                else if (depth < _cascadeGroupDepth[removalRoot])
+                {
+                    _cascadeGroupDepth[removalRoot] = depth;
+                }
+
+                group.Add(removal);
+
+                if (removal.isRootRecord)
+                    _cascadeRootScratch.Add(removal);
+            }
+
+            _cascadeGroupOrder.Sort((a, b) =>
+            {
+                int cmp = _cascadeGroupDepth[b].CompareTo(_cascadeGroupDepth[a]);
+                return cmp != 0 ? cmp : a.instanceId.value.CompareTo(b.instanceId.value);
+            });
+
             var isVerified = predictionManager.isVerified;
-            bool canPool = record.prefabId.value < 0 || !isVerified;
 
             _suppressParentWarnings = true;
             try
             {
-                RemovePieceSet(_removalScratch, _removalSetScratch, canPool, true, true);
+                for (var g = 0; g < _cascadeGroupOrder.Count; g++)
+                {
+                    var group = _cascadeGroups[_cascadeGroupOrder[g]];
+                    bool canPool = group[0].prefabId.value < 0 || !isVerified;
+
+                    _cascadeMemberScratch.Clear();
+                    for (var i = 0; i < group.Count; i++)
+                        _cascadeMemberScratch.Add(group[i].instanceId);
+
+                    RemovePieceSet(group, _cascadeMemberScratch, canPool, true, true);
+                }
             }
             finally
             {
                 _suppressParentWarnings = false;
             }
 
-            if (record.isRootRecord)
-                PromoteOrphans(record);
+            for (var i = 0; i < _cascadeRootScratch.Count; i++)
+                PromoteOrphans(_cascadeRootScratch[i]);
+
+            RebaseSurvivorsOfDeletedParents();
+
+            foreach (var group in _cascadeGroups.Values)
+                ListPool<InstanceDetails>.Destroy(group);
+
+            _cascadeGroups.Clear();
+            _cascadeGroupOrder.Clear();
+            _cascadeGroupDepth.Clear();
+            _cascadeRootScratch.Clear();
         }
 
         private void CollectCascade(in InstanceDetails target)
         {
-            var rootId = target.rootId;
-
             _cascadeParentScratch.Clear();
             _cascadeReachScratch.Clear();
 
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
             {
                 var record = _spawnedPrefabs[i];
-
-                if (!record.rootId.Equals(rootId))
-                    continue;
-
                 var parentObj = EffectiveParentObject(record);
 
-                if (parentObj.HasValue && _recordsById.TryGetValue(parentObj.Value, out var parentRecord) &&
-                    parentRecord.rootId.Equals(rootId))
-                {
+                if (parentObj.HasValue && _recordsById.ContainsKey(parentObj.Value))
                     _cascadeParentScratch[record.instanceId] = parentObj.Value;
-                }
             }
 
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
             {
                 var record = _spawnedPrefabs[i];
-
-                if (!record.rootId.Equals(rootId))
-                    continue;
 
                 if (ChainReaches(record.instanceId, target.instanceId))
                 {
@@ -1252,6 +1490,56 @@ namespace PurrNet.Prediction
                     _removalSetScratch.Add(record.instanceId);
                 }
             }
+        }
+
+        private int ChainDepthTo(PredictedObjectID start, PredictedObjectID targetId)
+        {
+            var current = start;
+            int maxHops = _cascadeParentScratch.Count + 1;
+            int depth = 0;
+
+            for (var hop = 0; hop <= maxHops; hop++)
+            {
+                if (current.Equals(targetId))
+                    return depth;
+
+                if (!_cascadeParentScratch.TryGetValue(current, out var parent))
+                    return depth;
+
+                current = parent;
+                depth++;
+            }
+
+            return depth;
+        }
+
+        private void RebaseSurvivorsOfDeletedParents()
+        {
+            bool changed = false;
+
+            for (var i = 0; i < _spawnedPrefabs.Count; i++)
+            {
+                var record = _spawnedPrefabs[i];
+
+                if (!record.parent.HasValue || _recordsById.ContainsKey(record.parent.Value.objectId))
+                    continue;
+
+                var position = record.spawnPosition;
+                var rotation = record.spawnRotation;
+
+                if (_instanceMap.TryGetValue(record.instanceId, out var go) && go)
+                    go.transform.GetPositionAndRotation(out position, out rotation);
+
+                var rebased = new InstanceDetails(record.prefabId, record.pieceIndex.value, record.instanceId,
+                    position, rotation, record.owner, null);
+
+                _spawnedPrefabs[i] = rebased;
+                _recordsById[record.instanceId] = rebased;
+                changed = true;
+            }
+
+            if (changed)
+                InvalidateVisibilityTopology();
         }
 
         private bool ChainReaches(PredictedObjectID start, PredictedObjectID targetId)
@@ -1397,6 +1685,7 @@ namespace PurrNet.Prediction
             {
                 var piece = _memberPiecesScratch[i];
 
+                CaptureDecoration(piece.id, piece.gameObject);
                 predictionManager.UnregisterInstance(piece.gameObject, false, triggerDestroyEvent);
 
                 _instanceMap.Remove(piece.id);
@@ -1441,6 +1730,8 @@ namespace PurrNet.Prediction
             {
                 if (!memberSet.Contains(pieceId))
                 {
+                    CaptureDecoration(pieceId, current.gameObject);
+
                     if (current.parent != null)
                         current.SetParent(null, true);
                     return;
@@ -1774,6 +2065,7 @@ namespace PurrNet.Prediction
             _policyRefreshStamp.Clear();
             _parentingWarned.Clear();
             _verifiedApplyEntrants.Clear();
+            _pendingDecorationRestores.Clear();
             _visibilityParentsByRoot.Clear();
             _visibilityChildrenByRoot.Clear();
             _visibilityDependencyQueue.Clear();
