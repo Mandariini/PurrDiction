@@ -480,6 +480,7 @@ namespace PurrNet.Prediction
                 {
                     var componentId = new PredictedComponentID(objectID, i);
                     bool preserveState = !reset && !component.isFreshSpawn && component.id.Equals(componentId);
+                    bool recycledForNewId = !reset && !component.isFreshSpawn && !component.id.Equals(componentId);
                     var incomingPolicy = component.ResolveEffectivePredictionPolicyForSetup(owner, this);
                     bool preserveSoftState = preserveState &&
                                              component.previousRegisteredEffectivePredictionPolicy == PredictionPolicy.SoftCorrection &&
@@ -487,7 +488,7 @@ namespace PurrNet.Prediction
 
                     if (!preserveSoftState)
                         component.OnPreSetup();
-                    if (reset)
+                    if (reset || recycledForNewId)
                          component.ResetState();
                     if (triggedOnRemovedFromPool)
                         component.TriggerOnRemovedFromPool();
