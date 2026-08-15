@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using PurrNet.Logging;
 using PurrNet.Packing;
 using Unity.Profiling;
+using UnityEngine;
 
 namespace PurrNet.Prediction
 {
@@ -1281,6 +1283,43 @@ namespace PurrNet.Prediction
             }
         }
 
+        readonly HashSet<PredictedComponentID> _recordDecodeQuarantine = new ();
+        readonly Dictionary<PredictedComponentID, double> _recordFailureLogAt = new ();
+        private bool _frameApplyHadRecordFailure;
+
+        private const double RecordFailureLogIntervalSeconds = 5d;
+
+        void OnAddressedRecordFailure(PredictedComponentID id, Exception error, int declaredBits, int consumedBits)
+        {
+            if (error is PredictedModuleRosterMismatchException)
+            {
+                if (_recordDecodeQuarantine.Add(id))
+                {
+                    PurrLogger.LogError(
+                        $"{error.Message} State replication for this identity is suspended until it is destroyed or respawned.");
+                }
+                return;
+            }
+
+            _frameApplyHadRecordFailure = true;
+
+            double now = Time.unscaledTimeAsDouble;
+            if (_recordFailureLogAt.TryGetValue(id, out var lastLogged) &&
+                now - lastLogged < RecordFailureLogIntervalSeconds)
+                return;
+
+            _recordFailureLogAt[id] = now;
+
+            string identityName = _instanceMap.TryGetValue(id, out var failed) && failed
+                ? failed.GetType().Name
+                : "unresolved identity";
+
+            PurrLogger.LogError(
+                $"Discarded prediction record {id} ({identityName}); it consumed {consumedBits} of its " +
+                $"declared {declaredBits} bits: {error.Message}\n" +
+                "The rest of the frame was applied; the server will answer the stalled ack with a full sync.");
+        }
+
         void ReadAddressedHierarchy(
             BitPacker frame,
             ulong stateTick,
@@ -1313,7 +1352,8 @@ namespace PurrNet.Prediction
                         serverTick,
                         false,
                         !deferUnityApply);
-                });
+                },
+                onRecordFailure: OnAddressedRecordFailure);
         }
 
         void ReadAddressedStateSection(
@@ -1354,6 +1394,9 @@ namespace PurrNet.Prediction
                         return;
                     }
 
+                    if (_recordDecodeQuarantine.Contains(id))
+                        return;
+
                     if (!_addressedReadIdsScratch.Add(id))
                     {
                         throw new InvalidOperationException(
@@ -1368,7 +1411,8 @@ namespace PurrNet.Prediction
                         baselineTick,
                         serverTick,
                         eventHandlers);
-                });
+                },
+                onRecordFailure: OnAddressedRecordFailure);
 
             if (fullFrame || baselineTick == 0)
                 return;
@@ -1378,17 +1422,25 @@ namespace PurrNet.Prediction
                 var system = _addressedReadSystemScratch[i];
                 if (!system ||
                     _addressedReadIdsScratch.Contains(system.id) ||
+                    _recordDecodeQuarantine.Contains(system.id) ||
                     !_instanceMap.TryGetValue(system.id, out var current) ||
                     current != system)
                 {
                     continue;
                 }
 
-                ApplyAddressedUnchangedState(
-                    system,
-                    stateTick,
-                    baselineTick,
-                    serverTick);
+                try
+                {
+                    ApplyAddressedUnchangedState(
+                        system,
+                        stateTick,
+                        baselineTick,
+                        serverTick);
+                }
+                catch (Exception exception)
+                {
+                    OnAddressedRecordFailure(system.id, exception, 0, 0);
+                }
             }
 
         }
@@ -1427,7 +1479,8 @@ namespace PurrNet.Prediction
                 {
                     if (_instanceMap.TryGetValue(id, out var system) && system.hasInput)
                         system.ReadFirstInput(inputTick, payload);
-                });
+                },
+                onRecordFailure: OnAddressedRecordFailure);
         }
 
         void ApplyAddressedState(

@@ -160,6 +160,7 @@ namespace PurrNet.Prediction
         private bool _isRollingBack = false;
 
         readonly HashSet<PredictedObjectID> _verifiedApplyEntrants = new ();
+        readonly HashSet<PredictedObjectID> _replacedEntrantsScratch = new ();
 
         internal bool WasMaterializedByVerifiedApply(PredictedObjectID id)
             => _verifiedApplyEntrants.Contains(id);
@@ -168,6 +169,7 @@ namespace PurrNet.Prediction
         {
             _isRollingBack = true;
             _verifiedApplyEntrants.Clear();
+            _replacedEntrantsScratch.Clear();
 
             var target = state.spawnedPrefabs;
 
@@ -187,7 +189,12 @@ namespace PurrNet.Prediction
                     var targetRecord = target[targetIndex];
                     if (targetRecord.prefabId == record.prefabId && targetRecord.pieceIndex.value == record.pieceIndex.value &&
                         System.Nullable.Equals(targetRecord.parent, record.parent))
-                        continue;
+                    {
+                        if (targetRecord.owner == record.owner)
+                            continue;
+
+                        _replacedEntrantsScratch.Add(record.instanceId);
+                    }
                 }
 
                 _removalScratch.Add(record);
@@ -305,6 +312,7 @@ namespace PurrNet.Prediction
 
             RunDecorationRestores();
 
+            _replacedEntrantsScratch.Clear();
             _isRollingBack = false;
             InvalidateVisibilityTopology();
         }
@@ -821,7 +829,8 @@ namespace PurrNet.Prediction
                 _instanceMap[record.instanceId] = pieceGo;
                 _goToId[pieceGo] = record.instanceId;
 
-                predictionManager.RegisterInstance(pieceGo, record.instanceId, instanceOwner, reset, removedFromPoolEvent);
+                bool recordReset = reset || _replacedEntrantsScratch.Contains(record.instanceId);
+                predictionManager.RegisterInstance(pieceGo, record.instanceId, instanceOwner, recordReset, removedFromPoolEvent);
             }
 
             if (rootGo && !rootGo.activeSelf)
@@ -934,7 +943,12 @@ namespace PurrNet.Prediction
             _instanceMap[record.instanceId] = pieceGo;
             _goToId[pieceGo] = record.instanceId;
 
-            predictionManager.RegisterInstance(pieceGo, record.instanceId, recordOwner, false, false);
+            predictionManager.RegisterInstance(
+                pieceGo,
+                record.instanceId,
+                recordOwner,
+                _replacedEntrantsScratch.Contains(record.instanceId),
+                false);
         }
 
         private static void ApplySpawnPose(Transform trs, Transform parent, Vector3 position, Quaternion rotation)

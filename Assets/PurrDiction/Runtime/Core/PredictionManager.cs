@@ -415,6 +415,9 @@ namespace PurrNet.Prediction
             localTick = 1;
             localTickInContext = 1;
             _verifiedServerTick = 0;
+            _ackedServerTick = 0;
+            _recordDecodeQuarantine.Clear();
+            _recordFailureLogAt.Clear();
             _pauseAdvanceTicks = 0;
             _latestFrameServerTick = 0;
             _inputStarved = false;
@@ -616,6 +619,8 @@ namespace PurrNet.Prediction
                 ReferenceEquals(mapped, predictedIdentity))
             {
                 _instanceMap.Remove(predictedIdentity.id);
+                _recordDecodeQuarantine.Remove(predictedIdentity.id);
+                _recordFailureLogAt.Remove(predictedIdentity.id);
             }
 
             if (_systems.Remove(predictedIdentity))
@@ -965,8 +970,8 @@ namespace PurrNet.Prediction
             payload.WriteBitsWithoutConsumingIt(_cachedInputPayload, _cachedInputPayload.positionInBits);
 
             if (_cachedInputFragmented)
-                SendInputToServerFragmented(_cachedInputFirstTick, _cachedInputTickCount, _verifiedServerTick, payload);
-            else SendInputToServer(_cachedInputFirstTick, _cachedInputTickCount, _verifiedServerTick, payload);
+                SendInputToServerFragmented(_cachedInputFirstTick, _cachedInputTickCount, _ackedServerTick, payload);
+            else SendInputToServer(_cachedInputFirstTick, _cachedInputTickCount, _ackedServerTick, payload);
         }
 
         private void FinalizeInputOnClient(DisposableList<PredictedIdentity> ownedIdentities)
@@ -1022,8 +1027,8 @@ namespace PurrNet.Prediction
             _lastInputSendTime = Time.unscaledTimeAsDouble;
 
             if (payload.positionInBytes >= InputMtu)
-                SendInputToServerFragmented(firstTick, tickCount, _verifiedServerTick, payload);
-            else SendInputToServer(firstTick, tickCount, _verifiedServerTick, payload);
+                SendInputToServerFragmented(firstTick, tickCount, _ackedServerTick, payload);
+            else SendInputToServer(firstTick, tickCount, _ackedServerTick, payload);
         }
 
         private void FinalizeTickOnServer(bool cachedIsClient)
@@ -2055,6 +2060,7 @@ namespace PurrNet.Prediction
         public event Action onRollbackFinished;
 
         private ulong _verifiedServerTick;
+        private ulong _ackedServerTick;
         private ulong _pauseAdvanceTicks;
         private ulong _latestFrameServerTick;
         private bool _inputStarved;
@@ -2418,6 +2424,8 @@ namespace PurrNet.Prediction
 
                     isVerified = true;
 
+                    _frameApplyHadRecordFailure = false;
+
                     if (frame.fullFrame)
                     {
                         ReadFullFrame(frame.packer, frame.serverTick, frame.serverTick, frame.serverTick);
@@ -2432,6 +2440,9 @@ namespace PurrNet.Prediction
                         SaveEnteringState(frame.serverTick + 1);
                         _verifiedServerTick = frame.serverTick;
                     }
+
+                    if (!_frameApplyHadRecordFailure)
+                        _ackedServerTick = frame.serverTick;
 
                     MaybeSendDesyncReport(frame.serverTick);
 

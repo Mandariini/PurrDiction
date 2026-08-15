@@ -440,6 +440,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
                 using (var firstPayload = BitPackerPool.Get())
                 {
+                    Packer<PackedUInt>.Write(firstPayload, (uint)0);
                     Packer<bool>.Write(firstPayload, false);
                     firstPayload.ResetPositionAndMode(true);
                     identity.ReadFirstDynamicModuleSnapshot(12, firstPayload, 12);

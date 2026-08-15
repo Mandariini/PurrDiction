@@ -307,6 +307,18 @@ public class PredictionBootstrap : Scenario
             && int.TryParse(packetLoss, out var parsedPacketLoss))
             _packetLossChance = parsedPacketLoss;
 
+#if !DEBUG && !SIMULATE_NETWORK
+        if (_simulateLatency && _maxLatencyMs > 0 || _packetLossChance > 0)
+        {
+            Debug.LogError(
+                "[PredictionTests] Network simulation was requested but the simulator is compiled " +
+                "out of this player (LiteNetLib requires DEBUG or SIMULATE_NETWORK). The run would " +
+                "silently execute at LAN conditions; failing fast instead.");
+            Application.Quit(3);
+            return;
+        }
+#endif
+
         if (CommandLineUtils.TryGetArgument("-tickRate", out var tickRate) &&
             int.TryParse(tickRate, out var parsedTickRate) && parsedTickRate > 0)
             _networkManager.tickRate = parsedTickRate;
