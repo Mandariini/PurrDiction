@@ -16,7 +16,11 @@ namespace PurrNet.Prediction
         [SerializeField, PurrLock] private float _gravity = 0;
 
         [Tooltip("Used for bounce behaviour. Bounciness is read at startup; not supported to change at runtime.")]
+#if UNITY_6000
         [SerializeField, PurrLock] private PhysicsMaterial _physicsMaterial;
+#else
+        [SerializeField, PurrLock] private PhysicMaterial _physicsMaterial;
+#endif
 
         [Tooltip("Radius of the spherical projectile shape. Used for collision casting.")]
         [SerializeField, PurrLock] private float _radius = 0.1f;

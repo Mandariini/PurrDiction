@@ -47,7 +47,11 @@ namespace PurrNet.Prediction.Prebuilt
             {
                 state.timeInAir += delta;
 #if UNITY_PHYSICS_3D
+#if UNITY_6000
                 if(_rigidbody.linearVelocity.magnitude < maxFallSpeed)
+#else
+                if(_rigidbody.velocity.magnitude < maxFallSpeed)
+#endif
                     _rigidbody.AddForce(Vector3.down * (state.timeInAir * gravityAirTimeMultiplier), ForceMode.Acceleration);
 #endif
             }

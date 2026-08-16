@@ -168,7 +168,7 @@ namespace PurrNet.Prediction
             if (bodyType == RigidbodyType2D.Static)
                 return;
 
-            _rigidbody.linearVelocity = state.linearVelocity;
+            linearVelocity = state.linearVelocity;
             _rigidbody.angularVelocity = state.angularVelocity;
         }
 
