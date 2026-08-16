@@ -219,7 +219,16 @@ public class TrailViewTracker : MonoBehaviour
         var dx = cur.x - prev.x;
         var lateral = Mathf.Max(Mathf.Abs(cur.y - prev.y), Mathf.Abs(cur.z - prev.z));
 
-        if (dx < -BackwardEps)
+        // The view channel legitimately renders corrections: a fire input arriving one tick
+        // late server-side lands the authoritative projectile one tick behind the prediction,
+        // and a catch-up burst can compress that whole correction into one rendered frame.
+        // Allow up to one tick of travel backward on the view; sim and lateral stay strict,
+        // so identity swaps and multi-tick jumps still fail.
+        var backwardEps = BackwardEps;
+        if (channel == "view" && _pt.predictionManager != null)
+            backwardEps += TrailGunner.ProjectileSpeed * _pt.predictionManager.tickDelta;
+
+        if (dx < -backwardEps)
         {
             if (-dx > maxBackward)
                 maxBackward = -dx;
