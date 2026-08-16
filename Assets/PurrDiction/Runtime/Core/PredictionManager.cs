@@ -925,7 +925,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        private const int InputMtu = 1024;
+        private const int InputMtu = 960;
         private const ulong MaxInputWindow = 32;
         private const double InputResendIntervalSeconds = 0.02;
 

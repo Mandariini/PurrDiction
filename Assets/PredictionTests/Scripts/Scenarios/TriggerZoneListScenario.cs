@@ -269,9 +269,12 @@ public class TriggerZoneListScenario : Scenario
             if (owners.Count != expectedWalkers)
                 return ScenarioResult.Fail($"expected {expectedWalkers} players, saw {owners.Count}");
 
+            float laneStart = -3.2f;
+            float laneStep = owners.Count > 1 ? 5f / (owners.Count - 1) : 0f;
+
             for (var i = 0; i < owners.Count; i++)
             {
-                var position = Base + new Vector3(-6f, 0.6f, -3f + i * 2f);
+                var position = Base + new Vector3(-6f, 0.6f, laneStart + i * laneStep);
                 if (!pm.hierarchy.Create(_walkerPrefab, position, Quaternion.identity, owners[i]).HasValue)
                     return ScenarioResult.Fail($"failed to create walker {i}");
             }
