@@ -1,5 +1,7 @@
 using UnityEngine;
+#if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
+#endif
 
 namespace PurrNet.Prediction.Prebuilt
 {
@@ -78,6 +80,7 @@ namespace PurrNet.Prediction.Prebuilt
 
         private Vector2 GetMovementInput()
         {
+#if ENABLE_INPUT_SYSTEM
             var vector = new Vector2();
             if (Keyboard.current != null)
             {
@@ -88,6 +91,14 @@ namespace PurrNet.Prediction.Prebuilt
             }
 
             return vector;
+#else
+            var vector = new Vector2();
+            vector.x = UnityEngine.Input.GetKey(KeyCode.A) ? -1 : 0;
+            vector.x += UnityEngine.Input.GetKey(KeyCode.D) ? 1 : 0;
+            vector.y = UnityEngine.Input.GetKey(KeyCode.S) ? -1 : 0;
+            vector.y += UnityEngine.Input.GetKey(KeyCode.W) ? 1 : 0;
+            return vector;
+#endif
         }
 
         public struct State : IPredictedData<State>
