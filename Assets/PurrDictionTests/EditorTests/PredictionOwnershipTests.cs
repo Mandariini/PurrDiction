@@ -191,6 +191,115 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void CustomScopeResolvesDescendantsAgainWhenOwnershipChanges()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var scopeObject = new GameObject("OwnershipScope");
+            var firstIdentityObject = new GameObject("FirstIdentity");
+            var secondIdentityObject = new GameObject("SecondIdentity");
+
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                var localPlayer = new PlayerID(7, false);
+                var remotePlayer = new PlayerID(8, false);
+                SetField(typeof(NetworkIdentity), manager, "_localPlayer", (PlayerID?)localPlayer);
+
+                scopeObject.AddComponent<OwnershipPolicyScopeProbe>();
+                firstIdentityObject.transform.SetParent(scopeObject.transform);
+                secondIdentityObject.transform.SetParent(scopeObject.transform);
+
+                var firstIdentity = firstIdentityObject.AddComponent<PolicyProbe>();
+                var secondIdentity = secondIdentityObject.AddComponent<PolicyProbe>();
+                firstIdentity.AttachForTest(manager);
+                secondIdentity.AttachForTest(manager);
+
+                firstIdentity.owner = localPlayer;
+                secondIdentity.owner = remotePlayer;
+
+                Assert.That(firstIdentity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+                Assert.That(secondIdentity.predictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+
+                firstIdentity.owner = remotePlayer;
+                secondIdentity.owner = localPlayer;
+
+                Assert.That(firstIdentity.predictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+                Assert.That(secondIdentity.predictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+
+                firstIdentity.DetachForTest();
+                secondIdentity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(firstIdentityObject);
+                UnityEngine.Object.DestroyImmediate(secondIdentityObject);
+                UnityEngine.Object.DestroyImmediate(scopeObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+                UnityEngine.Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        [Test]
+        public void OwnedSoftFallbackSwitchesEffectiveTimelineWithoutReplacingConfiguredPolicy()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var scopeObject = new GameObject("PolicyScope");
+            var identityObject = new GameObject("PolicyProbe");
+
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                var localPlayer = new PlayerID(7, false);
+                var remotePlayer = new PlayerID(8, false);
+                SetField(typeof(NetworkIdentity), manager, "_localPlayer", (PlayerID?)localPlayer);
+
+                var scope = scopeObject.AddComponent<PredictionPolicyScope>();
+                scope.configuredPredictionPolicy =
+                    PredictionPolicy.PredictedIfOwnedWithSoftFallback;
+                identityObject.transform.SetParent(scopeObject.transform);
+                var identity = identityObject.AddComponent<PolicyProbe>();
+                identity.AttachForTest(manager);
+                identity.owner = remotePlayer;
+
+                Assert.That(identity.predictionPolicy,
+                    Is.EqualTo(PredictionPolicy.PredictedIfOwnedWithSoftFallback));
+                Assert.That(identity.EffectivePolicy(), Is.EqualTo(PredictionPolicy.SoftCorrection));
+
+                identity.ResetPolicyTransitions();
+                identity.owner = localPlayer;
+
+                Assert.That(identity.predictionPolicy,
+                    Is.EqualTo(PredictionPolicy.PredictedIfOwnedWithSoftFallback));
+                Assert.That(identity.EffectivePolicy(), Is.EqualTo(PredictionPolicy.FullPrediction));
+                Assert.That(identity.policyTransitionCount, Is.EqualTo(1));
+                Assert.That(identity.lastOldPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+                Assert.That(identity.lastNewPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+
+                identity.owner = remotePlayer;
+
+                Assert.That(identity.predictionPolicy,
+                    Is.EqualTo(PredictionPolicy.PredictedIfOwnedWithSoftFallback));
+                Assert.That(identity.EffectivePolicy(), Is.EqualTo(PredictionPolicy.SoftCorrection));
+                Assert.That(identity.policyTransitionCount, Is.EqualTo(2));
+                Assert.That(identity.lastOldPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
+                Assert.That(identity.lastNewPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+
+                identity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(scopeObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+                UnityEngine.Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        [Test]
         public void SetupAppliesPolicySideEffectsAfterUnityStateCapture()
         {
             var networkObject = new GameObject("NetworkManager");
@@ -311,7 +420,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     "PreservesSoftCorrectionRootPose", InstanceFields);
                 Assert.That(method, Is.Not.Null);
                 var preservesPose = (bool)method.Invoke(
-                    hierarchy, new object[] { instanceObject, instanceId });
+                    hierarchy, new object[] { instanceObject, instanceId, null });
 
                 Assert.That(preservesPose, Is.False,
                     "The previous lifetime's SoftCorrection policy preserved a stale pooled root pose");
@@ -320,7 +429,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 SetField(typeof(PredictedIdentity), predictedTransform,
                     "_predictionPolicy", PredictionPolicy.SoftCorrection);
                 preservesPose = (bool)method.Invoke(
-                    hierarchy, new object[] { instanceObject, instanceId });
+                    hierarchy, new object[] { instanceObject, instanceId, null });
 
                 Assert.That(preservesPose, Is.False,
                     "A non-soft lifetime was incorrectly treated as a live soft pose when switching into SoftCorrection");
@@ -496,22 +605,60 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void UnsupportedIdentityNormalizesSoftCorrectionToFullPrediction()
+        public void UnsupportedIdentityKeepsSoftCorrectionAndRelaysBehaviorally()
         {
-            var gameObject = new GameObject(nameof(UnsupportedIdentityNormalizesSoftCorrectionToFullPrediction));
+            var gameObject = new GameObject(
+                nameof(UnsupportedIdentityKeepsSoftCorrectionAndRelaysBehaviorally));
+            var managerObject = new GameObject("PredictionManager");
             try
             {
                 var identity = gameObject.AddComponent<UnsupportedPolicyProbe>();
+                var manager = managerObject.AddComponent<PredictionManager>();
 
                 identity.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
+                identity.AttachForTest(manager);
 
                 Assert.That(identity.supportsSoftCorrection, Is.False);
-                Assert.That(identity.configuredPredictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
-                Assert.That(identity.GetResolvedPredictionPolicy(), Is.EqualTo(PredictionPolicy.FullPrediction));
+                Assert.That(identity.configuredPredictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+                Assert.That(identity.GetResolvedPredictionPolicy(), Is.EqualTo(PredictionPolicy.SoftCorrection));
+                Assert.That(identity.EffectivePolicy(), Is.EqualTo(PredictionPolicy.ServerRelay));
+                identity.DetachForTest();
             }
             finally
             {
                 UnityEngine.Object.DestroyImmediate(gameObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void UnsupportedIdentityKeepsOwnedSoftFallbackAndRelaysWhenNotOwned()
+        {
+            var gameObject = new GameObject(
+                nameof(UnsupportedIdentityKeepsOwnedSoftFallbackAndRelaysWhenNotOwned));
+            var managerObject = new GameObject("PredictionManager");
+            try
+            {
+                var identity = gameObject.AddComponent<UnsupportedPolicyProbe>();
+                var manager = managerObject.AddComponent<PredictionManager>();
+
+                identity.configuredPredictionPolicy =
+                    PredictionPolicy.PredictedIfOwnedWithSoftFallback;
+                identity.AttachForTest(manager);
+
+                Assert.That(identity.supportsSoftCorrection, Is.False);
+                Assert.That(identity.configuredPredictionPolicy,
+                    Is.EqualTo(PredictionPolicy.PredictedIfOwnedWithSoftFallback));
+                Assert.That(identity.GetResolvedPredictionPolicy(),
+                    Is.EqualTo(PredictionPolicy.PredictedIfOwnedWithSoftFallback));
+                Assert.That(identity.EffectivePolicy(),
+                    Is.EqualTo(PredictionPolicy.ServerRelay));
+                identity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(gameObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
             }
         }
 
@@ -714,8 +861,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 identity.AttachForTest(manager);
                 identity.SetPredictionPolicyOverride(PredictionPolicy.ServerRelay);
 
+                // The prediction codegen publicizes nested types during IL weaving, so the
+                // lookup must accept either visibility.
                 var lockType = typeof(PredictionManager).GetNestedType(
-                    "SpeculativeRelayLock", BindingFlags.NonPublic);
+                    "SpeculativeRelayLock", BindingFlags.Public | BindingFlags.NonPublic);
                 Assert.That(lockType, Is.Not.Null);
                 var entry = Activator.CreateInstance(lockType);
                 lockType.GetField("system")?.SetValue(entry, identity);
@@ -1075,6 +1224,10 @@ namespace PurrNet.Prediction.Tests.Editor
     {
         public override bool supportsSoftCorrection => true;
 
+        public int policyTransitionCount { get; private set; }
+        public PredictionPolicy lastOldPolicy { get; private set; }
+        public PredictionPolicy lastNewPolicy { get; private set; }
+
         public void AttachForTest(PredictionManager manager)
         {
             predictionManager = manager;
@@ -1090,6 +1243,31 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             base.OnTransformParentChanged();
         }
+
+        public void ResetPolicyTransitions()
+        {
+            policyTransitionCount = 0;
+            lastOldPolicy = default;
+            lastNewPolicy = default;
+        }
+
+        protected override void OnPredictionPolicyChanged(
+            PredictionPolicy oldPolicy,
+            PredictionPolicy newPolicy)
+        {
+            base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
+            policyTransitionCount++;
+            lastOldPolicy = oldPolicy;
+            lastNewPolicy = newPolicy;
+        }
+    }
+
+    public sealed class OwnershipPolicyScopeProbe : PredictionPolicyScope
+    {
+        protected override PredictionPolicy ResolveLocalPolicy(PredictedIdentity identity)
+            => identity.IsOwner()
+                ? PredictionPolicy.FullPrediction
+                : PredictionPolicy.SoftCorrection;
     }
 
     public sealed class PolicySetupOrderProbe : PredictedIdentity<EmptyState>
@@ -1136,12 +1314,22 @@ namespace PurrNet.Prediction.Tests.Editor
         protected override void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy)
         {
             base.OnPredictionPolicyChanged(oldPolicy, newPolicy);
-            SyncControlledTransformPolicy(newPolicy);
+            SyncControlledTransformPolicy(predictionPolicy);
         }
     }
 
     public sealed class UnsupportedPolicyProbe : PredictedIdentity<EmptyState>
     {
+        public void AttachForTest(PredictionManager manager)
+        {
+            predictionManager = manager;
+            RefreshResolvedPredictionPolicy();
+        }
+
+        public void DetachForTest()
+        {
+            predictionManager = null;
+        }
     }
 
     public sealed class RelayLockProbe : PredictedIdentity<EmptyState>

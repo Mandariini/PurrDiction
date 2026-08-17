@@ -57,12 +57,21 @@ namespace PurrNet.Prediction.Prebuilt
 
             _rigidbody.AddForce(floatMovement * acceleration);
 
-            var flatMovement = new Vector3(_rigidbody.linearVelocity.x, 0, _rigidbody.linearVelocity.z);
+#if UNITY_6000
+            var currentVelocity = _rigidbody.linearVelocity;
+#else
+            var currentVelocity = _rigidbody.velocity;
+#endif
+            var flatMovement = new Vector3(currentVelocity.x, 0, currentVelocity.z);
             if (flatMovement.magnitude > maxSpeed)
             {
                 flatMovement = flatMovement.normalized * maxSpeed;
-                flatMovement.y = _rigidbody.linearVelocity.y;
+                flatMovement.y = currentVelocity.y;
+#if UNITY_6000
                 _rigidbody.linearVelocity = flatMovement;
+#else
+                _rigidbody.velocity = flatMovement;
+#endif
             }
 
             if (floatMovement != Vector3.zero)

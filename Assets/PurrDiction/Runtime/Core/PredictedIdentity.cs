@@ -89,7 +89,8 @@ namespace PurrNet.Prediction
         /// True when this non-deterministic identity consumes verified state as a correction target
         /// instead of requiring rollback. Implementations must override OnVerifiedStateReceived and
         /// apply the resulting correction during live simulation. Deterministic identities cannot use
-        /// SoftCorrection even if a subclass overrides this property.
+        /// soft correction even if a subclass overrides this property; policies requesting it
+        /// automatically resolve to ServerRelay for unsupported identities.
         /// </summary>
         public virtual bool supportsSoftCorrection => false;
 
@@ -105,11 +106,15 @@ namespace PurrNet.Prediction
         /// </summary>
         public PredictionPolicy predictionPolicy { get; private set; }
 
-        private PredictionPolicy _lastRegisteredPredictionPolicy;
+        private PredictionPolicy _lastRegisteredEffectivePredictionPolicy;
         private bool _hasLastRegisteredPredictionPolicy;
+        private PredictionPolicy _lastEffectivePredictionPolicy;
+        private bool _hasLastEffectivePredictionPolicy;
         private bool _hasPendingSetupPolicyChange;
         private PredictionPolicy _pendingSetupOldPolicy;
         private PredictionPolicy _pendingSetupNewPolicy;
+        private PredictionPolicy _pendingSetupOldEffectivePolicy;
+        private PredictionPolicy _pendingSetupNewEffectivePolicy;
         private bool _isResolvingSetupPredictionPolicy;
 
         /// <summary>
@@ -172,8 +177,8 @@ namespace PurrNet.Prediction
                 if (hasScope)
                 {
                     var policy = _isResolvingSetupPredictionPolicy
-                        ? scope.ResolvePolicyForSetup()
-                        : scope.ResolvePolicy();
+                        ? scope.ResolvePolicyForSetup(this)
+                        : scope.ResolvePolicy(this);
                     return NormalizePredictionPolicy(policy, false);
                 }
             }
@@ -213,15 +218,27 @@ namespace PurrNet.Prediction
         internal PredictionPolicy ResolvePredictionPolicyForSetup()
             => ResolveSetupPredictionPolicy();
 
-        internal PredictionPolicy previousRegisteredPredictionPolicy
+        internal PredictionPolicy previousRegisteredEffectivePredictionPolicy
             => _hasLastRegisteredPredictionPolicy
-                ? _lastRegisteredPredictionPolicy
-                : predictionPolicy;
+                ? _lastRegisteredEffectivePredictionPolicy
+                : EffectivePolicy();
 
         internal void RecordCompletedRegistrationPolicy()
         {
-            _lastRegisteredPredictionPolicy = predictionPolicy;
+            _lastRegisteredEffectivePredictionPolicy = EffectivePolicy();
             _hasLastRegisteredPredictionPolicy = true;
+        }
+
+        internal PredictionPolicy ResolveEffectivePredictionPolicyForSetup(
+            PlayerID? setupOwner,
+            PredictionManager manager)
+        {
+            var policy = ResolvePredictionPolicyForSetup();
+            bool locallyOwned = manager && manager.isSpawned && setupOwner == manager.localPlayer;
+            return ResolveEffectivePolicy(
+                policy,
+                locallyOwned,
+                !isDeterministic && supportsSoftCorrection);
         }
 
         /// <summary>
@@ -273,10 +290,11 @@ namespace PurrNet.Prediction
         /// <summary>
         /// Changes the currently applied prediction policy at runtime without changing its
         /// configured source. Use <see cref="SetPredictionPolicyOverride"/> for a local policy
-        /// that must survive later scope refreshes. Deterministic identities support
-        /// <see cref="PredictionPolicy.FullPrediction"/>, <see cref="PredictionPolicy.ServerRelay"/>,
-        /// and <see cref="PredictionPolicy.PredictedIfOwned"/>. Switching mid-game is safest at
-        /// ownership changes; the next reconcile realigns the identity with its new timeline.
+        /// that must survive later scope refreshes. Policies requesting soft correction retain their
+        /// configured value but resolve behaviorally to <see cref="PredictionPolicy.ServerRelay"/>
+        /// on deterministic identities and identities that do not implement verified-state correction.
+        /// Switching mid-game is safest at ownership changes; the next reconcile realigns the identity
+        /// with its new timeline.
         /// </summary>
         public void SetPredictionPolicy(PredictionPolicy policy)
         {
@@ -288,10 +306,16 @@ namespace PurrNet.Prediction
                 return;
 
             var oldPolicy = predictionPolicy;
+            var oldEffectivePolicy = EffectivePolicy();
             predictionPolicy = policy;
+            var newEffectivePolicy = EffectivePolicy();
             OnPredictionPolicyChanged(oldPolicy, policy);
             if (predictionManager)
-                predictionManager.HandlePredictionPolicyChanged(this, oldPolicy, policy);
+                predictionManager.HandlePredictionPolicyChanged(
+                    this,
+                    oldEffectivePolicy,
+                    newEffectivePolicy);
+            RecordEffectivePredictionPolicy(newEffectivePolicy);
         }
 
         private void PreparePredictionPolicyForSetup(PredictionPolicy policy)
@@ -303,25 +327,41 @@ namespace PurrNet.Prediction
                 return;
 
             _pendingSetupOldPolicy = predictionPolicy;
+            _pendingSetupOldEffectivePolicy = _hasLastEffectivePredictionPolicy
+                ? _lastEffectivePredictionPolicy
+                : EffectivePolicy();
             _pendingSetupNewPolicy = policy;
             predictionPolicy = policy;
+            _pendingSetupNewEffectivePolicy = EffectivePolicy();
             _hasPendingSetupPolicyChange = true;
         }
 
         internal void CompletePredictionPolicySetup()
         {
             if (!_hasPendingSetupPolicyChange)
+            {
+                SynchronizeEffectivePredictionPolicy();
                 return;
+            }
 
             var oldPolicy = _pendingSetupOldPolicy;
             var newPolicy = _pendingSetupNewPolicy;
+            var oldEffectivePolicy = _pendingSetupOldEffectivePolicy;
+            var newEffectivePolicy = _pendingSetupNewEffectivePolicy;
             _hasPendingSetupPolicyChange = false;
             _pendingSetupOldPolicy = default;
             _pendingSetupNewPolicy = default;
+            _pendingSetupOldEffectivePolicy = default;
+            _pendingSetupNewEffectivePolicy = default;
 
             OnPredictionPolicyChanged(oldPolicy, newPolicy);
             if (predictionManager)
-                predictionManager.HandlePredictionPolicyChanged(this, oldPolicy, newPolicy);
+                predictionManager.HandlePredictionPolicyChanged(
+                    this,
+                    oldEffectivePolicy,
+                    newEffectivePolicy);
+            RecordEffectivePredictionPolicy(newEffectivePolicy);
+            SyncEffectivePolicySideEffects();
         }
 
         internal void CancelPendingPredictionPolicySetup()
@@ -333,25 +373,12 @@ namespace PurrNet.Prediction
             _hasPendingSetupPolicyChange = false;
             _pendingSetupOldPolicy = default;
             _pendingSetupNewPolicy = default;
+            _pendingSetupOldEffectivePolicy = default;
+            _pendingSetupNewEffectivePolicy = default;
         }
 
-        private PredictionPolicy NormalizePredictionPolicy(PredictionPolicy policy, bool log)
-        {
-            if (policy != PredictionPolicy.SoftCorrection || (!isDeterministic && supportsSoftCorrection))
-                return policy;
-
-            if (log)
-            {
-                var reason = isDeterministic
-                    ? "deterministic identities do not receive authoritative state deltas to correct against"
-                    : "the identity does not implement verified-state correction";
-                Logging.PurrLogger.LogError(
-                    $"{GetType().Name} does not support {nameof(PredictionPolicy.SoftCorrection)} because {reason}.",
-                    this);
-            }
-
-            return PredictionPolicy.FullPrediction;
-        }
+        private PredictionPolicy NormalizePredictionPolicy(PredictionPolicy policy, bool _)
+            => policy;
 
         protected virtual void OnPredictionPolicyChanged(PredictionPolicy oldPolicy, PredictionPolicy newPolicy) { }
 
@@ -367,14 +394,35 @@ namespace PurrNet.Prediction
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal PredictionPolicy EffectivePolicy()
         {
-            if (predictionPolicy != PredictionPolicy.PredictedIfOwned)
-                return predictionPolicy;
-            return IsOwner() ? PredictionPolicy.FullPrediction : PredictionPolicy.ServerRelay;
+            return ResolveEffectivePolicy(
+                predictionPolicy,
+                IsOwner(),
+                !isDeterministic && supportsSoftCorrection);
         }
+
+        private static PredictionPolicy ResolveEffectivePolicy(
+            PredictionPolicy policy,
+            bool locallyOwned,
+            bool canUseSoftCorrection)
+            => policy switch
+            {
+                PredictionPolicy.SoftCorrection => canUseSoftCorrection
+                    ? PredictionPolicy.SoftCorrection
+                    : PredictionPolicy.ServerRelay,
+                PredictionPolicy.PredictedIfOwned => locallyOwned
+                    ? PredictionPolicy.FullPrediction
+                    : PredictionPolicy.ServerRelay,
+                PredictionPolicy.PredictedIfOwnedWithSoftFallback => locallyOwned
+                    ? PredictionPolicy.FullPrediction
+                    : canUseSoftCorrection
+                        ? PredictionPolicy.SoftCorrection
+                        : PredictionPolicy.ServerRelay,
+                _ => policy
+            };
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool UsesSoftCorrectionTimeline()
-            => predictionPolicy == PredictionPolicy.SoftCorrection;
+            => EffectivePolicy() == PredictionPolicy.SoftCorrection;
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool UsesServerRelayTimeline()
@@ -386,7 +434,8 @@ namespace PurrNet.Prediction
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool TracksEffectivePolicyChanges()
-            => predictionPolicy == PredictionPolicy.PredictedIfOwned;
+            => predictionPolicy is PredictionPolicy.PredictedIfOwned or
+                PredictionPolicy.PredictedIfOwnedWithSoftFallback;
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool AccumulatesRollbackInterpolationError()
@@ -422,6 +471,37 @@ namespace PurrNet.Prediction
 
         internal virtual void SyncEffectivePolicySideEffects() { }
 
+        internal void SynchronizeEffectivePredictionPolicy()
+        {
+            var effectivePolicy = EffectivePolicy();
+            if (_hasLastEffectivePredictionPolicy &&
+                _lastEffectivePredictionPolicy != effectivePolicy)
+            {
+                var oldEffectivePolicy = _lastEffectivePredictionPolicy;
+                RecordEffectivePredictionPolicy(effectivePolicy);
+                OnPredictionPolicyChanged(oldEffectivePolicy, effectivePolicy);
+                if (predictionManager)
+                {
+                    predictionManager.HandlePredictionPolicyChanged(
+                        this,
+                        oldEffectivePolicy,
+                        effectivePolicy);
+                }
+            }
+            else
+            {
+                RecordEffectivePredictionPolicy(effectivePolicy);
+            }
+
+            SyncEffectivePolicySideEffects();
+        }
+
+        private void RecordEffectivePredictionPolicy(PredictionPolicy policy)
+        {
+            _lastEffectivePredictionPolicy = policy;
+            _hasLastEffectivePredictionPolicy = true;
+        }
+
         [UsedByIL]
         public bool IsSimulating()
         {
@@ -440,6 +520,8 @@ namespace PurrNet.Prediction
             preservesStateOnSetup = false;
             _simulateSoftCorrectionDuringReplay = false;
             _skipReplaySpawnInitialization = false;
+            _hasLastEffectivePredictionPolicy = false;
+            _lastEffectivePredictionPolicy = default;
             lastVerifiedTick = null;
             _owner = null;
             id = default;
@@ -469,7 +551,12 @@ namespace PurrNet.Prediction
             OnOwnerAssigned(player);
 
             if (syncPolicySideEffects)
-                SyncEffectivePolicySideEffects();
+            {
+                if (previousOwner != player && predictionManager)
+                    RefreshResolvedPredictionPolicy();
+
+                SynchronizeEffectivePredictionPolicy();
+            }
 
             if (previousOwner != player && predictionManager)
             {
@@ -798,6 +885,8 @@ namespace PurrNet.Prediction
         internal abstract void ClearFuture(ulong stateTick);
 
         internal virtual bool HasInputAt(ulong tick) => false;
+
+        internal virtual bool requiresGuaranteedInputHistory => false;
 
         internal DesyncPolicy resolvedDesyncPolicy = DesyncPolicy.Ignore;
 

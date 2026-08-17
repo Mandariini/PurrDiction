@@ -52,7 +52,11 @@ namespace PurrNet.Prediction.Prebuilt
 
             var projectileRb = hierarchy.GetComponent<Rigidbody>(projectileId);
             if(projectileRb)
+#if UNITY_6000
                 projectileRb.linearVelocity = transform.forward * projectileInitialVelocity;
+#else
+                projectileRb.velocity = transform.forward * projectileInitialVelocity;
+#endif
             else
                 PurrNet.Logging.PurrLogger.LogError($"Failed to get Rigidbody component from projectile ({projectile.gameObject.name})", projectile);
 #endif

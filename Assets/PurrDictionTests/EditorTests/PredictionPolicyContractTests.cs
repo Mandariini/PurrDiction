@@ -18,23 +18,30 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void DeterministicIdentityRejectsSoftCorrectionEvenWhenSubclassOptsIn()
+        public void DeterministicIdentityKeepsSoftCorrectionButRelaysBehaviorally()
         {
-            var gameObject = new GameObject(nameof(DeterministicIdentityRejectsSoftCorrectionEvenWhenSubclassOptsIn));
+            var gameObject = new GameObject(
+                nameof(DeterministicIdentityKeepsSoftCorrectionButRelaysBehaviorally));
+            var managerObject = new GameObject("PredictionManager");
             try
             {
                 var identity = gameObject.AddComponent<DeterministicSoftCorrectionProbe>();
+                var manager = managerObject.AddComponent<PredictionManager>();
 
                 identity.configuredPredictionPolicy = PredictionPolicy.SoftCorrection;
+                AttachManager(identity, manager);
+                identity.SetPredictionPolicy(identity.GetResolvedPredictionPolicy());
 
                 Assert.That(identity.supportsSoftCorrection, Is.True,
                     "The regression probe must exercise a deterministic subclass that opts in");
-                Assert.That(identity.configuredPredictionPolicy, Is.EqualTo(PredictionPolicy.FullPrediction));
-                Assert.That(identity.GetResolvedPredictionPolicy(), Is.EqualTo(PredictionPolicy.FullPrediction));
+                Assert.That(identity.configuredPredictionPolicy, Is.EqualTo(PredictionPolicy.SoftCorrection));
+                Assert.That(identity.GetResolvedPredictionPolicy(), Is.EqualTo(PredictionPolicy.SoftCorrection));
+                Assert.That(identity.EffectivePolicy(), Is.EqualTo(PredictionPolicy.ServerRelay));
             }
             finally
             {
                 Object.DestroyImmediate(gameObject);
+                Object.DestroyImmediate(managerObject);
             }
         }
 

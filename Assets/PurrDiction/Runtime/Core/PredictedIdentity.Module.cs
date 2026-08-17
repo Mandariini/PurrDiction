@@ -9,6 +9,16 @@ using PurrNet.Utils;
 
 namespace PurrNet.Prediction
 {
+    /// <summary>
+    /// Thrown when a peer decodes a full state whose static module roster differs from its own.
+    /// Static modules (registered during ModuleSetup or LateAwake) frame the state payload, so
+    /// they must be registered identically on every peer; this cannot be reconciled at runtime.
+    /// </summary>
+    public sealed class PredictedModuleRosterMismatchException : InvalidOperationException
+    {
+        public PredictedModuleRosterMismatchException(string message) : base(message) { }
+    }
+
     public abstract partial class PredictedIdentity
     {
         private readonly List<PredictedModule> _modules = new();
@@ -324,8 +334,67 @@ namespace PurrNet.Prediction
             }
         }
 
+        private void GetStaticModuleRoster(out int count, out uint hash)
+        {
+            count = _staticModuleCount < 0 ? _modules.Count : _staticModuleCount;
+            hash = 2166136261u;
+
+            for (int i = 0; i < count; i++)
+            {
+                hash ^= _modules[i].typeHash;
+                hash *= 16777619u;
+            }
+        }
+
+        private string DescribeStaticModuleRoster()
+        {
+            GetStaticModuleRoster(out int count, out _);
+
+            if (count == 0)
+                return "none";
+
+            var names = new string[count];
+            for (int i = 0; i < count; i++)
+                names[i] = _modules[i].GetType().Name;
+
+            return string.Join(", ", names);
+        }
+
+        private void WriteStaticModuleRosterHeader(BitPacker packer)
+        {
+            GetStaticModuleRoster(out int count, out uint hash);
+            Packer<PackedUInt>.Write(packer, (uint)count);
+            if (count > 0)
+                Packer<uint>.Write(packer, hash);
+        }
+
+        private void ValidateStaticModuleRosterHeader(BitPacker packer)
+        {
+            PackedUInt remoteCount = default;
+            Packer<PackedUInt>.Read(packer, ref remoteCount);
+
+            uint remoteHash = 0;
+            if (remoteCount.value > 0)
+                remoteHash = Packer<uint>.Read(packer);
+
+            GetStaticModuleRoster(out int localCount, out uint localHash);
+
+            if (remoteCount.value == (uint)localCount &&
+                (remoteCount.value == 0 || remoteHash == localHash))
+                return;
+
+            throw new PredictedModuleRosterMismatchException(
+                $"Static module roster mismatch on '{GetType().Name}' {id}: " +
+                $"the sender has {remoteCount.value} static modules (roster hash {remoteHash:X8}), " +
+                $"this peer has {localCount} ({DescribeStaticModuleRoster()}). " +
+                "Module registration must run identically on every peer; check owner-conditional " +
+                "RegisterModule calls (for example isOwner branches in LateAwake).");
+        }
+
         internal void WriteFirstDynamicModuleSnapshot(ulong tick, BitPacker packer)
         {
+            WriteStaticModuleRosterHeader(packer);
+
             if (!HasDynamicModulesOrHistory())
             {
                 Packer<bool>.Write(packer, false);
@@ -364,6 +433,8 @@ namespace PurrNet.Prediction
 
         internal void ReadFirstDynamicModuleSnapshot(ulong tick, BitPacker packer, ulong serverTick)
         {
+            ValidateStaticModuleRosterHeader(packer);
+
             _moduleHistory?.PruneByTickWindow(tick);
 
             bool senderHasDynamics = Packer<bool>.Read(packer);

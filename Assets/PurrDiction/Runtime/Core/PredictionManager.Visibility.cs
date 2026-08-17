@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using PurrNet.Logging;
 using PurrNet.Packing;
 using Unity.Profiling;
+using UnityEngine;
 
 namespace PurrNet.Prediction
 {
@@ -1038,197 +1040,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        struct CachedFilteredInputBlock
-        {
-            public ulong tick;
-            public uint blockVersion;
-            public uint timelineRevision;
-            public BitPacker framed;
-            public List<PredictedComponentID> ids;
-        }
-
-        sealed class PlayerInputWindowCache
-        {
-            public readonly CachedFilteredInputBlock[] slots =
-                new CachedFilteredInputBlock[(int)MaxInputWindow + 1];
-        }
-
-        readonly Dictionary<PlayerID, PlayerInputWindowCache> _playerInputWindowCaches = new();
         readonly List<int> _visibleInputEntryScratch = new();
-
-        readonly HashSet<PredictedComponentID> _filteredPrevIdScratch = new();
-
-        // A culling receiver's filtered per-tick input record only changes when the shared block
-        // for that tick is rebuilt (system list changed) or the receiver's visibility timeline
-        // records a new transition. Both are versioned, so the filter-and-reframe pass runs once
-        // per (player, tick) instead of once per tick of the redundancy window every server tick.
-        // PruneThrough never changes WasVisibleAt answers for ticks past its anchor, and the
-        // window only spans ticks past the receiver's acked tick, so pruning cannot stale a slot
-        // that is still being served.
-        // The cached form is the dedup form: it elides ids and payloads that this receiver
-        // already decoded from its previous tick's block, so it is only valid for ticks that are
-        // not the first of the receiver's window (the first tick is written inline in full form).
-        // When the previous tick's slot is cold the block conservatively falls back to full
-        // entries, which any receiver can decode.
-        BitPacker GetFilteredInputBlockForTick(
-            PlayerID player,
-            PlayerVisibilityTimeline timeline,
-            ulong tick,
-            in CachedInputBlock block)
-        {
-            if (!_playerInputWindowCaches.TryGetValue(player, out var cache))
-            {
-                cache = new PlayerInputWindowCache();
-                _playerInputWindowCaches[player] = cache;
-            }
-
-            var index = (int)(tick % (ulong)cache.slots.Length);
-            ref var slot = ref cache.slots[index];
-
-            if (slot.framed != null &&
-                slot.tick == tick &&
-                slot.blockVersion == _inputBlockVersion &&
-                slot.timelineRevision == timeline.revision)
-            {
-                return slot.framed;
-            }
-
-            var prevIndex = (int)((tick - 1) % (ulong)cache.slots.Length);
-            ref var prevSlot = ref cache.slots[prevIndex];
-            bool hasPrev = tick > 0 &&
-                           prevSlot.framed != null &&
-                           prevSlot.ids != null &&
-                           prevSlot.tick == tick - 1 &&
-                           prevSlot.blockVersion == _inputBlockVersion &&
-                           prevSlot.timelineRevision == timeline.revision;
-
-            slot.framed ??= BitPackerPool.Get();
-            slot.ids ??= new List<PredictedComponentID>();
-            slot.tick = tick;
-            slot.blockVersion = _inputBlockVersion;
-            slot.timelineRevision = timeline.revision;
-            slot.ids.Clear();
-
-            var framed = slot.framed;
-            framed.ResetPositionAndMode(false);
-
-            var entries = block.entries;
-            _visibleInputEntryScratch.Clear();
-            for (var i = 0; i < entries.Count; i++)
-            {
-                if (WasSystemVisibleAt(timeline, entries[i].system, tick))
-                    _visibleInputEntryScratch.Add(i);
-            }
-
-            for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
-                slot.ids.Add(entries[_visibleInputEntryScratch[i]].system.id);
-
-            bool sameIds = hasPrev && prevSlot.ids.Count == slot.ids.Count;
-            if (sameIds)
-            {
-                for (var i = 0; i < slot.ids.Count; i++)
-                {
-                    if (!slot.ids[i].Equals(prevSlot.ids[i]))
-                    {
-                        sameIds = false;
-                        break;
-                    }
-                }
-            }
-
-            bool prevIdSetBuilt = false;
-
-            Packer<bool>.Write(framed, sameIds);
-            if (!sameIds)
-                Packer<PackedUInt>.Write(framed, (uint)_visibleInputEntryScratch.Count);
-
-            for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
-            {
-                var entry = entries[_visibleInputEntryScratch[i]];
-                if (!sameIds)
-                    Packer<PredictedComponentID>.Write(framed, entry.system.id);
-
-                bool repeat = entry.samePayloadAsPrev && hasPrev;
-                if (repeat && !sameIds)
-                {
-                    if (!prevIdSetBuilt)
-                    {
-                        _filteredPrevIdScratch.Clear();
-                        for (var p = 0; p < prevSlot.ids.Count; p++)
-                            _filteredPrevIdScratch.Add(prevSlot.ids[p]);
-                        prevIdSetBuilt = true;
-                    }
-
-                    repeat = _filteredPrevIdScratch.Contains(entry.system.id);
-                }
-
-                Packer<bool>.Write(framed, repeat);
-                if (repeat)
-                    continue;
-
-                Packer<PackedUInt>.Write(framed, (uint)entry.bitLength);
-                framed.WriteBitDataWithoutConsumingIt(
-                    new BitData(block.packer, entry.bitOrigin, entry.bitLength));
-            }
-
-            return framed;
-        }
-
-        // Self-contained full form of a receiver's filtered block, written straight into the
-        // frame. Used for the first tick of the receiver's window, which anchors the dedup chain
-        // and is served for at most one frame per tick, so caching it would never pay off.
-        void WriteFilteredFullInputBlock(
-            PlayerVisibilityTimeline timeline,
-            ulong tick,
-            in CachedInputBlock block,
-            BitPacker frame)
-        {
-            var entries = block.entries;
-            _visibleInputEntryScratch.Clear();
-            for (var i = 0; i < entries.Count; i++)
-            {
-                if (WasSystemVisibleAt(timeline, entries[i].system, tick))
-                    _visibleInputEntryScratch.Add(i);
-            }
-
-            Packer<bool>.Write(frame, false);
-            Packer<PackedUInt>.Write(frame, (uint)_visibleInputEntryScratch.Count);
-            for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
-            {
-                var entry = entries[_visibleInputEntryScratch[i]];
-                Packer<PredictedComponentID>.Write(frame, entry.system.id);
-                Packer<bool>.Write(frame, false);
-                Packer<PackedUInt>.Write(frame, (uint)entry.bitLength);
-                frame.WriteBitDataWithoutConsumingIt(
-                    new BitData(block.packer, entry.bitOrigin, entry.bitLength));
-            }
-        }
-
-        void DisposePlayerInputWindowCache(PlayerID player)
-        {
-            if (!_playerInputWindowCaches.Remove(player, out var cache))
-                return;
-
-            for (var i = 0; i < cache.slots.Length; i++)
-            {
-                cache.slots[i].framed?.Dispose();
-                cache.slots[i] = default;
-            }
-        }
-
-        void DisposeAllPlayerInputWindowCaches()
-        {
-            foreach (var cache in _playerInputWindowCaches.Values)
-            {
-                for (var i = 0; i < cache.slots.Length; i++)
-                {
-                    cache.slots[i].framed?.Dispose();
-                    cache.slots[i] = default;
-                }
-            }
-
-            _playerInputWindowCaches.Clear();
-        }
 
         void WriteVisibilityInputHistory(
             PlayerID player,
@@ -1239,18 +1051,30 @@ namespace PurrNet.Prediction
             ulong from = baselineTick;
             if (localTick > MaxInputWindow && from < localTick - MaxInputWindow)
                 from = localTick - MaxInputWindow;
+            if (_guaranteedInputHistorySystems == 0)
+                from = localTick;
             if (from > localTick)
                 from = localTick;
 
+            if (from < localTick)
+            {
+                bool anyGuaranteedEntries = false;
+                for (ulong tick = from + 1; tick <= localTick; tick++)
+                {
+                    if (GetInputBlockForTick(tick).guaranteedEntryCount > 0)
+                    {
+                        anyGuaranteedEntries = true;
+                        break;
+                    }
+                }
+
+                if (!anyGuaranteedEntries)
+                    from = localTick;
+            }
+
             Packer<PackedUInt>.Write(frame, (uint)(localTick - from));
 
-            // A receiver with no active/historical visibility exceptions sees everything, so its
-            // per-tick record is identical to the shared cached block's own pre-framed contents -
-            // blit it whole instead of re-filtering and re-framing every entry for this receiver.
-            // The window's first tick always uses the self-contained full form; later ticks use
-            // the dedup form, whose repeat markers reference the block the receiver just decoded.
             bool passThrough = timeline.isPassThrough;
-            bool first = true;
 
             for (ulong tick = from + 1; tick <= localTick; tick++)
             {
@@ -1258,27 +1082,134 @@ namespace PurrNet.Prediction
 
                 if (passThrough)
                 {
-                    var blob = first ? block.framedPacker : block.dedupFramedPacker;
+                    var blob = block.guaranteedFramedPacker;
                     frame.WriteBitsWithoutConsumingIt(blob, blob.positionInBits);
-                }
-                else if (first)
-                {
-                    WriteFilteredFullInputBlock(timeline, tick, in block, frame);
                 }
                 else
                 {
-                    var filtered = GetFilteredInputBlockForTick(
-                        player,
-                        timeline,
-                        tick,
-                        block);
-                    frame.WriteBitsWithoutConsumingIt(
-                        filtered,
-                        filtered.positionInBits);
+                    WriteFilteredGuaranteedInputBlock(timeline, tick, in block, frame);
+                }
+            }
+
+            WriteNewestInputBlock(timeline, baselineTick, frame);
+        }
+
+        void WriteFilteredGuaranteedInputBlock(
+            PlayerVisibilityTimeline timeline,
+            ulong tick,
+            in CachedInputBlock block,
+            BitPacker frame)
+        {
+            var entries = block.entries;
+            _visibleInputEntryScratch.Clear();
+            for (var i = 0; i < entries.Count; i++)
+            {
+                if (entries[i].system.requiresGuaranteedInputHistory &&
+                    WasSystemVisibleAt(timeline, entries[i].system, tick))
+                {
+                    _visibleInputEntryScratch.Add(i);
+                }
+            }
+
+            Packer<PackedUInt>.Write(frame, (uint)_visibleInputEntryScratch.Count);
+            for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
+            {
+                var entry = entries[_visibleInputEntryScratch[i]];
+                Packer<PredictedComponentID>.Write(frame, entry.system.id);
+                Packer<PackedUInt>.Write(frame, (uint)entry.bitLength);
+                frame.WriteBitDataWithoutConsumingIt(
+                    new BitData(block.packer, entry.bitOrigin, entry.bitLength));
+            }
+        }
+
+        void WriteNewestInputBlock(
+            PlayerVisibilityTimeline timeline,
+            ulong baselineTick,
+            BitPacker frame)
+        {
+            var block = GetInputBlockForTick(localTick);
+            bool passThrough = timeline.isPassThrough;
+
+            var entries = block.entries;
+            _visibleInputEntryScratch.Clear();
+            for (var i = 0; i < entries.Count; i++)
+            {
+                if (entries[i].system.requiresGuaranteedInputHistory)
+                    continue;
+                if (passThrough || WasSystemVisibleAt(timeline, entries[i].system, localTick))
+                    _visibleInputEntryScratch.Add(i);
+            }
+
+            CachedInputBlock refBlock = default;
+            bool hasReference = baselineTick > 0 &&
+                                baselineTick < localTick &&
+                                TryPeekCachedInputBlock(baselineTick, out refBlock);
+
+            Packer<PackedUInt>.Write(frame, (uint)_visibleInputEntryScratch.Count);
+            for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
+            {
+                var entry = entries[_visibleInputEntryScratch[i]];
+                Packer<PredictedComponentID>.Write(frame, entry.system.id);
+
+                bool repeat = false;
+                if (hasReference &&
+                    (passThrough ||
+                     WasSystemVisibleAt(timeline, entry.system, baselineTick)) &&
+                    refBlock.entryIndex.TryGetValue(entry.system, out var refIdx))
+                {
+                    var refEntry = refBlock.entries[refIdx];
+                    repeat = new BitData(block.packer, entry.bitOrigin, entry.bitLength)
+                        .Equals(new BitData(
+                            refBlock.packer,
+                            refEntry.bitOrigin,
+                            refEntry.bitLength));
                 }
 
-                first = false;
+                Packer<bool>.Write(frame, repeat);
+                if (repeat)
+                    continue;
+
+                Packer<PackedUInt>.Write(frame, (uint)entry.bitLength);
+                frame.WriteBitDataWithoutConsumingIt(
+                    new BitData(block.packer, entry.bitOrigin, entry.bitLength));
             }
+        }
+
+        readonly HashSet<PredictedComponentID> _recordDecodeQuarantine = new ();
+        readonly Dictionary<PredictedComponentID, double> _recordFailureLogAt = new ();
+        private bool _frameApplyHadRecordFailure;
+
+        private const double RecordFailureLogIntervalSeconds = 5d;
+
+        void OnAddressedRecordFailure(PredictedComponentID id, Exception error, int declaredBits, int consumedBits)
+        {
+            if (error is PredictedModuleRosterMismatchException)
+            {
+                if (_recordDecodeQuarantine.Add(id))
+                {
+                    PurrLogger.LogError(
+                        $"{error.Message} State replication for this identity is suspended until it is destroyed or respawned.");
+                }
+                return;
+            }
+
+            _frameApplyHadRecordFailure = true;
+
+            double now = Time.unscaledTimeAsDouble;
+            if (_recordFailureLogAt.TryGetValue(id, out var lastLogged) &&
+                now - lastLogged < RecordFailureLogIntervalSeconds)
+                return;
+
+            _recordFailureLogAt[id] = now;
+
+            string identityName = _instanceMap.TryGetValue(id, out var failed) && failed
+                ? failed.GetType().Name
+                : "unresolved identity";
+
+            PurrLogger.LogError(
+                $"Discarded prediction record {id} ({identityName}); it consumed {consumedBits} of its " +
+                $"declared {declaredBits} bits: {error.Message}\n" +
+                "The rest of the frame was applied; the server will answer the stalled ack with a full sync.");
         }
 
         void ReadAddressedHierarchy(
@@ -1313,7 +1244,8 @@ namespace PurrNet.Prediction
                         serverTick,
                         false,
                         !deferUnityApply);
-                });
+                },
+                onRecordFailure: OnAddressedRecordFailure);
         }
 
         void ReadAddressedStateSection(
@@ -1354,6 +1286,9 @@ namespace PurrNet.Prediction
                         return;
                     }
 
+                    if (_recordDecodeQuarantine.Contains(id))
+                        return;
+
                     if (!_addressedReadIdsScratch.Add(id))
                     {
                         throw new InvalidOperationException(
@@ -1368,7 +1303,8 @@ namespace PurrNet.Prediction
                         baselineTick,
                         serverTick,
                         eventHandlers);
-                });
+                },
+                onRecordFailure: OnAddressedRecordFailure);
 
             if (fullFrame || baselineTick == 0)
                 return;
@@ -1378,17 +1314,25 @@ namespace PurrNet.Prediction
                 var system = _addressedReadSystemScratch[i];
                 if (!system ||
                     _addressedReadIdsScratch.Contains(system.id) ||
+                    _recordDecodeQuarantine.Contains(system.id) ||
                     !_instanceMap.TryGetValue(system.id, out var current) ||
                     current != system)
                 {
                     continue;
                 }
 
-                ApplyAddressedUnchangedState(
-                    system,
-                    stateTick,
-                    baselineTick,
-                    serverTick);
+                try
+                {
+                    ApplyAddressedUnchangedState(
+                        system,
+                        stateTick,
+                        baselineTick,
+                        serverTick);
+                }
+                catch (Exception exception)
+                {
+                    OnAddressedRecordFailure(system.id, exception, 0, 0);
+                }
             }
 
         }
@@ -1421,13 +1365,16 @@ namespace PurrNet.Prediction
 
         void ReadAddressedFirstInputSection(BitPacker frame, ulong inputTick)
         {
+            ResetNewestInputSlot(inputTick);
             AddressedPredictionRecords.ReadSection(
                 source: frame,
-                readRecord: (id, _, payload, _) =>
+                readRecord: (id, _, payload, payloadBitCount) =>
                 {
+                    AppendNewestInputEntry(inputTick, id, payload, 0, payloadBitCount);
                     if (_instanceMap.TryGetValue(id, out var system) && system.hasInput)
                         system.ReadFirstInput(inputTick, payload);
-                });
+                },
+                onRecordFailure: OnAddressedRecordFailure);
         }
 
         void ApplyAddressedState(
@@ -1521,7 +1468,6 @@ namespace PurrNet.Prediction
             RemovePendingVisibilityDeletes(player);
             _hierarchyBaselineScratchByPlayer.Remove(player);
             _hiddenPiecesScratchByPlayer.Remove(player);
-            DisposePlayerInputWindowCache(player);
             ClearDesyncTrackingForPlayer(player);
         }
 
@@ -1544,7 +1490,6 @@ namespace PurrNet.Prediction
             _ownedRootScratch.Clear();
             _hierarchyBaselineScratchByPlayer.Clear();
             _hiddenPiecesScratchByPlayer.Clear();
-            DisposeAllPlayerInputWindowCaches();
             _visibilityRootScratch.Clear();
             ClearPendingVisibilityDeletes();
         }

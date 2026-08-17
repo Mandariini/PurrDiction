@@ -16,6 +16,17 @@ namespace PurrNet.Prediction
             BitPacker payload,
             int payloadBitCount);
 
+        /// <summary>
+        /// Invoked instead of throwing when a record's payload fails to decode. The source
+        /// stream is already positioned past the record, so the caller may keep reading the
+        /// remaining records of the section.
+        /// </summary>
+        internal delegate void RecordFailure(
+            PredictedComponentID id,
+            Exception error,
+            int declaredBits,
+            int consumedBits);
+
         // Keep BitPacker out of the first parameter. PurrNet codegen treats every static
         // (BitPacker, T) method as a global serializer, regardless of its name or visibility.
         internal static void WriteSectionCount(int count, BitPacker packer)
@@ -37,16 +48,16 @@ namespace PurrNet.Prediction
             destination.WriteBitsWithoutConsumingIt(payload, payloadBits);
         }
 
-        internal static void ReadSection(ReadRecord readRecord, BitPacker source)
+        internal static void ReadSection(ReadRecord readRecord, BitPacker source, RecordFailure onRecordFailure = null)
         {
             PackedUInt count = default;
             Packer<PackedUInt>.Read(source, ref count);
 
             for (uint i = 0; i < count.value; i++)
-                ReadOne(readRecord, source);
+                ReadOne(readRecord, source, onRecordFailure);
         }
 
-        internal static void ReadOne(ReadRecord readRecord, BitPacker source)
+        internal static void ReadOne(ReadRecord readRecord, BitPacker source, RecordFailure onRecordFailure = null)
         {
             PredictedComponentID id = default;
             Packer<PredictedComponentID>.Read(source, ref id);
@@ -62,23 +73,38 @@ namespace PurrNet.Prediction
             boundedPayload.WriteBits(source, payloadLength);
             boundedPayload.ResetPositionAndMode(true);
 
+            Exception failure = null;
+
             try
             {
                 readRecord?.Invoke(id, isFullState, boundedPayload, payloadLength);
             }
             catch (Exception exception)
             {
-                throw new InvalidOperationException(
-                    $"Failed to read prediction record {id}.",
-                    exception);
+                failure = exception;
             }
 
-            if (boundedPayload.positionInBits > payloadLength)
+            int consumedBits = boundedPayload.positionInBits;
+
+            if (failure == null && consumedBits != payloadLength && consumedBits != 0)
             {
-                throw new InvalidOperationException(
-                    $"Prediction record {id} consumed {boundedPayload.positionInBits} bits, " +
-                    $"past its declared {payloadLength}-bit payload.");
+                failure = new InvalidOperationException(
+                    $"Prediction record {id} consumed {consumedBits} bits " +
+                    $"of its declared {payloadLength}-bit payload.");
             }
+
+            if (failure == null)
+                return;
+
+            if (onRecordFailure != null)
+            {
+                onRecordFailure(id, failure, payloadLength, consumedBits);
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"Failed to read prediction record {id}: {failure.Message}",
+                failure);
         }
     }
 }

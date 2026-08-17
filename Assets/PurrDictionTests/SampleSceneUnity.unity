@@ -751,6 +751,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _predictionPolicySource: 0
   _predictionPolicy: 0
+  _desyncPolicy: 0
   _playerPrefab: {fileID: 2990978637306053845, guid: 14ef4fb9c3d76ce4686663df0c0f2555, type: 3}
   _destroyOnDisconnect: 1
   spawnPoints:
@@ -974,9 +975,8 @@ MonoBehaviour:
   _builtInSystems: -1
   _predictedPrefabs: {fileID: 11400000, guid: 3bc69f3464f686748883b06b540e96d4, type: 2}
   _extrapolateMissingInputs: 1
-    minInputs: 1
-    maxInputs: 4
-  _validateDeterministicData: 0
+  _desyncPolicy: 0
+  _desyncCheckIntervalSeconds: 0.25
 --- !u!4 &1558659896
 Transform:
   m_ObjectHideFlags: 0
@@ -1100,7 +1100,6 @@ MonoBehaviour:
   _address: 127.0.0.1
   _query: 
   _path: 
-  _pollEventsInUpdate: 0
   _enableSSL: 0
   _certPath: 
   _certPassword: 
@@ -1122,7 +1121,6 @@ MonoBehaviour:
   _region: france
   _host: purrtransport-france.purrservers.com
   _timeoutInSeconds: 5
-  _pollEventsInUpdate: 0
   _useNat: 0
   _natResolveTimeout: 8
   _networkSimulation:
@@ -1150,7 +1148,6 @@ MonoBehaviour:
   _maxConnections: 100
   _address: 127.0.0.1
   _timeoutInSeconds: 5
-  _pollEventsInUpdate: 0
   _networkSimulation:
     includeInBuild: 0
     simulateLatency: 0

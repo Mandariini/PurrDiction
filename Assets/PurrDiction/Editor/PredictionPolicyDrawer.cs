@@ -6,20 +6,6 @@ namespace PurrNet.Prediction.Editor
     [CustomPropertyDrawer(typeof(PredictionPolicy))]
     public class PredictionPolicyDrawer : PropertyDrawer
     {
-        private static readonly PredictionPolicy[] _deterministicPolicies =
-        {
-            PredictionPolicy.FullPrediction,
-            PredictionPolicy.ServerRelay,
-            PredictionPolicy.PredictedIfOwned
-        };
-
-        private static readonly GUIContent[] _deterministicPolicyLabels =
-        {
-            new("Full Prediction"),
-            new("Server Relay"),
-            new("Predicted If Owned")
-        };
-
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
         {
             if (property.propertyPath != "_predictionPolicy" ||
@@ -56,7 +42,7 @@ namespace PurrNet.Prediction.Editor
             {
                 var provider = ResolvePolicyProvider(scope);
                 DrawDelegated(position, label, provider,
-                    ResolveDisplayPolicy(identity, scope.ResolvePolicy()),
+                    scope.ResolvePolicy(identity),
                     "Controlled by a PredictionPolicyScope. Set Prediction Policy Source to Override Scope to configure this identity independently.");
                 return;
             }
@@ -73,7 +59,7 @@ namespace PurrNet.Prediction.Editor
 
             if (identity && (identity.isDeterministic || !identity.supportsSoftCorrection))
             {
-                DrawWithoutSoftCorrection(position, property, label, identity.isDeterministic);
+                DrawWithAutomaticRelayFallback(position, property, label, identity.isDeterministic);
                 return;
             }
 
@@ -104,41 +90,17 @@ namespace PurrNet.Prediction.Editor
             return provider;
         }
 
-        private static PredictionPolicy ResolveDisplayPolicy(PredictedIdentity identity, PredictionPolicy policy)
-        {
-            if (identity && (identity.isDeterministic || !identity.supportsSoftCorrection) &&
-                policy == PredictionPolicy.SoftCorrection)
-                return PredictionPolicy.FullPrediction;
-
-            return policy;
-        }
-
-        private static void DrawWithoutSoftCorrection(
+        private static void DrawWithAutomaticRelayFallback(
             Rect position,
             SerializedProperty property,
             GUIContent label,
             bool deterministic)
         {
-            var policy = (PredictionPolicy)property.enumValueIndex;
-            int index = DeterministicIndexOf(policy);
             var tooltip = deterministic
-                ? "Deterministic identities do not send per-tick simulation state. FullPrediction predicts and replays locally; ServerRelay simulates only verified ticks from deterministic history; PredictedIfOwned switches between those modes when synchronized ownership metadata changes. SoftCorrection is unavailable because it needs authoritative state deltas."
-                : "SoftCorrection is unavailable because this identity does not implement verified-state correction. Override supportsSoftCorrection and OnVerifiedStateReceived to opt in.";
+                ? "Deterministic identities do not receive authoritative state deltas for correction. SoftCorrection behaves as ServerRelay, while PredictedIfOwnedWithSoftFallback predicts when owned and relays otherwise."
+                : "This identity does not implement verified-state correction. SoftCorrection behaves as ServerRelay, while PredictedIfOwnedWithSoftFallback predicts when owned and relays otherwise. Override supportsSoftCorrection and OnVerifiedStateReceived to opt into soft correction.";
             var policyLabel = new GUIContent(label.text, tooltip);
-
-            int selected = EditorGUI.Popup(position, policyLabel, index, _deterministicPolicyLabels);
-            property.enumValueIndex = (int)_deterministicPolicies[selected];
-        }
-
-        private static int DeterministicIndexOf(PredictionPolicy policy)
-        {
-            for (int i = 0; i < _deterministicPolicies.Length; i++)
-            {
-                if (_deterministicPolicies[i] == policy)
-                    return i;
-            }
-
-            return 0;
+            EditorGUI.PropertyField(position, property, policyLabel);
         }
 
         private static void DrawDelegated(
