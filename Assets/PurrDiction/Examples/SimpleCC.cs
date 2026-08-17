@@ -5,7 +5,7 @@ namespace PurrNet.Prediction.Tests
     public class SimpleCC : PredictedIdentity<SimpleWASDInput, SimpleCCState>
     {
 #if UNITY_PHYSICS_3D
-        [SerializeField] private Rigidbody _controller;
+        [SerializeField] private PredictedRigidbody _controller;
 #endif
         [SerializeField] private float _speed = 5;
         [SerializeField] private Object _someAsset;
@@ -38,17 +38,10 @@ namespace PurrNet.Prediction.Tests
 
 #if UNITY_PHYSICS_3D
             _controller.rotation = Quaternion.Euler(0, state.rotation, 0);
-#if UNITY_6000
             var vel = _controller.linearVelocity;
             vel.x = moveVector.x;
             vel.z = moveVector.z;
             _controller.linearVelocity = vel;
-#else
-            var vel = _controller.velocity;
-            vel.x = moveVector.x;
-            vel.z = moveVector.z;
-            _controller.velocity = vel;
-#endif
 #endif
         }
 
@@ -58,6 +51,8 @@ namespace PurrNet.Prediction.Tests
             input.vertical = Input.GetAxisRaw("Vertical");
             input.dash = Input.GetKey(KeyCode.LeftShift);
             input.someAsset = _someAsset;
+            input.test1 = Random.insideUnitSphere;
+            input.test2 = Random.insideUnitSphere;
         }
 
         protected override void UpdateInput(ref SimpleWASDInput input)

@@ -81,6 +81,17 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-inputBandwidthBenchmark"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<InputBandwidthScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-trailScenarioOnly"))
         {
             _scenarios = new Scenario[]
@@ -137,6 +148,7 @@ public class PredictionBootstrap : Scenario
         gameObject.AddComponent<PieceReconnectScenario>();
         gameObject.AddComponent<TickAgreementScenario>();
         gameObject.AddComponent<DeterministicGauntletScenario>();
+        gameObject.AddComponent<CliffRecoveryScenario>();
 
         bool policyRegressionsOnly = CommandLineUtils.HasFlag("-policyRegressionScenariosOnly");
         var policyRegressionScenarios = AddPolicyRegressionScenarios();

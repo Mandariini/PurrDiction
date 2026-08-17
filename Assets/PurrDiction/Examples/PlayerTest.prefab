@@ -250,7 +250,7 @@ MonoBehaviour:
   _predictionPolicy: 3
   _repeatInputFactor: 0.8
   _extrapolateInput: 1
-  _controller: {fileID: 3826029466696574374}
+  _controller: {fileID: 2756729784649837662}
   _speed: 5
   _someAsset: {fileID: 0}
 --- !u!1 &5020783690899223932

@@ -861,8 +861,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 identity.AttachForTest(manager);
                 identity.SetPredictionPolicyOverride(PredictionPolicy.ServerRelay);
 
+                // The prediction codegen publicizes nested types during IL weaving, so the
+                // lookup must accept either visibility.
                 var lockType = typeof(PredictionManager).GetNestedType(
-                    "SpeculativeRelayLock", BindingFlags.NonPublic);
+                    "SpeculativeRelayLock", BindingFlags.Public | BindingFlags.NonPublic);
                 Assert.That(lockType, Is.Not.Null);
                 var entry = Activator.CreateInstance(lockType);
                 lockType.GetField("system")?.SetValue(entry, identity);

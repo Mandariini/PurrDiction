@@ -149,7 +149,7 @@ namespace PurrNet.Prediction
             NotifyDesyncToClient(player, system.id, tick, (byte)policy);
         }
 
-        [TargetRpc(channel: Channel.Unreliable)]
+        [TargetRpc]
         private void NotifyDesyncToClient([UsedImplicitly] PlayerID player, PredictedComponentID id, ulong tick, byte policy)
         {
             _instanceMap.TryGetValue(id, out var system);

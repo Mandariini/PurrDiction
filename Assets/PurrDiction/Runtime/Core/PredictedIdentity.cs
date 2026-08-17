@@ -886,6 +886,8 @@ namespace PurrNet.Prediction
 
         internal virtual bool HasInputAt(ulong tick) => false;
 
+        internal virtual bool requiresGuaranteedInputHistory => false;
+
         internal DesyncPolicy resolvedDesyncPolicy = DesyncPolicy.Ignore;
 
         internal virtual bool TryGetDeterministicStateHash(ulong tick, out ushort hash)

@@ -194,6 +194,8 @@ namespace PurrNet.Prediction
             return _inputHistory != null && _inputHistory.TryGet(tick, out _);
         }
 
+        internal override bool requiresGuaranteedInputHistory => true;
+
         public override void WriteFirstInput(ulong localTick, BitPacker packer)
         {
             int pos = packer.positionInBits;

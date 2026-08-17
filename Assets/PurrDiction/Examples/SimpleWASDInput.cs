@@ -1,10 +1,13 @@
 ﻿using System;
 using PurrNet.Packing;
+using UnityEngine;
 
 namespace PurrNet.Prediction.Tests
 {
     public struct SimpleWASDInput : IPredictedData, IEquatable<SimpleWASDInput>
     {
+        public Vector3 test1;
+        public Vector3 test2;
         public NormalizedFloat horizontal;
         public NormalizedFloat vertical;
         public bool jump;

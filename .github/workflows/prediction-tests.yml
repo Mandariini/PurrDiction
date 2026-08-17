@@ -280,6 +280,7 @@ jobs:
           run_profile high-jitter 37003 -latencyMin 120 -latencyMax 250
           run_profile loss 37004 -latencyMin 40 -latencyMax 80 -packetLoss 5
           run_profile heavy-loss 37005 -latencyMin 80 -latencyMax 160 -packetLoss 15
+          run_profile input-bandwidth-budget 37009 -inputBandwidthBenchmark -ibSeconds 12 -ibNoise constant -ibAssert -tickRate 64 -latencyMin 70 -latencyMax 70
           run_profile purrleague-immediate-rpc 37006 -tickRate 60 -mtuFragment -desyncPolicy Report -immediateRpcRegressionScenarioOnly
           run_profile webtransport-immediate-rpc 37007 -tickRate 60 -mtuFragment -desyncPolicy Report -webTransport -immediateRpcRegressionScenarioOnly
           run_profile purrleague-immediate-rpc-no-player 37008 -tickRate 60 -mtuFragment -desyncPolicy Report -immediateRpcRegressionScenarioOnly -immediateRpcRegressionWithoutPlayer
