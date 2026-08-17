@@ -15,8 +15,21 @@ namespace PurrNet.Prediction.Editor
 #endif
     {
         static GUIStyle _box;
-        bool _showPredictedModules = false;
-        bool _overridesVisible = false;
+
+        const string OverridesVisibleKey = "PurrDiction.PredictedIdentityEditor.OverridesVisible";
+        const string ModulesVisibleKey = "PurrDiction.PredictedIdentityEditor.ModulesVisible";
+
+        static bool overridesVisible
+        {
+            get => SessionState.GetBool(OverridesVisibleKey, false);
+            set => SessionState.SetBool(OverridesVisibleKey, value);
+        }
+
+        static bool showPredictedModules
+        {
+            get => SessionState.GetBool(ModulesVisibleKey, false);
+            set => SessionState.SetBool(ModulesVisibleKey, value);
+        }
 
         static readonly string[] _defaultOverrideProps = { "m_Script", "_predictionPolicySource", "_predictionPolicy" };
         static readonly string[] _defaultOverridePropsWithDesync = { "m_Script", "_predictionPolicySource", "_predictionPolicy", "_desyncPolicy" };
@@ -151,9 +164,11 @@ namespace PurrNet.Prediction.Editor
                 label += ")";
             }
 
-            _overridesVisible = EditorGUILayout.BeginFoldoutHeaderGroup(_overridesVisible, label);
+            bool expanded = EditorGUILayout.BeginFoldoutHeaderGroup(overridesVisible, label);
+            if (expanded != overridesVisible)
+                overridesVisible = expanded;
 
-            if (_overridesVisible)
+            if (expanded)
             {
                 EditorGUI.indentLevel++;
 
@@ -185,12 +200,14 @@ namespace PurrNet.Prediction.Editor
                 return;
 
             GUILayout.Space(5);
-            _showPredictedModules = EditorGUILayout.Foldout(
-                _showPredictedModules,
+            bool expanded = EditorGUILayout.Foldout(
+                showPredictedModules,
                 $"Predicted Modules ({modules.Count})",
                 true);
+            if (expanded != showPredictedModules)
+                showPredictedModules = expanded;
 
-            if (!_showPredictedModules)
+            if (!expanded)
                 return;
 
             for (int i = 0; i < modules.Count; i++)
