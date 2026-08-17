@@ -51,8 +51,6 @@ namespace PurrNet.Prediction.Tests
             input.vertical = Input.GetAxisRaw("Vertical");
             input.dash = Input.GetKey(KeyCode.LeftShift);
             input.someAsset = _someAsset;
-            input.test1 = Random.insideUnitSphere;
-            input.test2 = Random.insideUnitSphere;
         }
 
         protected override void UpdateInput(ref SimpleWASDInput input)
