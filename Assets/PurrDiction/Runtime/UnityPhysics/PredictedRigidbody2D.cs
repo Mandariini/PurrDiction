@@ -604,10 +604,16 @@ namespace PurrNet.Prediction
         {
             angularVelocity += mode switch
             {
-                ForceMode2D.Force => torque / _rigidbody.mass * predictionManager.tickDelta,
-                ForceMode2D.Impulse => torque / _rigidbody.mass,
+                ForceMode2D.Force => ApplyInverseInertia(torque) * predictionManager.tickDelta,
+                ForceMode2D.Impulse => ApplyInverseInertia(torque),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
             };
+        }
+
+        private float ApplyInverseInertia(float torque)
+        {
+            var inertia = _rigidbody.inertia;
+            return inertia > 0f ? torque / inertia * Mathf.Rad2Deg : 0f;
         }
 
         /// <summary>
@@ -642,7 +648,7 @@ namespace PurrNet.Prediction
             AddForce(force, mode);
 
             Vector2 relativePosition = position - _rigidbody.worldCenterOfMass;
-            float torque = Vector2.SignedAngle(Vector2.right, relativePosition) * force.magnitude;
+            float torque = relativePosition.x * force.y - relativePosition.y * force.x;
             AddTorque(torque, mode);
         }
 

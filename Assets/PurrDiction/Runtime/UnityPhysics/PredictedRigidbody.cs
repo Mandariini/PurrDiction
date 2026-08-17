@@ -495,12 +495,23 @@ namespace PurrNet.Prediction
         {
             angularVelocity += mode switch
             {
-                ForceMode.Force => torque / _rigidbody.mass * predictionManager.tickDelta,
+                ForceMode.Force => ApplyInverseInertia(torque) * predictionManager.tickDelta,
                 ForceMode.Acceleration => torque * predictionManager.tickDelta,
-                ForceMode.Impulse => torque / _rigidbody.mass,
+                ForceMode.Impulse => ApplyInverseInertia(torque),
                 ForceMode.VelocityChange => torque,
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, null)
             };
+        }
+
+        private Vector3 ApplyInverseInertia(Vector3 torque)
+        {
+            var tensorSpace = _rigidbody.rotation * _rigidbody.inertiaTensorRotation;
+            var local = Quaternion.Inverse(tensorSpace) * torque;
+            var tensor = _rigidbody.inertiaTensor;
+            local.x = tensor.x > 0f ? local.x / tensor.x : 0f;
+            local.y = tensor.y > 0f ? local.y / tensor.y : 0f;
+            local.z = tensor.z > 0f ? local.z / tensor.z : 0f;
+            return tensorSpace * local;
         }
 
         /// <summary>
@@ -510,8 +521,7 @@ namespace PurrNet.Prediction
         /// <param name="mode">Type of force to apply.</param>
         public void AddRelativeForce(Vector3 force, ForceMode mode = ForceMode.Force)
         {
-            var relativeForce = _rigidbody.transform.TransformVector(force);
-            AddForce(relativeForce, mode);
+            AddForce(_rigidbody.rotation * force, mode);
         }
 
         /// <summary>
@@ -521,8 +531,7 @@ namespace PurrNet.Prediction
         /// <param name="mode">Type of torque to apply.</param>
         public void AddRelativeTorque(Vector3 torque, ForceMode mode = ForceMode.Force)
         {
-            var relativeTorque = _rigidbody.transform.TransformVector(torque);
-            AddTorque(relativeTorque, mode);
+            AddTorque(_rigidbody.rotation * torque, mode);
         }
 
         /// <summary>
