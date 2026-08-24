@@ -44,6 +44,18 @@ namespace PurrNet.Prediction
 
         private static void TriggerEvent(PredictionManager predictionManager, PhysicsEvent ev)
         {
+            if (ev.controllerHit.HasValue)
+            {
+                if (ev.me.TryGetIdentity<PredictedPhysicsCallbacks>(predictionManager, out var controller))
+                {
+                    var otherGo = ev.other.GetGameObject(predictionManager);
+                    if (!otherGo && ev.other.objectId.instanceId.value != 0)
+                        return;
+                    controller.RaiseControllerColliderHit(otherGo, ev.controllerHit.Value);
+                }
+                return;
+            }
+
             if (ev.me.TryGetIdentity<IPredictedPhysicsCallbacks>(predictionManager, out var me))
             {
                 var otherGo = ev.other.GetGameObject(predictionManager);
@@ -82,6 +94,26 @@ namespace PurrNet.Prediction
                     }
                 }
             }
+        }
+
+        public void RegisterControllerColliderHit(PredictedIdentity caller, ControllerColliderHit hit)
+        {
+            if (hit == null || !PredictionManager.TryGetClosestPredictedID(hit.gameObject, out var otherId))
+                return;
+
+            var state = currentState;
+            var ev = new PhysicsEvent
+            {
+                me = caller.id,
+                other = otherId,
+                controllerHit = new PhysicsControllerHit(hit)
+            };
+
+            state.events.Add(ev);
+
+            if (!predictionManager.isVerifiedAndReplaying)
+                TriggerEvent(predictionManager, ev);
+            currentState = state;
         }
 
         public void RegisterEvent(PhysicsEventType type, PredictedIdentity caller, Collision other)

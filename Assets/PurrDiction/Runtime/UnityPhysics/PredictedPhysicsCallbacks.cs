@@ -5,7 +5,7 @@ namespace PurrNet.Prediction
 {
     public class PredictedPhysicsCallbacks : StatelessPredictedIdentity, IPredictedPhysicsCallbacks
     {
-        [SerializeField, PurrLock] private PhysicsEventMask _eventMask = (PhysicsEventMask)0x3F;
+        [SerializeField, PurrLock] private PhysicsEventMask _eventMask = (PhysicsEventMask)0x7F;
 
         public event OnCollisionDelegate onCollisionEnter;
         public event OnCollisionDelegate onCollisionExit;
@@ -14,6 +14,8 @@ namespace PurrNet.Prediction
         public event OnTriggerDelegate onTriggerEnter;
         public event OnTriggerDelegate onTriggerExit;
         public event OnTriggerDelegate onTriggerStay;
+
+        public event OnControllerColliderHitDelegate onControllerColliderHit;
 
         public void RaiseTriggerEnter(GameObject other) => onTriggerEnter?.Invoke(other);
 
@@ -26,6 +28,9 @@ namespace PurrNet.Prediction
         public void RaiseCollisionExit(GameObject other, PhysicsCollision evContacts) => onCollisionExit?.Invoke(other, evContacts);
 
         public void RaiseCollisionStay(GameObject other, PhysicsCollision evContacts) => onCollisionStay?.Invoke(other, evContacts);
+
+        public void RaiseControllerColliderHit(GameObject other, PhysicsControllerHit hit)
+            => onControllerColliderHit?.Invoke(other, hit);
 
 #if UNITY_PHYSICS_3D
 
@@ -93,6 +98,17 @@ namespace PurrNet.Prediction
                 return;
 
             predictionManager.physics3d.RegisterEvent(PhysicsEventType.Stay, this, other);
+        }
+
+        private void OnControllerColliderHit(ControllerColliderHit hit)
+        {
+            if (!_eventMask.HasFlag(PhysicsEventMask.ControllerColliderHit))
+                return;
+
+            if (!predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
+                return;
+
+            predictionManager.physics3d.RegisterControllerColliderHit(this, hit);
         }
 #endif
     }

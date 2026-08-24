@@ -15,7 +15,8 @@ namespace PurrNet.Prediction
         CollisionStay = 1 << 2,
         TriggerEnter = 1 << 3,
         TriggerExit = 1 << 4,
-        TriggerStay = 1 << 5
+        TriggerStay = 1 << 5,
+        ControllerColliderHit = 1 << 6
     }
 
     public enum FloatAccuracy
@@ -27,6 +28,7 @@ namespace PurrNet.Prediction
 
     public delegate void OnCollisionDelegate(GameObject other, PhysicsCollision physicsEvent);
     public delegate void OnTriggerDelegate(GameObject other);
+    public delegate void OnControllerColliderHitDelegate(GameObject other, PhysicsControllerHit physicsEvent);
 
 #if UNITY_PHYSICS_3D
     [RequireComponent(typeof(Rigidbody))]
