@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using PurrNet;
 using PurrNet.Prediction;
 using UnityEngine;
 
@@ -94,13 +95,39 @@ public class TrailViewTracker : MonoBehaviour
         public bool owned;
         public Vector3 prev;
         public Vector3 cur;
+        public bool hasPreviousContext;
+        public Observation previousContext;
+        public Observation currentContext;
+        public bool isRegisteredInstance;
+        public bool hasSpawnRecord;
+        public Vector3 spawnPosition;
+        public PlayerID? spawnOwner;
 
         public override string ToString()
         {
             return $"{kind}/{channel} id={instanceId} owned={owned} seg={segment} " +
                    $"frames={prevFrame}->{frame} tick={tick} " +
-                   $"prev=({prev.x:F3},{prev.y:F3},{prev.z:F3}) cur=({cur.x:F3},{cur.y:F3},{cur.z:F3})";
+                   $"prev=({prev.x:F3},{prev.y:F3},{prev.z:F3}) cur=({cur.x:F3},{cur.y:F3},{cur.z:F3}) " +
+                   $"contextPrev={hasPreviousContext}:{previousContext} contextNow={currentContext} " +
+                   $"samePhysical={hasPreviousContext && previousContext.physicalInstance == currentContext.physicalInstance} " +
+                   $"ageRewind={hasPreviousContext && currentContext.age < previousContext.age} registered={isRegisteredInstance} " +
+                   $"spawnRecord={hasSpawnRecord}:({spawnPosition.x:F3},{spawnPosition.y:F3},{spawnPosition.z:F3}) owner={spawnOwner}";
         }
+    }
+
+    public struct Observation
+    {
+        public uint id;
+        public int physicalInstance;
+        public PlayerID? owner;
+        public ulong localTick;
+        public uint age;
+        public bool deleteRequested;
+        public ulong? projectileVerifiedTick;
+        public ulong? transformVerifiedTick;
+
+        public override string ToString()
+            => $"[id={id},physical={physicalInstance},owner={owner},tick={localTick},age={age},delete={deleteRequested},verified={projectileVerifiedTick},transformVerified={transformVerifiedTick}]";
     }
 
     public static readonly List<Sample> failures = new();
@@ -126,6 +153,10 @@ public class TrailViewTracker : MonoBehaviour
     private Vector3 _disabledView;
     private int _disabledFrame;
     private bool _checkedResurrection;
+    private int _physicalInstance;
+    private bool _hasPreviousContext;
+    private Observation _previousContext;
+    private Observation _currentContext;
 
     public static void ResetAll()
     {
@@ -142,6 +173,7 @@ public class TrailViewTracker : MonoBehaviour
     {
         _pt = GetComponent<PredictedTransform>();
         _proj = GetComponent<TrailProjectile>();
+        _physicalInstance = gameObject.GetInstanceID();
     }
 
     private void OnEnable()
@@ -180,6 +212,19 @@ public class TrailViewTracker : MonoBehaviour
         bool owned = _proj && _proj.isOwner;
         uint instanceId = _proj ? _proj.id.objectId.instanceId.value : 0;
         _lastId = instanceId;
+        // Only scalar context is retained between frames. Detailed record lookup and
+        // formatting happen for the existing bounded failures/diagnostics below.
+        _currentContext = new Observation
+        {
+            id = instanceId,
+            physicalInstance = _physicalInstance,
+            owner = _proj ? _proj.owner : null,
+            localTick = tick,
+            age = _proj ? _proj.currentState.age : 0,
+            deleteRequested = _proj && _proj.currentState.deleteRequested,
+            projectileVerifiedTick = _proj ? _proj.lastVerifiedTick : null,
+            transformVerifiedTick = _pt.lastVerifiedTick
+        };
 
         if (!_checkedResurrection && instanceId != 0)
         {
@@ -212,6 +257,8 @@ public class TrailViewTracker : MonoBehaviour
         _prevView = viewPos;
         _prevSim = simPos;
         _prevFrame = frame;
+        _previousContext = _currentContext;
+        _hasPreviousContext = true;
     }
 
     private void CheckChannel(string channel, Vector3 prev, Vector3 cur, int frame, ulong tick, uint instanceId, bool owned)
@@ -248,7 +295,7 @@ public class TrailViewTracker : MonoBehaviour
         if (target.Count >= MaxRecorded)
             return;
 
-        target.Add(new Sample
+        var sample = new Sample
         {
             kind = kind,
             channel = channel,
@@ -259,7 +306,32 @@ public class TrailViewTracker : MonoBehaviour
             segment = _segment,
             owned = owned,
             prev = prev,
-            cur = cur
-        });
+            cur = cur,
+            hasPreviousContext = _hasPreviousContext,
+            previousContext = _previousContext,
+            currentContext = _currentContext
+        };
+
+        if (_proj && _pt.predictionManager)
+        {
+            var pm = _pt.predictionManager;
+            sample.isRegisteredInstance = pm.TryGetIdentity(_proj.id, out var registered) && registered == _proj;
+            if (pm.hierarchy)
+            {
+                var records = pm.hierarchy.currentState.spawnedPrefabs;
+                for (var i = 0; i < records.Count; i++)
+                {
+                    var record = records[i];
+                    if (!record.instanceId.Equals(_proj.id.objectId))
+                        continue;
+                    sample.hasSpawnRecord = true;
+                    sample.spawnPosition = record.spawnPosition;
+                    sample.spawnOwner = record.owner;
+                    break;
+                }
+            }
+        }
+
+        target.Add(sample);
     }
 }

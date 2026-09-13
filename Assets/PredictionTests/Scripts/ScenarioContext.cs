@@ -11,6 +11,7 @@ public enum NetworkRole
 
 public struct ScenarioContext
 {
+    public int scenarioIndex;
     public NetworkRole role;
     public int expectedConnections;
     public NetworkManager networkManager;
