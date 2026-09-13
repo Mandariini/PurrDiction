@@ -156,9 +156,12 @@ every tick after the baseline is retained, and the client replays exactly that f
 delta is never discarded and a checkpoint whose own delivery ran long can still be followed. A
 larger gap requests a full snapshot. A reliable full left unacknowledged for longer than the
 window can no longer anchor any delta; the server releases it and sends a fresh checkpoint rather
-than suppressing that client. Input transcripts encode an entry that is unchanged since the
-previous tick, and was sent to the same receiver on that tick, as a one-bit repeat, so delta size
-does not scale with ACK lag.
+than suppressing that client. When a receiver's input roster is unchanged from the previous tick,
+the transcript carries one repeat bit per entry in a per-tick mask and omits the unchanged
+payloads, so delta size does not scale with ACK lag. The mask is followed by zero bits up to the
+next byte boundary before the entries: frames are LZ4-compressed per RPC, and keeping consecutive
+tick blocks byte-aligned is what lets the compressor match them. A flag bit inside each entry
+halves the raw size but costs about a quarter more on the wire.
 
 A confirmed missing acknowledged identity baseline or explicitly repeated input payload now
 requests a full snapshot as soon as

@@ -176,7 +176,6 @@ namespace PurrNet.Prediction.Tests.Editor
             fixture.Capture(10);
             var expired = fixture.Block(10);
             var expiredPayload = Get<BitPacker>(expired, "packer");
-            var expiredFrame = Get<BitPacker>(expired, "framedPacker");
             fixture.Seed(input, 68, 68);
             fixture.Capture(68);
             fixture.Seed(input, 100, 100);
@@ -189,7 +188,6 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.Throws<MissingPredictionBaselineException>(() => fixture.Block(10));
             Assert.That(expiredPayload.positionInBits, Is.Zero,
                 "shrinking returns expired payloads to their pool");
-            Assert.That(expiredFrame.positionInBits, Is.Zero);
         }
 
         [Test]
@@ -200,8 +198,8 @@ namespace PurrNet.Prediction.Tests.Editor
             fixture.Capture(43);
             var current = fixture.Block(43);
             var scratch = Get<object>(fixture.manager, "_inputBlockScratch");
-            var currentFrame = Get<BitPacker>(current, "framedPacker");
-            var scratchFrame = Get<BitPacker>(scratch, "framedPacker");
+            var currentFrame = Get<BitPacker>(current, "packer");
+            var scratchFrame = Get<BitPacker>(scratch, "packer");
             Assert.That(scratchFrame, Is.Not.Null);
             fixture.Clear();
             Assert.That(Get<object>(fixture.manager, "_inputBlockCache"), Is.Null);
@@ -261,32 +259,41 @@ namespace PurrNet.Prediction.Tests.Editor
             internal void SetRate(int rate) => Set(typeof(PredictionManager), manager, "<tickRate>k__BackingField", rate);
             internal void Clear() => Invoke(manager, "DisposeInputBlockCache");
 
+            // A captured block is its payload packer plus the entry table that addresses it.
             internal byte[] Snapshot(ulong tick)
             {
-                var framed = Get<BitPacker>(Block(tick), "framedPacker");
-                var bytes = new byte[framed.positionInBytes];
-                Array.Copy(framed.buffer, bytes, bytes.Length);
-                return bytes;
+                var block = Block(tick);
+                var packer = Get<BitPacker>(block, "packer");
+                var bytes = new List<byte>();
+                for (int i = 0; i < packer.positionInBytes; i++)
+                    bytes.Add(packer.buffer[i]);
+                foreach (var entry in Get<IList>(block, "entries"))
+                {
+                    bytes.AddRange(BitConverter.GetBytes(Get<PredictedComponentID>(entry, "id").objectId.instanceId.value));
+                    bytes.AddRange(BitConverter.GetBytes(Get<PredictedComponentID>(entry, "id").componentId.value));
+                    bytes.AddRange(BitConverter.GetBytes(Get<int>(entry, "bitOrigin")));
+                    bytes.AddRange(BitConverter.GetBytes(Get<int>(entry, "bitLength")));
+                }
+                return bytes.ToArray();
             }
 
             internal void AssertInput(ulong tick, uint objectId, int value)
             {
                 var block = Block(tick);
-                var framed = Get<BitPacker>(block, "framedPacker");
-                using var reader = BitPackerPool.Get();
-                reader.WriteBitsWithoutConsumingIt(framed, framed.positionInBits);
-                int end = reader.positionInBits;
-                reader.ResetPositionAndMode(true);
-                Assert.That(Packer<PackedUInt>.Read(reader).value, Is.EqualTo(1));
-                Assert.That(Packer<PredictedComponentID>.Read(reader),
+                var packer = Get<BitPacker>(block, "packer");
+                var entries = Get<IList>(block, "entries");
+                Assert.That(entries.Count, Is.EqualTo(1));
+                var entry = entries[0];
+                Assert.That(Get<PredictedComponentID>(entry, "id"),
                     Is.EqualTo(new PredictedComponentID(new PredictedObjectID(objectId), 0)));
-                Assert.That(Packer<bool>.Read(reader), Is.False, "a value that changed cannot be a repeat");
-                uint bits = Packer<PackedUInt>.Read(reader).value;
-                int start = reader.positionInBits;
+                int bits = Get<int>(entry, "bitLength");
+                using var reader = BitPackerPool.Get();
+                reader.WriteBitDataWithoutConsumingIt(new BitData(packer, Get<int>(entry, "bitOrigin"), bits));
+                Assert.That(reader.positionInBits, Is.EqualTo(bits));
+                reader.ResetPositionAndMode(true);
                 Assert.That(Packer<bool>.Read(reader), Is.True);
                 Assert.That(Packer<ImmutableHistoryInput>.Read(reader).value, Is.EqualTo(value));
-                Assert.That(reader.positionInBits - start, Is.EqualTo((int)bits));
-                Assert.That(reader.positionInBits, Is.EqualTo(end));
+                Assert.That(reader.positionInBits, Is.EqualTo(bits));
             }
 
             private GameObject Create(string name)

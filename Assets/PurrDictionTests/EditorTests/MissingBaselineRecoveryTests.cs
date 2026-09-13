@@ -757,11 +757,18 @@ namespace PurrNet.Prediction.Tests.Editor
                     for (uint tick = 0; tick < LastInputTranscriptTicks; tick++)
                     {
                         uint inputCount = Packer<PackedUInt>.Read(packer).value;
+                        if (inputCount == 0)
+                            continue;
+                        var repeats = new bool[inputCount];
+                        if (tick > 0 && Packer<bool>.Read(packer))
+                            for (uint i = 0; i < inputCount; i++) repeats[i] = Packer<bool>.Read(packer);
+                        packer.SkipBits((8 - packer.positionInBits % 8) % 8);
                         for (uint i = 0; i < inputCount; i++)
                         {
+                            if (repeats[i])
+                                continue;
                             Packer<PredictedComponentID>.Read(packer);
-                            if (!Packer<bool>.Read(packer))
-                                packer.SkipBits(checked((int)Packer<PackedUInt>.Read(packer).value));
+                            packer.SkipBits(checked((int)Packer<PackedUInt>.Read(packer).value));
                         }
                     }
                     Assert.That(Packer<bool>.Read(packer), Is.False,

@@ -286,23 +286,59 @@ namespace PurrNet.Prediction.Tests.Editor
                     uint tickCount = Packer<PackedUInt>.Read(source).value;
                     Assert.That(tickCount, Is.EqualTo(original.tick - original.baseline));
                     Packer<PackedUInt>.Write(altered, tickCount);
+                    // Decode every tick (repeats resolve against the previous decoded tick) and
+                    // re-emit the canonical no-repeat layout, since byte padding depends on position.
+                    var previous = new List<(PredictedComponentID id, BitPacker payload)>();
+                    var current = new List<(PredictedComponentID id, BitPacker payload)>();
                     for (uint tick = 0; tick < tickCount; tick++)
                     {
-                        int blockStart = source.positionInBits;
                         uint entryCount = Packer<PackedUInt>.Read(source).value;
+                        var repeats = new bool[entryCount];
+                        current.Clear();
+                        if (entryCount > 0)
+                        {
+                            if (tick > 0 && Packer<bool>.Read(source))
+                                for (uint i = 0; i < entryCount; i++) repeats[i] = Packer<bool>.Read(source);
+                            source.SkipBits((8 - source.positionInBits % 8) % 8);
+                        }
                         for (uint i = 0; i < entryCount; i++)
                         {
-                            Packer<PredictedComponentID>.Read(source);
-                            if (!Packer<bool>.Read(source))
-                                source.SkipBits(checked((int)Packer<PackedUInt>.Read(source).value));
+                            if (repeats[i])
+                            {
+                                current.Add(previous[(int)i]);
+                                continue;
+                            }
+                            var id = Packer<PredictedComponentID>.Read(source);
+                            int bits = checked((int)Packer<PackedUInt>.Read(source).value);
+                            var payload = BitPackerPool.Get();
+                            payload.WriteBitDataWithoutConsumingIt(new BitData(source, source.positionInBits, bits));
+                            source.SkipBits(bits);
+                            current.Add((id, payload));
                         }
+
                         if (original.baseline + tick + 1 == targetTick)
                         {
                             Assert.That(entryCount, Is.EqualTo(1));
                             Packer<PackedUInt>.Write(altered, 0u);
                         }
-                        else altered.WriteBitDataWithoutConsumingIt(
-                            new BitData(source, blockStart, source.positionInBits - blockStart));
+                        else
+                        {
+                            Packer<PackedUInt>.Write(altered, entryCount);
+                            if (entryCount > 0)
+                            {
+                                if (tick > 0)
+                                    Packer<bool>.Write(altered, false);
+                                altered.WriteBits(0UL, (byte)((8 - altered.positionInBits % 8) % 8));
+                                foreach (var (id, payload) in current)
+                                {
+                                    Packer<PredictedComponentID>.Write(altered, id);
+                                    Packer<PackedUInt>.Write(altered, (uint)payload.positionInBits);
+                                    altered.WriteBitDataWithoutConsumingIt(new BitData(payload, 0, payload.positionInBits));
+                                }
+                            }
+                        }
+                        previous.Clear();
+                        previous.AddRange(current);
                     }
                 }
                 altered.WriteBitDataWithoutConsumingIt(

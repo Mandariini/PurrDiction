@@ -177,6 +177,13 @@ namespace PurrNet.Prediction.Tests.Editor
                 for (ulong tick = 16; tick <= 20; tick++)
                 {
                     Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(2), $"tick {tick}");
+                    if (tick > 16)
+                    {
+                        Assert.That(Packer<bool>.Read(frame), Is.True, "the same two identities are present every tick");
+                        for (var record = 0; record < 2; record++)
+                            Assert.That(Packer<bool>.Read(frame), Is.False, "changing inputs are never encoded as repeats");
+                    }
+                    frame.SkipBits((8 - frame.positionInBits % 8) % 8);
                     var values = new Dictionary<PredictedComponentID, int>();
                     for (var record = 0; record < 2; record++)
                     {
@@ -340,7 +347,6 @@ namespace PurrNet.Prediction.Tests.Editor
 
         private static TrackedInput ReadLengthPrefixedInput(BitPacker frame)
         {
-            Assert.That(Packer<bool>.Read(frame), Is.False, "changing inputs are never encoded as repeats");
             PackedUInt declaredBits = default;
             Packer<PackedUInt>.Read(frame, ref declaredBits);
             var origin = frame.positionInBits;
