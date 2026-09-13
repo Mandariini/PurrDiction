@@ -23,14 +23,14 @@ namespace PurrNet.Prediction.Tests.Editor
             var incoming = Value(0.000001f);
             Assert.That(typeof(IPurrEquatable<DeterministicGeneratedEqualityState>)
                 .IsAssignableFrom(typeof(DeterministicGeneratedEqualityState)), Is.True);
-            Assert.That(Packer.AreEqualRef(ref previous, ref incoming), Is.True,
-                "This regression must exercise the actual generated approximate Vector3 comparer.");
+            Assert.That(Packer.AreEqualRef(ref previous, ref incoming), Is.False,
+                "The actual generated comparer must distinguish the tiny Vector3 correction.");
             Assert.That(Bits(previous.position.x), Is.Not.EqualTo(Bits(incoming.position.x)));
         }
 
         [TestCase(20UL)]
         [TestCase(22UL)]
-        public void ReceivedFullStateReplacesApproximateHistoryAtSameOrLaterTick(ulong tick)
+        public void ReceivedFullStateReplacesHistoryWithTinyCorrectionAtSameOrLaterTick(ulong tick)
         {
             using var f = new Fixture();
             f.predicted.Write(20, Full(Value(0f)));
@@ -51,7 +51,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void ReceivedChangedDeltaReplacesApproximateSpeculationAndVerifiedState()
+        public void ReceivedChangedDeltaReplacesSpeculationAndVerifiedStateWithTinyCorrection()
         {
             using var f = new Fixture();
             var baseline = Value(1f, "baseline");
@@ -108,7 +108,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void OmittedAndFullRecipientsCannotAcknowledgeDifferentStatesAtTheSameTick()
+        public void DeltaAndFullRecipientsShareTheExactAcknowledgedBaseline()
         {
             using var sender = new Fixture(true);
             using var continuing = new Fixture(true);
@@ -141,7 +141,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
         [TestCase(false)]
         [TestCase(true)]
-        public void UnchangedOlderBaselineOverridesNewerApproximateState(bool omitted)
+        public void UnchangedOlderBaselineOverridesNewerTinyCorrection(bool omitted)
         {
             using var f = new Fixture();
             f.verified.Write(8, Full(Value(0f)));
@@ -153,14 +153,14 @@ namespace PurrNet.Prediction.Tests.Editor
 
             AssertValue(f.identity.currentState, Value(0f));
             Assert.That(f.verified.Read(11, out var authoritative), Is.True,
-                "A newer intervening value requires an anchor even when it is approximately equal to the old baseline.");
+                "A newer intervening value requires an anchor even when its difference from the old baseline is tiny.");
             AssertValue(authoritative.state, Value(0f));
             Assert.That(f.verified.Read(10, out var intervening), Is.True);
             AssertValue(intervening.state, Value(0.000001f));
         }
 
         [Test]
-        public void RestoreVerifiedStateCannotDiscardAnApproximateCorrection()
+        public void RestoreVerifiedStateCannotDiscardATinyCorrection()
         {
             using var f = new Fixture();
             f.predicted.Write(20, Full(Value(0f)));

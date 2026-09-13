@@ -58,6 +58,53 @@ namespace PurrNet.Prediction.Tests.Editor
 
         [TestCase(false)]
         [TestCase(true)]
+        public void LifecycleComparisonUsesStatesWithoutFullTopologySerialization(bool filtered)
+        {
+            PredictedObjectID existing = default, born = default;
+            using var f = new Fixture(true,
+                beforeBaseline: world => existing = world.CreateServerIdentity(100));
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                if (filtered && tick == 11)
+                    f.SetVisible(existing, false);
+                if (tick == 13)
+                    born = f.CreateServerIdentity(700);
+                using var packet = f.StepServer(tick, assertNoLifecycleFullWrites: true);
+                Assert.That(packet.full, Is.False);
+                if (tick == FinalTick)
+                {
+                    f.AssertLifecycleRepeatsAndChangesWithoutFullWriter(filtered);
+                    f.Deliver(packet);
+                }
+            }
+
+            f.AssertVerifiedAgreement(compareObservations: !filtered);
+            var observations = f.clientLedger.observations.FindAll(value => value.objectId.Equals(born));
+            Assert.That(observations.Count, Is.EqualTo(5));
+            Assert.That(observations[0], Is.EqualTo(new LifecycleObservation(born, 13, 700, 13, 1)));
+            Assert.That(f.client.hierarchy.TryGetGameObject(born, out _), Is.True);
+        }
+
+        private static void WithoutFullTopologyWriter(Action action)
+        {
+            var writer = Packer<PredictedHierarchyState>.WriteFunc;
+            var directWriter = Packer<PredictedHierarchyState>.DirectWrite;
+            try
+            {
+                Packer<PredictedHierarchyState>.WriteFunc = (_, _) => throw new AssertionException(
+                    "Lifecycle comparisons must not serialize full topology states.");
+                Packer<PredictedHierarchyState>.DirectWrite = Packer<PredictedHierarchyState>.WriteFunc;
+                action();
+            }
+            finally
+            {
+                Packer<PredictedHierarchyState>.WriteFunc = writer;
+                Packer<PredictedHierarchyState>.DirectWrite = directWriter;
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public void LostBirthFrameRestoresCustomEnteringStateAndOriginalTickInputs(bool pooled)
         {
             using var f = new Fixture(pooled);
@@ -519,7 +566,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(visible ? server.ShowTo(_recipient, id) : server.HideFrom(_recipient, id), Is.True);
             }
 
-            internal Packet StepServer(ulong tick, Action afterCapture = null)
+            internal Packet StepServer(ulong tick, Action afterCapture = null, bool assertNoLifecycleFullWrites = false)
             {
                 Set(server, "<localTick>k__BackingField", tick);
                 Set(server, "<localTickInContext>k__BackingField", tick);
@@ -534,7 +581,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 }
                 Invoke(server, "SaveEnteringState", tick);
                 Invoke(server, "CaptureInputHistory", tick);
-                Invoke(server, "CaptureLifecycleHistory", tick);
+                if (assertNoLifecycleFullWrites)
+                    WithoutFullTopologyWriter(() => Invoke(server, "CaptureLifecycleHistory", tick));
+                else
+                    Invoke(server, "CaptureLifecycleHistory", tick);
                 afterCapture?.Invoke();
                 Invoke(server, "CapturePhysicsEventHierarchy", tick);
                 Invoke(server, "WriteInitialFrameToOthers");
@@ -562,6 +612,35 @@ namespace PurrNet.Prediction.Tests.Editor
                 _frames[0] = prepared;
                 Set(server, "<isVerified>k__BackingField", false);
                 return packet;
+            }
+
+            internal void AssertLifecycleRepeatsAndChangesWithoutFullWriter(bool filtered)
+            {
+                var timeline = Get<Dictionary<PlayerID, PlayerVisibilityTimeline>>(server, "_playerVisibility")[_recipient];
+                Assert.That(timeline.isPassThrough, Is.EqualTo(!filtered));
+                using var transcript = BitPackerPool.Get();
+                WithoutFullTopologyWriter(() => Invoke(server, "WriteLifecycleHistory", transcript, Baseline, timeline));
+                int end = transcript.positionInBits;
+                transcript.ResetPositionAndMode(true);
+                Assert.That(Packer<bool>.Read(transcript), Is.True);
+                uint ticks = Packer<PackedUInt>.Read(transcript);
+                Assert.That(ticks, Is.EqualTo(FinalTick - Baseline - 1));
+                int repeats = 0, changes = 0;
+                for (uint i = 0; i < ticks; i++)
+                {
+                    if (Packer<bool>.Read(transcript))
+                        repeats++;
+                    else
+                    {
+                        changes++;
+                        uint bits = Packer<PackedUInt>.Read(transcript);
+                        transcript.SkipBits((int)bits);
+                    }
+                    AddressedPredictionRecords.SkipSection(transcript, end);
+                }
+                Assert.That(repeats, Is.GreaterThan(0), "Unchanged topology must still use repeat flags.");
+                Assert.That(changes, Is.GreaterThan(0), "Changed topology must still emit replayable patches.");
+                Assert.That(transcript.positionInBits, Is.EqualTo(end));
             }
 
             internal void Deliver(Packet packet)

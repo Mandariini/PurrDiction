@@ -23,8 +23,8 @@ namespace PurrNet.Prediction.Tests.Editor
             var incoming = Value(0.000001f);
             Assert.That(typeof(IPurrEquatable<DeterministicGeneratedEqualityState>)
                 .IsAssignableFrom(typeof(DeterministicGeneratedEqualityState)), Is.True);
-            Assert.That(Packer.AreEqualRef(ref previous, ref incoming), Is.True,
-                "The real generated Vector3 comparer must consider this correction approximately equal.");
+            Assert.That(Packer.AreEqualRef(ref previous, ref incoming), Is.False,
+                "The real generated Vector3 comparer must distinguish the tiny correction.");
         }
 
         [TestCase(20UL)]
@@ -176,13 +176,17 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void SpeculativeClientSavesKeepCoalescingUntilAnAuthoritativeCorrectionArrives()
+        public void SpeculativeClientSavesPreserveTinyChangesAndCoalesceOnlyEqualValues()
         {
             using var f = GeneratedFixture();
             f.Save(10, Value(0f));
             f.Save(11, Value(0.000001f));
-            Assert.That(f.predicted.Count, Is.EqualTo(1),
-                "Speculative client saves retain the existing approximate-history policy.");
+            Assert.That(f.predicted.Count, Is.EqualTo(2),
+                "Strict generated equality must preserve tiny changes in speculative history too.");
+            Assert.That(f.predicted.Read(11, out var saved), Is.True);
+            AssertValue(saved.state, Value(0.000001f));
+            f.Save(12, Value(0.000001f));
+            Assert.That(f.predicted.Count, Is.EqualTo(2), "Identical speculative values still coalesce.");
 
             ReadFull(f.module, 11, Value(0.000001f));
             f.module.RollbackInternal(11);

@@ -26,7 +26,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void FullStateReadMustApplyExactIncomingVectorDespiteGeneratedApproximateEquality()
+        public void FullStateReadAppliesTheExactTinyIncomingVector()
         {
             var previous = new DeterministicGeneratedEqualityState
             {
@@ -40,8 +40,10 @@ namespace PurrNet.Prediction.Tests.Editor
             };
 
             Assert.That(previous.position.x, Is.Not.EqualTo(incoming.position.x));
-            Assert.That(Packer.AreEqualRef(ref previous, ref incoming), Is.True,
-                $"The real generated comparer uses Vector3.op_Equality because the state contains a string. Actual comparer: {PurrEquality<DeterministicGeneratedEqualityState>.Default.GetType().FullName}");
+            Assert.That(previous.position == incoming.position, Is.True,
+                "This change is small enough for Unity's approximate Vector3 operator to miss.");
+            Assert.That(Packer.AreEqualRef(ref previous, ref incoming), Is.False,
+                "The real generated comparer must preserve the tiny serialized difference.");
 
             var managerObject = new GameObject("Generated equality manager");
             var identityObject = new GameObject("Generated equality deterministic identity");
@@ -96,7 +98,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
                 Assert.That(history.Read(21, out _), Is.False);
                 Assert.That(identity.currentState.position.x, Is.EqualTo(incoming.position.x),
-                    "A full authoritative deterministic state must replace the old state exactly, even when network equality reports unchanged.");
+                    "A full authoritative deterministic state must replace the old state with the exact incoming value.");
                 Assert.That(identity.currentState.label, Is.EqualTo(incoming.label));
                 Assert.That(history.Read(20, out var corrected), Is.True);
                 Assert.That(corrected.state.position.x, Is.EqualTo(incoming.position.x));

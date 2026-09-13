@@ -5,7 +5,7 @@ namespace PurrNet.Prediction.Tests
     // Keep this fixture in the runtime test assembly: PurrNet's postprocessor skips
     // assemblies whose name contains "Editor", so Editor-only states lack codegen.
     // The string selects generated field equality instead of unmanaged MemCmp.
-    // Neither equality, copying nor serialization is overridden by this fixture.
+    // The fixture supplies no custom equality, copying or serialization.
     public struct DeterministicGeneratedEqualityState : IPredictedData<DeterministicGeneratedEqualityState>
     {
         public string label;
