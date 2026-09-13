@@ -55,7 +55,7 @@ namespace Purrdiction.Codegen
 
                 using var peStream = new MemoryStream(compiledAssembly.InMemoryAssembly.PeData);
                 using var pdbStream = new MemoryStream(compiledAssembly.InMemoryAssembly.PdbData);
-                // fully qualified: conflicts with Unity.CompilationPipeline.Common.ILPostProcessing.AssemblyResolver (Unity 6.7+)
+                // Unity 6.7+ also defines AssemblyResolver in its ILPostProcessing namespace.
                 var resolver = new PurrNet.Codegen.AssemblyResolver(compiledAssembly);
 
                 var assemblyDefinition = AssemblyDefinition.ReadAssembly(peStream, new ReaderParameters

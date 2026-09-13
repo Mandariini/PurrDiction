@@ -101,29 +101,35 @@ namespace PurrNet.Prediction
             }
         }
 
+        // One exact comparison per tick serves every receiver; see PredictedIdentity<T>.RefreshVerifiedFromLive.
+        private ulong _liveVerifiedThroughTick;
+
         private void RefreshVerifiedFromLive(ulong tick)
         {
             var store = verifiedHistory;
             if (store.Count > 0 && store.MostRecentTick >= tick)
                 return;
 
+            if (_liveVerifiedThroughTick == tick)
+                return;
+
             StoreVerified(tick, ref fullPredictedState);
+            _liveVerifiedThroughTick = tick;
         }
 
         private void StoreVerified(ulong serverTick, ref MODULE_STATE<TState> state)
         {
             var store = verifiedHistory;
             store.PruneByTickWindow(serverTick);
+            VerifiedStateStore<MODULE_STATE<TState>>.StoreLive(store, serverTick, ref state, true);
+        }
 
-            int lastIndex = store.Count - 1;
-            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
-            {
-                var latest = store[lastIndex];
-                if (latest.HasSameContents(ref state))
-                    return;
-            }
-
-            store.Write(serverTick, state.DeepCopy());
+        private void StoreReceivedVerified(ulong serverTick, ref MODULE_STATE<TState> state,
+            ulong? unchangedBaselineTick = null)
+        {
+            var store = verifiedHistory;
+            store.PruneByTickWindow(serverTick);
+            VerifiedStateStore<MODULE_STATE<TState>>.StoreReceived(store, serverTick, ref state, unchangedBaselineTick, true);
         }
 
         protected override void Setup(PredictedIdentity parent, PredictionManager world)
@@ -132,6 +138,7 @@ namespace PurrNet.Prediction
 
             _verifiedHistory = null;
             _verifiedHistoryIndex = -1;
+            _liveVerifiedThroughTick = 0;
 
             bool preserveSoftCorrection = parent.preservesStateOnSetup &&
                                           parent.UsesSoftCorrectionTimeline() &&
@@ -265,18 +272,6 @@ namespace PurrNet.Prediction
             return last.HasSameContents(ref state);
         }
 
-        private void WriteOwnedStateIfChanged(ulong tick, ref MODULE_STATE<TState> state)
-        {
-            if (LatestHistoryMatches(tick, ref state))
-            {
-                state.Dispose();
-                state = default;
-                return;
-            }
-
-            _history.Write(tick, state);
-        }
-
         protected override bool WriteState(PlayerID receiver, BitPacker packer, ulong baselineTick)
         {
             RefreshVerifiedFromLive(predictionManager.localTick);
@@ -324,12 +319,13 @@ namespace PurrNet.Prediction
                 newState = baseline.DeepCopy();
             }
 
-            ApplyVerifiedState(tick, serverTick, ref newState);
+            ApplyVerifiedState(tick, serverTick, ref newState, changed ? null : baselineTick);
         }
 
-        private void ApplyVerifiedState(ulong tick, ulong serverTick, ref MODULE_STATE<TState> newState)
+        private void ApplyVerifiedState(ulong tick, ulong serverTick, ref MODULE_STATE<TState> newState,
+            ulong? unchangedBaselineTick = null)
         {
-            StoreVerified(serverTick, ref newState);
+            StoreReceivedVerified(serverTick, ref newState, unchangedBaselineTick);
 
             if (identity.UsesSoftCorrectionTimeline())
             {
@@ -344,14 +340,15 @@ namespace PurrNet.Prediction
                     ResetInterpolation();
                 }
 
-                WriteOwnedStateIfChanged(tick, ref newState);
+                _history.PruneByTickWindow(tick);
+                _history.Write(tick, newState);
                 return;
             }
 
             fullPredictedState.Dispose();
             fullPredictedState = newState;
-            if (!LatestHistoryMatches(tick, ref fullPredictedState))
-                _history.Write(tick, fullPredictedState.DeepCopy());
+            _history.PruneByTickWindow(tick);
+            _history.Write(tick, fullPredictedState.DeepCopy());
         }
 
         protected override bool HasUnchangedStateBaseline(ulong baselineTick)
@@ -369,7 +366,7 @@ namespace PurrNet.Prediction
             }
 
             var newState = baseline.DeepCopy();
-            ApplyVerifiedState(tick, serverTick, ref newState);
+            ApplyVerifiedState(tick, serverTick, ref newState, baselineTick);
         }
 
         protected virtual void OnVerifiedStateReceived(ulong tick, in TState predicted, in TState verified) { }
@@ -394,11 +391,11 @@ namespace PurrNet.Prediction
             MODULE_STATE<TState> newState = default;
             Packer<ModulePredictedState>.Read(packer, ref newState.prediction);
             Packer<TState>.Read(packer, ref newState.state);
-            StoreVerified(serverTick, ref newState);
+            StoreReceivedVerified(serverTick, ref newState);
             fullPredictedState.Dispose();
             fullPredictedState = newState;
-            if (!LatestHistoryMatches(tick, ref fullPredictedState))
-                _history.Write(tick, fullPredictedState.DeepCopy());
+            _history.PruneByTickWindow(tick);
+            _history.Write(tick, fullPredictedState.DeepCopy());
         }
 
         protected override void ClearFuture(ulong tick)
@@ -426,6 +423,7 @@ namespace PurrNet.Prediction
             _interpolatedState?.Teleport(default);
             _verifiedHistory = null;
             _verifiedHistoryIndex = -1;
+            _liveVerifiedThroughTick = 0;
             fullPredictedState.Dispose();
             fullPredictedState = default;
             viewState = default;

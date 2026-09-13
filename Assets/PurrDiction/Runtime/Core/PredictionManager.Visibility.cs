@@ -244,9 +244,7 @@ namespace PurrNet.Prediction
                     _desiredVisibilityScratch.Contains(rootId));
             }
 
-            // Descendant hides are derived from the current attachment graph. Once a root
-            // leaves that graph, re-evaluate its own persistent policy and record any
-            // transition so unacknowledged frames retain correct history.
+            // Detached roots resume their own visibility policy; retain transitions for unacknowledged frames.
             _desiredVisibilityScratch.Clear();
             timeline.CollectCurrentExceptions(_desiredVisibilityScratch);
             foreach (var rootId in _desiredVisibilityScratch)
@@ -387,9 +385,7 @@ namespace PurrNet.Prediction
                     out _,
                     out PredictedHierarchyState state))
             {
-                // A receiver can suppress new frames while a reliable frame is in flight.
-                // If that lasts beyond verified-history retention, preserve correctness by
-                // allowing a redundant tombstone rather than risking a missed delete.
+                // If checkpoint delivery outlasts history retention, resend tombstones rather than miss a delete.
                 return VisibilityProjectionStatus.Unknown;
             }
 
@@ -749,15 +745,8 @@ namespace PurrNet.Prediction
 
         readonly Dictionary<PlayerID, HierarchyBaselineScratch> _hierarchyBaselineScratchByPlayer = new();
 
-        // WriteAddressedStateSection runs twice per player per tick (once for regular systems,
-        // once more for event handlers via WriteEventHandles) with the same baselineTick both
-        // times. Cache the hierarchy baseline root/piece scan per player so the second pass
-        // reuses it instead of rescanning spawnedPrefabs from scratch. Scoped to the current
-        // localTick only (not just a matching baselineTick): verified-history entries get
-        // pruned over time, so if a player's ack stalls and baselineTick stops advancing, a
-        // cache keyed on baselineTick alone would keep returning an increasingly stale answer
-        // instead of noticing the entry it once found has since been pruned. Recomputing once
-        // per tick costs nothing extra since neither pass runs more than once per localTick.
+        // Share the baseline scan across state and event writes in one tick.
+        // Invalidate each tick: a stalled ACK can outlive its retained baseline.
         HierarchyBaselineScratch GetHierarchyBaselineScratch(PlayerID player, ulong baselineTick)
         {
             if (!_hierarchyBaselineScratchByPlayer.TryGetValue(player, out var scratch))
@@ -951,6 +940,7 @@ namespace PurrNet.Prediction
                 payload.ResetPositionAndMode(false);
 
                 bool writeFull = fullFrame ||
+                                 (baselineTick > 0 && !system.HasUnchangedStateBaseline(baselineTick)) ||
                                  RequiresFullEntryState(
                                      timeline,
                                      system,
@@ -958,7 +948,8 @@ namespace PurrNet.Prediction
                                      baselineScratch.hasBaseline,
                                      baselineScratch.roots,
                                      baselineScratch.pieces);
-                if (!writeFull && TryConsumeDesyncHeal(player, system.id))
+                // A prepared continuation may be discarded for size; consume the request only when sent.
+                if (PrepareDesyncHeal(player, system.id))
                     writeFull = true;
                 bool changed;
 
@@ -1012,31 +1003,23 @@ namespace PurrNet.Prediction
             BitPacker destination,
             ulong tick)
         {
-            _addressedSystemScratch.Clear();
-
-            for (var i = 0; i < _systemsCount; i++)
+            var block = GetInputBlockForTick(tick);
+            _visibleInputEntryScratch.Clear();
+            for (int i = 0; i < block.entries.Count; i++)
             {
-                var system = _systems[i];
-                if (!system.hasInput || !IsSystemVisible(timeline, system))
-                    continue;
-                _addressedSystemScratch.Add(system);
+                var entry = block.entries[i];
+                if (!hierarchy || timeline.isPassThrough || entry.id.objectId.instanceId.value == 1 ||
+                    timeline.WasVisibleAt(entry.rootId, tick))
+                    _visibleInputEntryScratch.Add(i);
             }
-
-            Packer<PackedUInt>.Write(
-                destination,
-                (uint)_addressedSystemScratch.Count);
-
+            Packer<PackedUInt>.Write(destination, (uint)_visibleInputEntryScratch.Count);
             using var payload = BitPackerPool.Get();
-            for (var i = 0; i < _addressedSystemScratch.Count; i++)
+            foreach (int index in _visibleInputEntryScratch)
             {
-                var system = _addressedSystemScratch[i];
+                var entry = block.entries[index];
                 payload.ResetPositionAndMode(false);
-                system.WriteFirstInput(tick, payload);
-                AddressedPredictionRecords.WriteRecord(
-                    destination,
-                    system.id,
-                    true,
-                    payload);
+                payload.WriteBitDataWithoutConsumingIt(new BitData(block.packer, entry.bitOrigin, entry.bitLength));
+                AddressedPredictionRecords.WriteRecord(destination, entry.id, true, payload);
             }
         }
 
@@ -1048,141 +1031,70 @@ namespace PurrNet.Prediction
             ulong baselineTick,
             PlayerVisibilityTimeline timeline)
         {
-            ulong from = baselineTick;
-            if (localTick > MaxInputWindow && from < localTick - MaxInputWindow)
-                from = localTick - MaxInputWindow;
-            if (_guaranteedInputHistorySystems == 0)
-                from = localTick;
-            if (from > localTick)
-                from = localTick;
+            if (baselineTick > localTick || localTick - baselineTick > verifiedHistoryWindowTicks)
+                throw new MissingPredictionBaselineException(
+                    $"Authoritative inputs from tick {baselineTick + 1} through {localTick} are outside retained history.");
 
-            if (from < localTick)
-            {
-                bool anyGuaranteedEntries = false;
-                for (ulong tick = from + 1; tick <= localTick; tick++)
-                {
-                    if (GetInputBlockForTick(tick).guaranteedEntryCount > 0)
-                    {
-                        anyGuaranteedEntries = true;
-                        break;
-                    }
-                }
-
-                if (!anyGuaranteedEntries)
-                    from = localTick;
-            }
-
-            Packer<PackedUInt>.Write(frame, (uint)(localTick - from));
-
-            bool passThrough = timeline.isPassThrough;
-
-            for (ulong tick = from + 1; tick <= localTick; tick++)
+            // Empty ticks still need entries to prove verification; the first tick cannot use repeats.
+            Packer<PackedUInt>.Write(frame, checked((uint)(localTick - baselineTick)));
+            for (ulong tick = baselineTick + 1; tick <= localTick; tick++)
             {
                 var block = GetInputBlockForTick(tick);
-
-                if (passThrough)
+                bool allowRepeat = tick > baselineTick + 1;
+                if (timeline.isPassThrough && allowRepeat)
                 {
-                    var blob = block.guaranteedFramedPacker;
+                    var blob = block.framedPacker;
                     frame.WriteBitsWithoutConsumingIt(blob, blob.positionInBits);
                 }
                 else
                 {
-                    WriteFilteredGuaranteedInputBlock(timeline, tick, in block, frame);
+                    WriteFilteredInputBlock(timeline, tick, in block, frame, allowRepeat);
                 }
             }
-
-            WriteNewestInputBlock(timeline, baselineTick, frame);
         }
 
-        void WriteFilteredGuaranteedInputBlock(
+        bool IsInputEntryVisible(PlayerVisibilityTimeline timeline, in CachedInputEntry entry, ulong tick)
+            => !hierarchy || timeline.isPassThrough || entry.id.objectId.instanceId.value == 1 ||
+               timeline.WasVisibleAt(entry.rootId, tick);
+
+        void WriteFilteredInputBlock(
             PlayerVisibilityTimeline timeline,
             ulong tick,
             in CachedInputBlock block,
-            BitPacker frame)
+            BitPacker frame,
+            bool allowRepeat)
         {
             var entries = block.entries;
             _visibleInputEntryScratch.Clear();
             for (var i = 0; i < entries.Count; i++)
             {
-                if (entries[i].system.requiresGuaranteedInputHistory &&
-                    WasSystemVisibleAt(timeline, entries[i].system, tick))
-                {
+                if (IsInputEntryVisible(timeline, entries[i], tick))
                     _visibleInputEntryScratch.Add(i);
-                }
             }
 
             Packer<PackedUInt>.Write(frame, (uint)_visibleInputEntryScratch.Count);
             for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
             {
-                var entry = entries[_visibleInputEntryScratch[i]];
-                Packer<PredictedComponentID>.Write(frame, entry.system.id);
-                Packer<PackedUInt>.Write(frame, (uint)entry.bitLength);
-                frame.WriteBitDataWithoutConsumingIt(
-                    new BitData(block.packer, entry.bitOrigin, entry.bitLength));
-            }
-        }
-
-        void WriteNewestInputBlock(
-            PlayerVisibilityTimeline timeline,
-            ulong baselineTick,
-            BitPacker frame)
-        {
-            var block = GetInputBlockForTick(localTick);
-            bool passThrough = timeline.isPassThrough;
-
-            var entries = block.entries;
-            _visibleInputEntryScratch.Clear();
-            for (var i = 0; i < entries.Count; i++)
-            {
-                if (entries[i].system.requiresGuaranteedInputHistory)
-                    continue;
-                if (passThrough || WasSystemVisibleAt(timeline, entries[i].system, localTick))
-                    _visibleInputEntryScratch.Add(i);
-            }
-
-            CachedInputBlock refBlock = default;
-            bool hasReference = baselineTick > 0 &&
-                                baselineTick < localTick &&
-                                TryPeekCachedInputBlock(baselineTick, out refBlock);
-
-            Packer<PackedUInt>.Write(frame, (uint)_visibleInputEntryScratch.Count);
-            for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
-            {
-                var entry = entries[_visibleInputEntryScratch[i]];
-                Packer<PredictedComponentID>.Write(frame, entry.system.id);
-
-                bool repeat = false;
-                if (hasReference &&
-                    (passThrough ||
-                     WasSystemVisibleAt(timeline, entry.system, baselineTick)) &&
-                    refBlock.entryIndex.TryGetValue(entry.system, out var refIdx))
-                {
-                    var refEntry = refBlock.entries[refIdx];
-                    repeat = new BitData(block.packer, entry.bitOrigin, entry.bitLength)
-                        .Equals(new BitData(
-                            refBlock.packer,
-                            refEntry.bitOrigin,
-                            refEntry.bitLength));
-                }
-
-                Packer<bool>.Write(frame, repeat);
-                if (repeat)
-                    continue;
-
-                Packer<PackedUInt>.Write(frame, (uint)entry.bitLength);
-                frame.WriteBitDataWithoutConsumingIt(
-                    new BitData(block.packer, entry.bitOrigin, entry.bitLength));
+                int index = _visibleInputEntryScratch[i];
+                var entry = entries[index];
+                // Repeats require that this receiver saw the entry on the previous tick.
+                bool repeat = allowRepeat && entry.repeatsPrevious &&
+                              IsInputEntryVisible(timeline, entry, tick - 1);
+                WriteTranscriptEntry(frame, in block, index, repeat);
             }
         }
 
         readonly HashSet<PredictedComponentID> _recordDecodeQuarantine = new ();
         readonly Dictionary<PredictedComponentID, double> _recordFailureLogAt = new ();
         private bool _frameApplyHadRecordFailure;
+        private bool _frameApplyHadBaselineFailure;
 
         private const double RecordFailureLogIntervalSeconds = 5d;
 
         void OnAddressedRecordFailure(PredictedComponentID id, Exception error, int declaredBits, int consumedBits)
         {
+            // A quarantined roster mismatch may still be ACKed, but cannot establish a baseline floor.
+            _frameApplyHadBaselineFailure = true;
             if (error is PredictedModuleRosterMismatchException)
             {
                 if (_recordDecodeQuarantine.Add(id))
@@ -1194,6 +1106,8 @@ namespace PurrNet.Prediction
             }
 
             _frameApplyHadRecordFailure = true;
+            if (error is MissingPredictionBaselineException)
+                MarkHistoryResyncNeeded(_applyingFrameServerTick);
 
             double now = Time.unscaledTimeAsDouble;
             if (_recordFailureLogAt.TryGetValue(id, out var lastLogged) &&
@@ -1209,7 +1123,9 @@ namespace PurrNet.Prediction
             PurrLogger.LogError(
                 $"Discarded prediction record {id} ({identityName}); it consumed {consumedBits} of its " +
                 $"declared {declaredBits} bits: {error.Message}\n" +
-                "The rest of the frame was applied; the server will answer the stalled ack with a full sync.");
+                (error is MissingPredictionBaselineException
+                    ? "The rest of the frame was applied; a full sync was requested for the missing baseline."
+                    : "The rest of the frame was applied; the server will answer the stalled ack with a full sync."));
         }
 
         void ReadAddressedHierarchy(
@@ -1222,6 +1138,8 @@ namespace PurrNet.Prediction
         {
             bool hasHierarchy = default;
             Packer<bool>.Read(frame, ref hasHierarchy);
+            if (hasHierarchy != (bool)hierarchy)
+                throw new MissingPredictionBaselineException("Required authoritative hierarchy is missing or unexpected.");
             if (!hasHierarchy)
                 return;
 
@@ -1246,6 +1164,8 @@ namespace PurrNet.Prediction
                         !deferUnityApply);
                 },
                 onRecordFailure: OnAddressedRecordFailure);
+            if (_frameApplyHadBaselineFailure)
+                throw new MissingPredictionBaselineException("Required authoritative hierarchy could not be decoded.");
         }
 
         void ReadAddressedStateSection(
@@ -1344,7 +1264,7 @@ namespace PurrNet.Prediction
         {
             if (!system.RunCanReadUnchangedState(baselineTick))
             {
-                throw new InvalidOperationException(
+                throw new MissingPredictionBaselineException(
                     $"Missing acknowledged state baseline for omitted record {system.id} " +
                     $"at tick {baselineTick}.");
             }
@@ -1365,14 +1285,13 @@ namespace PurrNet.Prediction
 
         void ReadAddressedFirstInputSection(BitPacker frame, ulong inputTick)
         {
-            ResetNewestInputSlot(inputTick);
+            BeginVerifiedInputTranscript(inputTick, inputTick);
+            BeginVerifiedInputTick();
             AddressedPredictionRecords.ReadSection(
                 source: frame,
                 readRecord: (id, _, payload, payloadBitCount) =>
                 {
-                    AppendNewestInputEntry(inputTick, id, payload, 0, payloadBitCount);
-                    if (_instanceMap.TryGetValue(id, out var system) && system.hasInput)
-                        system.ReadFirstInput(inputTick, payload);
+                    StageVerifiedInput(inputTick, id, payload, 0, payloadBitCount);
                 },
                 onRecordFailure: OnAddressedRecordFailure);
         }
@@ -1401,6 +1320,13 @@ namespace PurrNet.Prediction
                     system.lastVerifiedTick = stateTick;
                 }
                 return;
+            }
+
+            // New modules may decode from default after topology is installed; this baseline check is for identities.
+            if (baselineTick > 0 && !system.HasUnchangedStateBaseline(baselineTick))
+            {
+                throw new MissingPredictionBaselineException(
+                    $"Missing acknowledged state baseline for record {system.id} at tick {baselineTick}.");
             }
 
             bool softCorrected = system.UsesSoftCorrectionTimeline();

@@ -108,11 +108,8 @@ namespace PurrNet.Prediction
         }
 
         /// <summary>
-        /// Drops the pool's claim on a piece id that has been materialized live from somewhere
-        /// else - a fuzzy fallback that returned a different tree, or a fresh instantiate. The
-        /// GameObject stays owned by its entry so it is still torn down with it; only the id
-        /// lookup is relinquished, so the pool can never hand out a stale instance for an id
-        /// that is already live.
+        /// Releases the id lookup after a piece materializes elsewhere, preventing stale reuse.
+        /// The entry retains ownership of its GameObject for cleanup.
         /// </summary>
         public void ReleaseClaim(PredictedObjectID id)
         {
@@ -140,6 +137,22 @@ namespace PurrNet.Prediction
             {
                 rootGo = null;
                 foundButDrifted = true;
+                return false;
+            }
+
+            RemoveEntry(entry);
+            resultPieces.AddRange(entry.pieces);
+            rootGo = entry.rootGo;
+            return true;
+        }
+
+        public bool TryTakeExactCompleteTree(PredictedObjectID rootPieceId, PackedInt prefabId,
+            List<PooledPiece> resultPieces, out GameObject rootGo)
+        {
+            if (!_byPieceId.TryGetValue(rootPieceId, out var entry) ||
+                !entry.rootPieceId.Equals(rootPieceId) || entry.prefabId != prefabId || !entry.isComplete)
+            {
+                rootGo = null;
                 return false;
             }
 

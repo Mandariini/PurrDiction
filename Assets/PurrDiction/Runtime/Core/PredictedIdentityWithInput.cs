@@ -248,7 +248,6 @@ namespace PurrNet.Prediction
         /// Sanitize the input before using it.
         /// Use this to clamp values or prevent invalid input.
         /// </summary>
-        /// <param name="input"></param>
         protected virtual void SanitizeInput(ref INPUT input) { }
 
         internal override void QueueInput(BitPacker packer, PlayerID sender)

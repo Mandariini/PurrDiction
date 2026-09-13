@@ -129,7 +129,6 @@ namespace Purrdiction.Codegen
                         if (inst.Operand is Instruction target && replacementMap.TryGetValue(target, out var newTarget))
                             inst.Operand = newTarget;
 
-                        // Handle switch statements
                         if (inst.Operand is Instruction[] targets)
                         {
                             for (int j = 0; j < targets.Length; j++)
@@ -141,10 +140,8 @@ namespace Purrdiction.Codegen
                         }
                     }
 
-                    // Cecil writes a short branch operand as a truncated sbyte and never widens it. Every rewrite above
-                    // grows the body (ldc.r4 -> ldc.i8 + FromRaw call), so a short branch spanning the rewritten code can
-                    // overflow. Instruction.Offset is stale until the next write, so measuring the distance here is
-                    // unreliable: widen every short branch in a body we touched instead (a few bytes per branch).
+                    // Rewrites can overflow short branches; Cecil neither widens them nor refreshes offsets until writing.
+                    // Widen every short branch in a changed body instead of measuring stale offsets.
                     if (replacementMap.Count > 0)
                         WidenShortBranches(method.Body);
                 }

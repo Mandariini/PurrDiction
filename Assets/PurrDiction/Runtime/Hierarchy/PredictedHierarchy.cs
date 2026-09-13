@@ -17,6 +17,8 @@ namespace PurrNet.Prediction
         readonly Dictionary<int, PiecePrototype> _prototypes = new ();
         readonly PredictedPiecePool _pool = new ();
 
+        internal bool ContainsPooledObject(PredictedObjectID id) => _pool.Contains(id);
+
         readonly Dictionary<PredictedObjectID, int> _targetIdsScratch = new ();
         readonly List<InstanceDetails> _removalScratch = new ();
         readonly HashSet<PredictedObjectID> _removalSetScratch = new ();
@@ -164,6 +166,13 @@ namespace PurrNet.Prediction
 
         internal bool WasMaterializedByVerifiedApply(PredictedObjectID id)
             => _verifiedApplyEntrants.Contains(id);
+
+        internal void ApplyHistoricalTopology(in PredictedHierarchyState state)
+        {
+            currentState.Dispose();
+            currentState = state.Duplicate();
+            SetUnityState(currentState);
+        }
 
         protected override void SetUnityState(PredictedHierarchyState state)
         {
@@ -674,7 +683,9 @@ namespace PurrNet.Prediction
             {
                 if (!_pool.TryTakeTree(rootRecord.instanceId, prefabId, rootRecord.spawnPosition, prefabId >= 0, _takenPiecesScratch, out rootGo, out var drifted))
                 {
-                    if (drifted || prefabId < 0)
+                    bool reusedExactTree = drifted && _pool.TryTakeExactCompleteTree(
+                        rootRecord.instanceId, prefabId, _takenPiecesScratch, out rootGo);
+                    if (!reusedExactTree && (drifted || prefabId < 0))
                         _pool.TryTakeNearestCompleteTree(prefabId, rootRecord.spawnPosition, _takenPiecesScratch, out rootGo);
                 }
 
@@ -821,9 +832,8 @@ namespace PurrNet.Prediction
                 if (_instanceMap.Remove(record.instanceId, out var other))
                     PurrLogger.LogError($"Duplicate instance ID {record.instanceId} for prefab {prefabId}. Existing GameObject: `{other.name}`, New GameObject: `{pieceGo.name}`", other);
 
-                // This id is now live. Any pool entry still claiming it was bypassed (fuzzy
-                // fallback served a different tree, or this piece was instantiated fresh), so
-                // relinquish the claim rather than let the pool resurrect a stale duplicate.
+                // Fuzzy fallback or fresh instantiation may bypass a pool claim for this live id.
+                // Release it to prevent the pool from resurrecting a duplicate.
                 _pool.ReleaseClaim(record.instanceId);
 
                 _instanceMap[record.instanceId] = pieceGo;
@@ -1362,8 +1372,7 @@ namespace PurrNet.Prediction
         }
 
         /// <summary>
-        /// True when both pieces belong to the same spawn instance. Replaces
-        /// id.objectId equality checks from before pieces had their own ids.
+        /// True when both pieces belong to the same spawn instance.
         /// </summary>
         public bool SameInstance(PredictedObjectID a, PredictedObjectID b)
         {

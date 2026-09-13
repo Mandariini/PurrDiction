@@ -160,6 +160,9 @@ namespace PurrNet.Prediction
 
         public void RegisterEvent(PhysicsEventType type, PredictedRigidbody2D caller, Collision2D other)
         {
+            if (predictionManager && predictionManager.isVerifiedAndReplaying)
+                return;
+
             if (PredictionManager.TryGetClosestPredictedID(other.gameObject, out var otherId))
             {
                 var state = currentState;
@@ -184,6 +187,9 @@ namespace PurrNet.Prediction
 
         public void RegisterEvent(PhysicsEventType type, PredictedRigidbody2D caller, Collider2D other)
         {
+            if (predictionManager && predictionManager.isVerifiedAndReplaying)
+                return;
+
             if (PredictionManager.TryGetClosestPredictedID(other.gameObject, out var otherId))
             {
                 var state = currentState;

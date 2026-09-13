@@ -70,7 +70,6 @@ namespace PurrNet.Prediction.Editor
                             }
                             catch
                             {
-                                // ignored
                             }
 
                             maxIterations--;

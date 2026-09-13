@@ -58,6 +58,7 @@ namespace PurrNet.Prediction
             _interpolatedState?.Teleport(default);
             _stateHistory?.Clear();
             _verifiedHistory = null;
+            _liveVerifiedThroughTick = 0;
 
             fullPredictedState.Dispose();
             fullPredictedState = default;
@@ -107,6 +108,7 @@ namespace PurrNet.Prediction
             base.Setup(manager, world, id, owner);
 
             tickModule = manager.tickModule;
+            _liveVerifiedThroughTick = 0;
 
             if (tickModule == null)
                 return;
@@ -184,7 +186,6 @@ namespace PurrNet.Prediction
             if (LatestHistoryMatches(tick, ref fullPredictedState))
                 return;
 
-            lastChangedStateTick = tick;
             _stateHistory.Write(tick, fullPredictedState.DeepCopy());
         }
 
@@ -203,15 +204,9 @@ namespace PurrNet.Prediction
             return last.HasSameContents(ref state);
         }
 
-        private void WriteOwnedStateIfChanged(ulong tick, ref FULL_STATE<STATE> state)
+        private void WriteOwnedAuthoritativeState(ulong tick, in FULL_STATE<STATE> state)
         {
-            if (LatestHistoryMatches(tick, ref state))
-            {
-                state.Dispose();
-                state = default;
-                return;
-            }
-
+            _stateHistory.PruneByTickWindow(tick);
             _stateHistory.Write(tick, state);
         }
 
@@ -299,12 +294,19 @@ namespace PurrNet.Prediction
             Packer<STATE>.Write(packer, fullPredictedState.state);
         }
 
+        // All receivers read the same pre-simulation value, so compare and store it once per tick.
+        private ulong _liveVerifiedThroughTick;
+
         internal void RefreshVerifiedFromLive(ulong tick)
         {
             if (_verifiedHistory.Count > 0 && _verifiedHistory.MostRecentTick >= tick)
                 return;
 
+            if (_liveVerifiedThroughTick == tick)
+                return;
+
             StoreVerified(tick, ref fullPredictedState);
+            _liveVerifiedThroughTick = tick;
         }
 
         internal bool TryGetVerifiedState(
@@ -324,6 +326,19 @@ namespace PurrNet.Prediction
             return false;
         }
 
+        // Events belong to one tick; substituting an older batch would replay its callbacks.
+        internal bool TryGetExactVerifiedState(ulong tick, out STATE state)
+        {
+            if (_verifiedHistory != null && _verifiedHistory.TryGet(tick, out var snapshot))
+            {
+                state = snapshot.state;
+                return true;
+            }
+
+            state = default;
+            return false;
+        }
+
         internal bool RestoreVerifiedState(ulong tick)
         {
             if (_verifiedHistory == null ||
@@ -333,7 +348,7 @@ namespace PurrNet.Prediction
             }
 
             var copy = verified.DeepCopy();
-            WriteOwnedStateIfChanged(tick, ref copy);
+            WriteOwnedAuthoritativeState(tick, copy);
             Rollback(tick);
             return true;
         }
@@ -412,8 +427,8 @@ namespace PurrNet.Prediction
                 state = state,
                 prediction = prediction
             };
-            StoreVerified(serverTick, ref newState);
-            WriteOwnedStateIfChanged(tick, ref newState);
+            StoreReceivedVerified(serverTick, ref newState);
+            WriteOwnedAuthoritativeState(tick, newState);
         }
 
         internal override bool WriteCurrentState(PlayerID target, BitPacker packer, ulong baselineTick)
@@ -482,13 +497,14 @@ namespace PurrNet.Prediction
                 newState = baseline.DeepCopy();
             }
 
-            ApplyVerifiedState(tick, serverTick, ref newState);
+            ApplyVerifiedState(tick, serverTick, ref newState, changed ? null : baselineTick);
             TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
         }
 
-        private void ApplyVerifiedState(ulong tick, ulong serverTick, ref FULL_STATE<STATE> newState)
+        private void ApplyVerifiedState(ulong tick, ulong serverTick, ref FULL_STATE<STATE> newState,
+            ulong? unchangedBaselineTick = null)
         {
-            StoreVerified(serverTick, ref newState);
+            StoreReceivedVerified(serverTick, ref newState, unchangedBaselineTick);
 
             if (UsesSoftCorrectionTimeline())
             {
@@ -507,7 +523,8 @@ namespace PurrNet.Prediction
                 }
             }
 
-            WriteOwnedStateIfChanged(tick, ref newState);
+            // Ownership transfers to the replay history.
+            WriteOwnedAuthoritativeState(tick, newState);
         }
 
         internal override bool HasUnchangedStateBaseline(ulong baselineTick)
@@ -527,22 +544,34 @@ namespace PurrNet.Prediction
             }
 
             var newState = baseline.DeepCopy();
-            ApplyVerifiedState(tick, serverTick, ref newState);
+            ApplyVerifiedState(tick, serverTick, ref newState, baselineTick);
         }
 
-        private void StoreVerified(ulong serverTick, ref FULL_STATE<STATE> state)
+        private void PruneVerifiedHistory(ulong serverTick)
         {
             _verifiedHistory.PruneByTickWindow(serverTick);
-
-            int lastIndex = _verifiedHistory.Count - 1;
-            if (lastIndex >= 0 && _verifiedHistory.GetEntryTick(lastIndex) <= serverTick)
+            if (isEventHandler && serverTick > predictionManager.verifiedHistoryWindowTicks)
             {
-                var latest = _verifiedHistory[lastIndex];
-                if (latest.HasSameContents(ref state))
-                    return;
+                // Retain the oldest usable baseline until event deltas require a full frame.
+                _verifiedHistory.PruneBeforeBaseline(
+                    serverTick - predictionManager.verifiedHistoryWindowTicks, int.MaxValue);
             }
+        }
 
-            _verifiedHistory.Write(serverTick, state.DeepCopy());
+        // Full and delta recipients must share one exact baseline per tick.
+        // Equal event lists still need separate ticks, including repeated Stay callbacks.
+        private void StoreVerified(ulong serverTick, ref FULL_STATE<STATE> state)
+        {
+            PruneVerifiedHistory(serverTick);
+            VerifiedStateStore<FULL_STATE<STATE>>.StoreLive(_verifiedHistory, serverTick, ref state, !isEventHandler);
+        }
+
+        private void StoreReceivedVerified(ulong serverTick, ref FULL_STATE<STATE> state,
+            ulong? unchangedBaselineTick = null)
+        {
+            PruneVerifiedHistory(serverTick);
+            VerifiedStateStore<FULL_STATE<STATE>>.StoreReceived(
+                _verifiedHistory, serverTick, ref state, unchangedBaselineTick, !isEventHandler);
         }
 
         protected virtual void OnVerifiedStateReceived(ulong tick, in STATE predicted, in STATE verified) { }

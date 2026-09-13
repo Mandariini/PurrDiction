@@ -36,18 +36,7 @@ namespace PurrNet.Prediction
         {
             PredictedIdentityState prediction = default;
             ReadPredictionMetadata(packer, baselineTick, serverTick, ref prediction);
-
-            if (_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
-            {
-                var verified = stateAtTick.DeepCopy();
-                verified.prediction = prediction;
-                WriteOwnedStateIfChanged(tick, ref verified);
-            }
-            else
-            {
-                fullPredictedState.prediction = prediction;
-                SetOwner(prediction.owner);
-            }
+            ApplyPredictionMetadataAtTick(tick, in prediction);
         }
 
         internal override bool HasUnchangedStateBaseline(ulong baselineTick)
@@ -65,12 +54,24 @@ namespace PurrNet.Prediction
             }
 
             StoreVerifiedMetadata(serverTick, in prediction);
+            ApplyPredictionMetadataAtTick(tick, in prediction);
+        }
 
-            if (_stateHistory.ReadOrPrevious(tick, out var stateAtTick))
+        private void ApplyPredictionMetadataAtTick(ulong tick, in PredictedIdentityState prediction)
+        {
+            _stateHistory.PruneByTickWindow(tick);
+
+            if (_stateHistory.Find(tick, out int index))
             {
-                var verified = stateAtTick.DeepCopy();
+                var snapshot = _stateHistory[index];
+                snapshot.prediction = prediction;
+                _stateHistory[index] = snapshot;
+            }
+            else if (index > 0)
+            {
+                var verified = _stateHistory[index - 1].DeepCopy();
                 verified.prediction = prediction;
-                WriteOwnedStateIfChanged(tick, ref verified);
+                _stateHistory.Write(tick, verified);
             }
             else
             {
@@ -254,33 +255,6 @@ namespace PurrNet.Prediction
             _stateHistory.Write(tick, fullPredictedState.DeepCopy());
         }
 
-        private bool LatestHistoryMatches(ulong tick, ref FULL_STATE<STATE> state)
-        {
-            if (_stateHistory == null || _stateHistory.Count <= 0)
-                return false;
-
-            _stateHistory.PruneByTickWindow(tick);
-
-            int lastIndex = _stateHistory.Count - 1;
-            if (_stateHistory.GetEntryTick(lastIndex) > tick)
-                return false;
-
-            var last = _stateHistory[lastIndex];
-            return last.HasSameContents(ref state);
-        }
-
-        private void WriteOwnedStateIfChanged(ulong tick, ref FULL_STATE<STATE> state)
-        {
-            if (LatestHistoryMatches(tick, ref state))
-            {
-                state.Dispose();
-                state = default;
-                return;
-            }
-
-            _stateHistory.Write(tick, state);
-        }
-
         FULL_STATE<STATE>? _viewState;
 
         public override void UpdateRollbackInterpolationState(float delta, bool accumulateError)
@@ -344,7 +318,8 @@ namespace PurrNet.Prediction
                 state = state,
                 prediction = prediction
             };
-            WriteOwnedStateIfChanged(tick, ref newState);
+            _stateHistory.PruneByTickWindow(tick);
+            _stateHistory.Write(tick, newState);
         }
 
         internal override void QueueInput(BitPacker packer, PlayerID sender) { }

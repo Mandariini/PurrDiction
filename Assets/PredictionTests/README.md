@@ -111,10 +111,10 @@ The active Editor `ReplayDriftChurnTests` also replays three spawns at drifting 
 five rounds before pool retirement. It requires exactly three prefab clones and checks that
 each logical identity retains its complete tree while its new spawn pose resets prediction state.
 
-Authoritative-state regressions check that small corrections survive generated approximate
-equality, and that full and delta recipients agree on the exact baseline for subsequent deltas.
-Sender omission confirms serialized equality for managed states that compare equal; received
-authority replaces speculative history. Protocol-confirmed unchanged baselines remain sparse.
+Authoritative-state regressions check that generated equality detects tiny corrections without
+serializing, and that full and delta recipients agree on the exact baseline for subsequent deltas.
+Sender omission and verified-store anchoring share that one comparison; received authority
+replaces speculative history. Protocol-confirmed unchanged baselines remain sparse.
 
 Verified client callback failures reject the incomplete frame and retain the previous ACK.
 Recovery tests inject failures in input preparation, simulation, physics hooks, late simulation,

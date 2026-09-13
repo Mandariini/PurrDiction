@@ -194,8 +194,6 @@ namespace PurrNet.Prediction
             return _inputHistory != null && _inputHistory.TryGet(tick, out _);
         }
 
-        internal override bool requiresGuaranteedInputHistory => true;
-
         public override void WriteFirstInput(ulong localTick, BitPacker packer)
         {
             int pos = packer.positionInBits;
@@ -230,7 +228,6 @@ namespace PurrNet.Prediction
         /// Sanitize the input before using it.
         /// Use this to clamp values or prevent invalid input.
         /// </summary>
-        /// <param name="input"></param>
         protected virtual void SanitizeInput(ref INPUT input) { }
 
         internal override void QueueInput(BitPacker packer, PlayerID sender)

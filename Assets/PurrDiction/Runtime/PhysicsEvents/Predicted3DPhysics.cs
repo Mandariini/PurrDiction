@@ -98,6 +98,9 @@ namespace PurrNet.Prediction
 
         public void RegisterControllerColliderHit(PredictedIdentity caller, ControllerColliderHit hit)
         {
+            if (predictionManager && predictionManager.isVerifiedAndReplaying)
+                return;
+
             if (hit == null || !PredictionManager.TryGetClosestPredictedID(hit.gameObject, out var otherId))
                 return;
 
@@ -118,6 +121,9 @@ namespace PurrNet.Prediction
 
         public void RegisterEvent(PhysicsEventType type, PredictedIdentity caller, Collision other)
         {
+            if (predictionManager && predictionManager.isVerifiedAndReplaying)
+                return;
+
             if (PredictionManager.TryGetClosestPredictedID(other.gameObject, out var otherId))
             {
                 var state = currentState;
@@ -147,6 +153,9 @@ namespace PurrNet.Prediction
 
         public void RegisterEvent(PhysicsEventType type, PredictedIdentity caller, Collider other)
         {
+            if (predictionManager && predictionManager.isVerifiedAndReplaying)
+                return;
+
             if (PredictionManager.TryGetClosestPredictedID(other.gameObject, out var otherId))
             {
                 var state = currentState;
@@ -180,6 +189,9 @@ namespace PurrNet.Prediction
         public void RegisterEvent(PhysicsEventType type, PredictedIdentity caller, GameObject other, bool isTrigger,
             Vector3 contactPoint = default, Vector3 contactNormal = default, Vector3 relativeVelocity = default)
         {
+            if (predictionManager && predictionManager.isVerifiedAndReplaying)
+                return;
+
             if (!PredictionManager.TryGetClosestPredictedID(other, out var otherId))
                 return;
 

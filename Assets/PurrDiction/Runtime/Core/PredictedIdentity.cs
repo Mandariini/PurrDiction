@@ -679,8 +679,6 @@ namespace PurrNet.Prediction
 
         public SceneID sceneId { get; private set; }
 
-        internal ulong lastChangedStateTick;
-
         internal virtual void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
             isServer = manager.isServer;
@@ -688,7 +686,6 @@ namespace PurrNet.Prediction
             _destroyedFired = false;
             predictionManager = world;
             sceneId = world.sceneId;
-            lastChangedStateTick = world.localTick + 1;
             _metadataVerified = null;
             _moduleSetVerified = null;
             SetOwner(owner, false);
@@ -885,8 +882,6 @@ namespace PurrNet.Prediction
         internal abstract void ClearFuture(ulong stateTick);
 
         internal virtual bool HasInputAt(ulong tick) => false;
-
-        internal virtual bool requiresGuaranteedInputHistory => false;
 
         internal DesyncPolicy resolvedDesyncPolicy = DesyncPolicy.Ignore;
 

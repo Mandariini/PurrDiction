@@ -489,11 +489,8 @@ namespace PurrNet.Prediction
                 ApplyDynamicHashList(target);
         }
 
-        /// <summary>
-        /// Presents the authoritative topology while a soft-correction delta is decoded without
-        /// disposing modules that were created later on the live timeline. ReadModules restores
-        /// the live list after consuming the authoritative module payload.
-        /// </summary>
+        // Borrow the authoritative topology for decoding without disposing later live modules.
+        // ReadModules restores the live list after consuming the payload.
         internal void BeginSoftCorrectionDynamicModuleRead(ulong tick, DisposableList<uint> target)
         {
             EndSoftCorrectionDynamicModuleRead();

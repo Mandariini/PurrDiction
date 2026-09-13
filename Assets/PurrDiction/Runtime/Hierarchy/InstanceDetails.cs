@@ -40,12 +40,24 @@ namespace PurrNet.Prediction
 
         public bool Equals(InstanceDetails other)
         {
-            return prefabId == other.prefabId && pieceIndex.value == other.pieceIndex.value &&
+            // Topology baselines must preserve float bits and the owner's bot flag.
+            return prefabId.value == other.prefabId.value && pieceIndex.value == other.pieceIndex.value &&
                    instanceId.Equals(other.instanceId) &&
-                   spawnPosition.Equals(other.spawnPosition) &&
-                   spawnRotation.Equals(other.spawnRotation) && owner == other.owner &&
-                   Nullable.Equals(parent, other.parent);
+                   SameOwner(owner, other.owner) && Nullable.Equals(parent, other.parent) &&
+                   Bits(spawnPosition.x) == Bits(other.spawnPosition.x) &&
+                   Bits(spawnPosition.y) == Bits(other.spawnPosition.y) &&
+                   Bits(spawnPosition.z) == Bits(other.spawnPosition.z) &&
+                   Bits(spawnRotation.x) == Bits(other.spawnRotation.x) &&
+                   Bits(spawnRotation.y) == Bits(other.spawnRotation.y) &&
+                   Bits(spawnRotation.z) == Bits(other.spawnRotation.z) &&
+                   Bits(spawnRotation.w) == Bits(other.spawnRotation.w);
         }
+
+        private static bool SameOwner(PlayerID? a, PlayerID? b)
+            => a.HasValue == b.HasValue && (!a.HasValue ||
+                a.Value.id.value == b.Value.id.value && a.Value.isBot == b.Value.isBot);
+
+        private static int Bits(float value) => BitConverter.SingleToInt32Bits(value);
 
         public override bool Equals(object obj)
         {

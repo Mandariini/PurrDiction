@@ -549,7 +549,7 @@ namespace PurrNet.Prediction
 
             set
             {
-                //setting linearVelocity on static Rigidbody2D logs a warning.
+                // Unity warns when velocity is assigned to a static body.
                 if (_rigidbody.bodyType == RigidbodyType2D.Static)
                     return;
 
@@ -572,7 +572,7 @@ namespace PurrNet.Prediction
             get => _rigidbody.angularVelocity;
             set
             {
-                //setting angularVelocity on static Rigidbody2D logs a warning.
+                // Unity warns when velocity is assigned to a static body.
                 if (_rigidbody.bodyType == RigidbodyType2D.Static)
                     return;
 
