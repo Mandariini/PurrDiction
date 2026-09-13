@@ -53,7 +53,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 FinalizeInput(client, probe);
                 var cached = GetCachedPayload(client, out var firstTick, out var tickCount);
                 Assert.That(firstTick, Is.EqualTo(36UL),
-                    "without guaranteed systems the window must start at the redundancy cap");
+                    "the upload window must start at the redundancy cap");
                 Assert.That(tickCount, Is.EqualTo(5U));
 
                 var parsed = ParseUpload(cached, tickCount);
@@ -153,8 +153,9 @@ namespace PurrNet.Prediction.Tests.Editor
             }
         }
 
-        [Test]
-        public void GuaranteedTranscriptExtendsBelowTheCapAndReentersWithFullPayload()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BothIdentityKindsUseTheSameUploadWindowAndReenterWithFullPayload(bool constantIsDeterministic)
         {
             var clientObject = new GameObject("Mixed upload client");
             var serverObject = new GameObject("Mixed upload server");
@@ -166,77 +167,72 @@ namespace PurrNet.Prediction.Tests.Editor
                 SetLocalTick(client, 40);
                 SetInputAckTick(client, 20);
 
-                var deterministic =
-                    deterministicObject.AddComponent<DeterministicInputProbe>();
-                var deterministicId =
-                    new PredictedComponentID(new PredictedObjectID(720), 0);
+                var deterministic = deterministicObject.AddComponent<DeterministicInputProbe>();
+                var deterministicId = new PredictedComponentID(new PredictedObjectID(720), 0);
                 AttachIdentity(deterministic, client, deterministicId);
-                SeedInputs(
-                    deterministic,
-                    typeof(DeterministicIdentity<TrackedInput, EmptyState>),
-                    21,
-                    40,
-                    tick => 1000 + (int)tick);
+                SeedInputs(deterministic, typeof(DeterministicIdentity<TrackedInput, EmptyState>),
+                    21, 40, tick => constantIsDeterministic ? 5 : 1000 + (int)tick);
 
                 var stateful = statefulObject.AddComponent<StatefulInputProbe>();
                 var statefulId = new PredictedComponentID(new PredictedObjectID(721), 0);
                 AttachIdentity(stateful, client, statefulId);
-                SeedInputs(
-                    stateful,
-                    typeof(PredictedIdentity<TrackedInput, EmptyState>),
-                    21,
-                    40,
-                    _ => 5);
+                SeedInputs(stateful, typeof(PredictedIdentity<TrackedInput, EmptyState>),
+                    21, 40, tick => constantIsDeterministic ? 1000 + (int)tick : 5);
+
+                PredictedIdentity constant = constantIsDeterministic ? deterministic : stateful;
+                var constantType = constantIsDeterministic
+                    ? typeof(DeterministicIdentity<TrackedInput, EmptyState>)
+                    : typeof(PredictedIdentity<TrackedInput, EmptyState>);
+                var constantId = constant.id;
+                var changingId = constantIsDeterministic ? statefulId : deterministicId;
+                GetField<History<TrackedInput>>(constantType, constant, "_inputHistory").Remove(38);
 
                 FinalizeInput(client, deterministic, stateful);
                 var cached = GetCachedPayload(client, out var firstTick, out var tickCount);
-                Assert.That(firstTick, Is.EqualTo(21UL),
-                    "a guaranteed-history system must keep the window at the ack frontier");
-                Assert.That(tickCount, Is.EqualTo(20U));
-
+                Assert.That(firstTick, Is.EqualTo(36UL),
+                    "both identity kinds use the same bounded upload redundancy despite an older ACK");
+                Assert.That(tickCount, Is.EqualTo(5U));
                 var parsed = ParseUpload(cached, tickCount);
-                for (var i = 0; i < 15; i++)
+                for (var i = 0; i < 5; i++)
                 {
-                    Assert.That(parsed[i].entries.Count, Is.EqualTo(1),
-                        $"tick {21 + i} below the cap must carry only the guaranteed system");
-                    Assert.That(parsed[i].entries[0].id, Is.EqualTo(deterministicId));
-                    Assert.That(parsed[i].entries[0].repeat, Is.False);
-                }
-
-                for (var i = 15; i < 20; i++)
                     Assert.That(parsed[i].entries.Count, Is.EqualTo(2));
-
-                // The stateful payload is constant across the window, so only its absence
-                // from the tick-35 block can force the full payload here.
-                Assert.That(FindEntry(parsed[15], statefulId).repeat, Is.False,
-                    "a system absent from the previous tick must never repeat into it");
-                for (var i = 16; i < 20; i++)
-                    Assert.That(FindEntry(parsed[i], statefulId).repeat, Is.True);
+                    Assert.That(FindEntry(parsed[i], changingId).repeat, Is.False);
+                }
+                Assert.That(FindEntry(parsed[0], constantId).repeat, Is.False);
+                Assert.That(FindEntry(parsed[1], constantId).repeat, Is.True);
+                Assert.That(FindEntry(parsed[2], constantId).repeat, Is.False,
+                    "the explicit absence at tick 38 differs from the preceding input");
+                Assert.That(FindEntry(parsed[3], constantId).repeat, Is.False,
+                    "an available input must be sent in full when the previous tick had none");
+                Assert.That(FindEntry(parsed[4], constantId).repeat, Is.True);
 
                 var server = CreateManager(serverObject);
                 SetLocalTick(server, 2);
                 var sender = new PlayerID(9, false);
                 Deliver(server, firstTick, tickCount, CopyForRead(cached), sender);
-
                 var queue = GetQueue(server, sender);
-                Assert.That(queue.byTick.Count, Is.EqualTo(20));
-                for (ulong tick = 21; tick <= 35; tick++)
-                {
-                    var decoded = DecodeSlice(queue.byTick[tick]);
-                    Assert.That(decoded.Count, Is.EqualTo(1));
-                    Assert.That(decoded[0].id, Is.EqualTo(deterministicId));
-                    Assert.That(decoded[0].value, Is.EqualTo(1000 + (int)tick));
-                }
-
+                Assert.That(queue.byTick.Count, Is.EqualTo(5));
+                Assert.That(queue.byTick.ContainsKey(35), Is.False,
+                    "neither identity may extend upload retention below the common window");
                 for (ulong tick = 36; tick <= 40; tick++)
                 {
                     var decoded = DecodeSlice(queue.byTick[tick]);
                     Assert.That(decoded.Count, Is.EqualTo(2));
-                    Assert.That(decoded[0].id, Is.EqualTo(deterministicId));
-                    Assert.That(decoded[0].value, Is.EqualTo(1000 + (int)tick));
-                    Assert.That(decoded[1].id, Is.EqualTo(statefulId));
-                    Assert.That(decoded[1].hasInput, Is.True);
-                    Assert.That(decoded[1].value, Is.EqualTo(5));
+                    foreach (var entry in decoded)
+                    {
+                        if (entry.id.Equals(constantId))
+                        {
+                            Assert.That(entry.hasInput, Is.EqualTo(tick != 38), $"tick {tick}");
+                            if (tick != 38)
+                                Assert.That(entry.value, Is.EqualTo(5), $"tick {tick}");
+                        }
+                        else
+                        {
+                            Assert.That(entry.id, Is.EqualTo(changingId));
+                            Assert.That(entry.hasInput, Is.True);
+                            Assert.That(entry.value, Is.EqualTo(1000 + (int)tick));
+                        }
+                    }
                 }
             }
             finally

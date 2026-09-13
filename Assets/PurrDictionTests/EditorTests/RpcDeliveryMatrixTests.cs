@@ -53,6 +53,13 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void MissingBaselineRequestUsesReliableDelivery()
+        {
+            var rpc = FindSingleRpc("RequestHistoryResync", typeof(ServerRpcAttribute));
+            Assert.That(ChannelOf(rpc), Is.EqualTo(Channel.ReliableOrdered));
+        }
+
+        [Test]
         public void DesyncReportUploadIsAnUnreliableServerRpc()
         {
             var rpc = FindSingleRpc("SendDesyncReportToServer", typeof(ServerRpcAttribute));

@@ -11,7 +11,7 @@ using Object = UnityEngine.Object;
 
 namespace PurrNet.Prediction.Tests.Editor
 {
-    public sealed class GuaranteedRosterCounterTests
+    public sealed class InputHistoryRosterTests
     {
         private const BindingFlags Members =
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -24,6 +24,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Hasher.PrepareType(typeof(EmptyState));
             Hasher.PrepareType(typeof(StatefulInputProbe));
             Hasher.PrepareType(typeof(DeterministicInputProbe));
+            Hasher.PrepareType(typeof(NoInputHistoryProbe));
             Packer<TrackedInput>.RegisterWriter(
                 (packer, value) => Packer<int>.Write(packer, value.id));
             Packer<TrackedInput>.RegisterReader(
@@ -32,7 +33,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void RandomizedRegistrationKeepsGuaranteedCounterInLockstepWithRoster()
+        public void RegistrationTracksAllInputBearingIdentitiesAcrossDuplicateIdsAndRemoval()
         {
             var networkObject = new GameObject("Roster fuzz network");
             var managerObject = new GameObject("Roster fuzz manager");
@@ -42,9 +43,6 @@ namespace PurrNet.Prediction.Tests.Editor
                 var networkManager = networkObject.AddComponent<NetworkManager>();
                 var manager =
                     CreateSpawnedPredictionManager(managerObject, networkManager);
-                var guaranteedProperty = typeof(PredictedIdentity).GetProperty(
-                    "requiresGuaranteedInputHistory", Members);
-                Assert.That(guaranteedProperty, Is.Not.Null);
                 var systems = GetField<List<PredictedIdentity>>(
                     typeof(PredictionManager), manager, "_systems");
 
@@ -52,32 +50,34 @@ namespace PurrNet.Prediction.Tests.Editor
                 var objectIds = new List<PredictedObjectID>();
                 var registerable = new List<bool>();
 
-                void AddSlot(bool deterministic, uint objectId, bool canRegister)
+                void AddSlot(int kind, uint objectId, bool canRegister)
                 {
                     var slotObject = new GameObject($"Roster slot {slotObjects.Count}");
                     slotObjects.Add(slotObject);
-                    identities.Add(deterministic
-                        ? slotObject.AddComponent<DeterministicInputProbe>()
-                        : (PredictedIdentity)slotObject.AddComponent<StatefulInputProbe>());
+                    identities.Add(kind == 1 ? slotObject.AddComponent<DeterministicInputProbe>()
+                        : kind == 0 ? (PredictedIdentity)slotObject.AddComponent<StatefulInputProbe>()
+                        : slotObject.AddComponent<NoInputHistoryProbe>());
                     objectIds.Add(new PredictedObjectID(objectId));
                     registerable.Add(canRegister);
                 }
 
-                AddSlot(true, 600, true);
-                AddSlot(true, 601, true);
-                AddSlot(false, 602, true);
-                AddSlot(false, 603, true);
-                AddSlot(true, 600, true);
-                AddSlot(false, 602, true);
-                AddSlot(true, 606, false);
-                AddSlot(false, 607, false);
+                AddSlot(1, 600, true);
+                AddSlot(1, 601, true);
+                AddSlot(0, 602, true);
+                AddSlot(0, 603, true);
+                AddSlot(1, 600, true);
+                AddSlot(0, 602, true);
+                AddSlot(1, 606, false);
+                AddSlot(0, 607, false);
+                AddSlot(2, 608, true);
+                AddSlot(2, 609, false);
 
-                int RecountGuaranteed()
+                int RecountInputs()
                 {
                     var count = 0;
                     for (var i = 0; i < systems.Count; i++)
                     {
-                        if ((bool)guaranteedProperty.GetValue(systems[i]))
+                        if (systems[i].hasInput)
                             count++;
                     }
                     return count;
@@ -114,9 +114,9 @@ namespace PurrNet.Prediction.Tests.Editor
                     }
 
                     Assert.That(
-                        manager.guaranteedInputHistorySystems,
-                        Is.EqualTo(RecountGuaranteed()),
-                        $"guaranteed counter diverged from the roster at op {op}");
+                        manager.inputHistorySystems,
+                        Is.EqualTo(RecountInputs()),
+                        $"input counter diverged from the roster at op {op}");
                     Assert.That(
                         GetField<int>(typeof(PredictionManager), manager, "_systemsCount"),
                         Is.EqualTo(systems.Count),
@@ -131,166 +131,153 @@ namespace PurrNet.Prediction.Tests.Editor
                 for (var i = 0; i < identities.Count; i++)
                     manager.UnregisterInstance(identities[i]);
 
-                Assert.That(manager.guaranteedInputHistorySystems, Is.Zero);
+                Assert.That(manager.inputHistorySystems, Is.Zero);
                 Assert.That(systems.Count, Is.Zero);
             }
             finally
             {
                 for (var i = slotObjects.Count - 1; i >= 0; i--)
                     Object.DestroyImmediate(slotObjects[i]);
+                InputTranscriptFixture.DisposeManagerCaches(managerObject.GetComponent<PredictionManager>());
                 Object.DestroyImmediate(managerObject);
                 Object.DestroyImmediate(networkObject);
             }
         }
 
         [Test]
-        public void LaggingBaselineTranscriptFollowsTheGuaranteedRoster()
+        public void RegisteredOrdinaryAndDeterministicSystemsShareTheCompleteTranscript()
         {
             var networkObject = new GameObject("Transcript network");
             var managerObject = new GameObject("Transcript manager");
-            var guaranteedObject = new GameObject("Transcript guaranteed identity");
-            var newestObject = new GameObject("Transcript newest identity");
+            var deterministicObject = new GameObject("Transcript deterministic identity");
+            var ordinaryObject = new GameObject("Transcript ordinary identity");
             try
             {
                 var networkManager = networkObject.AddComponent<NetworkManager>();
-                var manager =
-                    CreateSpawnedPredictionManager(managerObject, networkManager);
-                var guaranteed = guaranteedObject.AddComponent<DeterministicInputProbe>();
-                var newest = newestObject.AddComponent<StatefulInputProbe>();
-                manager.RegisterInstance(
-                    guaranteedObject, new PredictedObjectID(700), null, false, false);
-                manager.RegisterInstance(
-                    newestObject, new PredictedObjectID(701), null, false, false);
-                Assert.That(manager.guaranteedInputHistorySystems, Is.EqualTo(1));
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                var deterministic = deterministicObject.AddComponent<DeterministicInputProbe>();
+                var ordinary = ordinaryObject.AddComponent<StatefulInputProbe>();
+                manager.RegisterInstance(deterministicObject, new PredictedObjectID(700), null, false, false);
+                manager.RegisterInstance(ordinaryObject, new PredictedObjectID(701), null, false, false);
+                Assert.That(manager.inputHistorySystems, Is.EqualTo(2));
 
                 SetLocalTick(manager, 20);
                 for (ulong tick = 16; tick <= 20; tick++)
-                    SeedInput(guaranteed, tick, (int)tick);
-                SeedInput(newest, 20, 777);
-
-                using (var frame = BitPackerPool.Get())
                 {
-                    WriteInputHistory(manager, frame, baselineTick: 15);
-                    var writtenBits = frame.positionInBits;
-                    frame.ResetPositionAndMode(true);
-
-                    PackedUInt transcriptTicks = default;
-                    Packer<PackedUInt>.Read(frame, ref transcriptTicks);
-                    Assert.That(transcriptTicks.value, Is.EqualTo(5),
-                        "a lagging baseline with a guaranteed system must ship the transcript window");
-
-                    for (ulong tick = 16; tick <= 20; tick++)
+                    SeedInput(deterministic, tick, (int)tick);
+                    SeedInput(ordinary, tick, (int)(100 + tick));
+                    typeof(PredictionManager).GetMethod("CaptureInputHistory", Members)
+                        .Invoke(manager, new object[] { tick });
+                }
+                using var frame = BitPackerPool.Get();
+                WriteInputHistory(manager, frame, baselineTick: 15);
+                var writtenBits = frame.positionInBits;
+                frame.ResetPositionAndMode(true);
+                Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(5));
+                for (ulong tick = 16; tick <= 20; tick++)
+                {
+                    Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(2), $"tick {tick}");
+                    var values = new Dictionary<PredictedComponentID, int>();
+                    for (var record = 0; record < 2; record++)
                     {
-                        PackedUInt entryCount = default;
-                        Packer<PackedUInt>.Read(frame, ref entryCount);
-                        Assert.That(entryCount.value, Is.EqualTo(1),
-                            $"transcript tick {tick}");
-                        PredictedComponentID id = default;
-                        Packer<PredictedComponentID>.Read(frame, ref id);
-                        Assert.That(id, Is.EqualTo(guaranteed.id),
-                            "only guaranteed systems belong in transcript blocks");
-                        Assert.That(ReadLengthPrefixedInput(frame).id, Is.EqualTo((int)tick));
+                        var id = Packer<PredictedComponentID>.Read(frame);
+                        values.Add(id, ReadLengthPrefixedInput(frame).id);
                     }
-
-                    PackedUInt newestCount = default;
-                    Packer<PackedUInt>.Read(frame, ref newestCount);
-                    Assert.That(newestCount.value, Is.EqualTo(1));
-                    PredictedComponentID newestId = default;
-                    Packer<PredictedComponentID>.Read(frame, ref newestId);
-                    Assert.That(newestId, Is.EqualTo(newest.id),
-                        "only non-guaranteed systems belong in the newest block");
-                    Assert.That(Packer<bool>.Read(frame), Is.False,
-                        "no cached baseline block exists, so the repeat bit must be clear");
-                    Assert.That(ReadLengthPrefixedInput(frame).id, Is.EqualTo(777));
-                    Assert.That(frame.positionInBits, Is.EqualTo(writtenBits));
+                    Assert.That(values[deterministic.id], Is.EqualTo((int)tick));
+                    Assert.That(values[ordinary.id], Is.EqualTo((int)(100 + tick)));
                 }
-
-                manager.UnregisterInstance(guaranteed);
-                Assert.That(manager.guaranteedInputHistorySystems, Is.Zero);
-
-                using (var frame = BitPackerPool.Get())
-                {
-                    WriteInputHistory(manager, frame, baselineTick: 15);
-                    var writtenBits = frame.positionInBits;
-                    frame.ResetPositionAndMode(true);
-
-                    PackedUInt transcriptTicks = default;
-                    Packer<PackedUInt>.Read(frame, ref transcriptTicks);
-                    Assert.That(transcriptTicks.value, Is.Zero,
-                        "an input-transcript window survived with no guaranteed systems registered");
-
-                    PackedUInt newestCount = default;
-                    Packer<PackedUInt>.Read(frame, ref newestCount);
-                    Assert.That(newestCount.value, Is.EqualTo(1));
-                    PredictedComponentID newestId = default;
-                    Packer<PredictedComponentID>.Read(frame, ref newestId);
-                    Assert.That(newestId, Is.EqualTo(newest.id));
-                    Assert.That(Packer<bool>.Read(frame), Is.False);
-                    Assert.That(ReadLengthPrefixedInput(frame).id, Is.EqualTo(777));
-                    Assert.That(frame.positionInBits, Is.EqualTo(writtenBits));
-                }
+                Assert.That(frame.positionInBits, Is.EqualTo(writtenBits));
             }
             finally
             {
-                Object.DestroyImmediate(newestObject);
-                Object.DestroyImmediate(guaranteedObject);
+                Object.DestroyImmediate(ordinaryObject);
+                Object.DestroyImmediate(deterministicObject);
+                InputTranscriptFixture.DisposeManagerCaches(managerObject.GetComponent<PredictionManager>());
                 Object.DestroyImmediate(managerObject);
                 Object.DestroyImmediate(networkObject);
             }
         }
 
-        [Test]
-        public void UnregisteringGuaranteedSystemForcesFullFramesForEveryClient()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void RemovingAnyInputBearingIdentityKeepsRetainedDeltaHistoryUsable(bool deterministic)
         {
-            var networkObject = new GameObject("Heal network");
-            var managerObject = new GameObject("Heal manager");
-            var guaranteedObject = new GameObject("Heal guaranteed identity");
-            var newestObject = new GameObject("Heal newest identity");
+            var networkObject = new GameObject("Removal network");
+            var managerObject = new GameObject("Removal manager");
+            var inputObject = new GameObject("Removal input identity");
+            var stateObject = new GameObject("Removal state-only identity");
             try
             {
                 var networkManager = networkObject.AddComponent<NetworkManager>();
-                var manager =
-                    CreateSpawnedPredictionManager(managerObject, networkManager);
-                var guaranteed = guaranteedObject.AddComponent<DeterministicInputProbe>();
-                var newest = newestObject.AddComponent<StatefulInputProbe>();
-                manager.RegisterInstance(
-                    guaranteedObject, new PredictedObjectID(720), null, false, false);
-                manager.RegisterInstance(
-                    newestObject, new PredictedObjectID(721), null, false, false);
-                Assert.That(manager.guaranteedInputHistorySystems, Is.EqualTo(1));
+                var manager = CreateSpawnedPredictionManager(managerObject, networkManager);
+                PredictedIdentity input = deterministic
+                    ? inputObject.AddComponent<DeterministicInputProbe>()
+                    : inputObject.AddComponent<StatefulInputProbe>();
+                var state = stateObject.AddComponent<NoInputHistoryProbe>();
+                manager.RegisterInstance(inputObject, new PredictedObjectID(720), null, false, false);
+                manager.RegisterInstance(stateObject, new PredictedObjectID(721), null, false, false);
+                Assert.That(manager.inputHistorySystems, Is.EqualTo(1));
+                SetLocalTick(manager, 19);
+                SeedInput(input, 19, 190);
+                typeof(PredictionManager).GetMethod("CaptureInputHistory", Members)
+                    .Invoke(manager, new object[] { 19UL });
+                typeof(PredictionManager).GetMethod("CaptureLifecycleHistory", Members)
+                    .Invoke(manager, new object[] { 19UL });
 
                 var clientFrames = GetField<List<PlayerPacker>>(
                     typeof(PredictionManager), manager, "_clientFrames");
                 clientFrames.Add(new PlayerPacker
                 {
                     player = new PlayerID(10, false),
+                    lastFullFrameSentTick = 18,
                     packer = BitPackerPool.Get()
                 });
                 clientFrames.Add(new PlayerPacker
                 {
                     player = new PlayerID(11, false),
+                    lastFullFrameSentTick = 18,
                     packer = BitPackerPool.Get()
                 });
+                var queues = GetField<Dictionary<PlayerID, PredictionManager.InputQueue>>(
+                    typeof(PredictionManager), manager, "_clientTicks");
+                foreach (var clientFrame in clientFrames)
+                    queues.Add(clientFrame.player, new PredictionManager.InputQueue { ackedServerTick = 18 });
 
-                manager.UnregisterInstance(newest);
-                for (var i = 0; i < clientFrames.Count; i++)
+                manager.UnregisterInstance(state);
+                foreach (var clientFrame in clientFrames)
+                    Assert.That(clientFrame.requiresFullCheckpoint, Is.False,
+                        "a state-only removal does not destroy authoritative input history");
+
+                manager.UnregisterInstance(input);
+                Assert.That(manager.inputHistorySystems, Is.Zero);
+                foreach (var clientFrame in clientFrames)
                 {
-                    Assert.That(clientFrames[i].fullFrame, Is.False,
-                        "removing a non-guaranteed system must not force full frames");
+                    Assert.That(clientFrame.requiresFullCheckpoint, Is.False,
+                        "the removed identity's serialized input still belongs to the retained tick");
+                    Assert.That(clientFrame.fullFrame, Is.False,
+                        "the checkpoint is selected when the next frame is prepared");
                 }
 
-                manager.UnregisterInstance(guaranteed);
-                Assert.That(manager.guaranteedInputHistorySystems, Is.Zero);
-                for (var i = 0; i < clientFrames.Count; i++)
+                SetLocalTick(manager, 20);
+                typeof(PredictionManager).GetMethod("CaptureInputHistory", Members)
+                    .Invoke(manager, new object[] { 20UL });
+                typeof(PredictionManager).GetMethod("CaptureLifecycleHistory", Members)
+                    .Invoke(manager, new object[] { 20UL });
+                var prepare = typeof(PredictionManager).GetMethod("WriteInitialFrameToOthers", Members);
+                Assert.That(prepare, Is.Not.Null);
+                prepare.Invoke(manager, null);
+                foreach (var clientFrame in clientFrames)
                 {
-                    Assert.That(clientFrames[i].fullFrame, Is.True,
-                        "removing a guaranteed system must re-anchor every client with a full frame");
+                    Assert.That(clientFrame.fullFrame, Is.False);
+                    Assert.That(clientFrame.preparedFrameTick, Is.EqualTo(20));
+                    Assert.That(clientFrame.preparedBaselineTick, Is.EqualTo(18));
                 }
             }
             finally
             {
-                Object.DestroyImmediate(newestObject);
-                Object.DestroyImmediate(guaranteedObject);
+                Object.DestroyImmediate(stateObject);
+                Object.DestroyImmediate(inputObject);
+                InputTranscriptFixture.DisposeManagerCaches(managerObject.GetComponent<PredictionManager>());
                 Object.DestroyImmediate(managerObject);
                 Object.DestroyImmediate(networkObject);
             }
@@ -353,6 +340,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
         private static TrackedInput ReadLengthPrefixedInput(BitPacker frame)
         {
+            Assert.That(Packer<bool>.Read(frame), Is.False, "changing inputs are never encoded as repeats");
             PackedUInt declaredBits = default;
             Packer<PackedUInt>.Read(frame, ref declaredBits);
             var origin = frame.positionInBits;
@@ -382,5 +370,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 $"Missing field {declaringType.FullName}.{fieldName}");
             field.SetValue(target, value);
         }
+    }
+
+    public sealed class NoInputHistoryProbe : PredictedIdentity<EmptyState>
+    {
+        protected override void Simulate(ref EmptyState state, float delta) { }
     }
 }

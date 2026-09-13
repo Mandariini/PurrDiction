@@ -180,6 +180,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(typeof(NetworkIdentity), manager, "<networkManager>k__BackingField", _network);
                 Set(typeof(NetworkIdentity), manager, "_isSpawnedClient", true);
                 Set(typeof(PredictionManager), manager, "_verifiedServerTick", 10UL);
+                Set(typeof(PredictionManager), manager, "_appliedCheckpointTick", 8UL);
                 Set(typeof(PredictionManager), manager, "_latestFrameServerTick", 10UL);
 
                 var id = new PredictedComponentID(new PredictedObjectID(701), 0);
@@ -230,16 +231,19 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // hierarchy record
-                    Packer<PackedUInt>.Write(frame, 0u); // guaranteed input history
-                    Packer<PackedUInt>.Write(frame, 0u); // newest inputs
+                    Packer<PackedUInt>.Write(frame, checked((uint)(tick - 10)));
+                    for (ulong inputTick = 11; inputTick <= tick; inputTick++)
+                        Packer<PackedUInt>.Write(frame, 0u); // explicit empty input tick
+                    Packer<bool>.Write(frame, false); // no historical lifecycle hierarchy
                     using var payload = BitPackerPool.Get();
                     Assert.That(_sender.RunWriteCurrentState(default, payload, 10), Is.True);
                     AddressedPredictionRecords.WriteSectionCount(1, frame);
                     AddressedPredictionRecords.WriteRecord(frame, probe.id, false, payload);
+                    Packer<PackedUInt>.Write(frame, 0u); // historical physics event batches
                     AddressedPredictionRecords.WriteSectionCount(0, frame); // event handlers
                     int length = frame.positionInBytes;
                     frame.ResetPositionAndMode(true);
-                    Invoke(manager, "HandleFrameFromServer", tick, 10UL, tick, false,
+                    Invoke(manager, "HandleFrameFromServer", tick, 10UL, 8UL, tick, false,
                         false, default(PackedInt), false, default(PackedInt),
                         new BitPackerWithLength(length, frame));
                 }
