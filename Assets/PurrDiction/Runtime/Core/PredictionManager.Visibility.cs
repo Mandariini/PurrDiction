@@ -1024,6 +1024,7 @@ namespace PurrNet.Prediction
         }
 
         readonly List<int> _visibleInputEntryScratch = new();
+        readonly List<int> _previousVisibleInputEntryScratch = new();
 
         void WriteVisibilityInputHistory(
             PlayerID player,
@@ -1040,16 +1041,7 @@ namespace PurrNet.Prediction
             for (ulong tick = baselineTick + 1; tick <= localTick; tick++)
             {
                 var block = GetInputBlockForTick(tick);
-                bool allowRepeat = tick > baselineTick + 1;
-                if (timeline.isPassThrough && allowRepeat)
-                {
-                    var blob = block.framedPacker;
-                    frame.WriteBitsWithoutConsumingIt(blob, blob.positionInBits);
-                }
-                else
-                {
-                    WriteFilteredInputBlock(timeline, tick, in block, frame, allowRepeat);
-                }
+                WriteTranscriptTick(timeline, tick, in block, frame, tick > baselineTick + 1);
             }
         }
 
@@ -1057,7 +1049,18 @@ namespace PurrNet.Prediction
             => !hierarchy || timeline.isPassThrough || entry.id.objectId.instanceId.value == 1 ||
                timeline.WasVisibleAt(entry.rootId, tick);
 
-        void WriteFilteredInputBlock(
+        void CollectVisibleInputEntries(PlayerVisibilityTimeline timeline, in CachedInputBlock block, ulong tick, List<int> into)
+        {
+            into.Clear();
+            var entries = block.entries;
+            for (var i = 0; i < entries.Count; i++)
+            {
+                if (IsInputEntryVisible(timeline, entries[i], tick))
+                    into.Add(i);
+            }
+        }
+
+        void WriteTranscriptTick(
             PlayerVisibilityTimeline timeline,
             ulong tick,
             in CachedInputBlock block,
@@ -1065,22 +1068,41 @@ namespace PurrNet.Prediction
             bool allowRepeat)
         {
             var entries = block.entries;
-            _visibleInputEntryScratch.Clear();
-            for (var i = 0; i < entries.Count; i++)
+            var visible = _visibleInputEntryScratch;
+            CollectVisibleInputEntries(timeline, in block, tick, visible);
+            Packer<PackedUInt>.Write(frame, (uint)visible.Count);
+            if (visible.Count == 0)
+                return;
+
+            bool sameRoster = false;
+            if (allowRepeat)
             {
-                if (IsInputEntryVisible(timeline, entries[i], tick))
-                    _visibleInputEntryScratch.Add(i);
+                if (timeline.isPassThrough)
+                    sameRoster = block.rosterRepeatsPrevious;
+                else if (TryGetInputBlockForTick(tick - 1, out var previous))
+                {
+                    var previousVisible = _previousVisibleInputEntryScratch;
+                    CollectVisibleInputEntries(timeline, in previous, tick - 1, previousVisible);
+                    sameRoster = previousVisible.Count == visible.Count;
+                    for (var i = 0; sameRoster && i < visible.Count; i++)
+                        sameRoster = entries[visible[i]].id.Equals(previous.entries[previousVisible[i]].id);
+                }
+                Packer<bool>.Write(frame, sameRoster);
             }
 
-            Packer<PackedUInt>.Write(frame, (uint)_visibleInputEntryScratch.Count);
-            for (var i = 0; i < _visibleInputEntryScratch.Count; i++)
+            if (sameRoster)
             {
-                int index = _visibleInputEntryScratch[i];
-                var entry = entries[index];
-                // Repeats require that this receiver saw the entry on the previous tick.
-                bool repeat = allowRepeat && entry.repeatsPrevious &&
-                              IsInputEntryVisible(timeline, entry, tick - 1);
-                WriteTranscriptEntry(frame, in block, index, repeat);
+                for (var i = 0; i < visible.Count; i++)
+                    Packer<bool>.Write(frame, entries[visible[i]].repeatsPrevious);
+            }
+
+            WriteTranscriptPadding(frame);
+            for (var i = 0; i < visible.Count; i++)
+            {
+                int index = visible[i];
+                if (sameRoster && entries[index].repeatsPrevious)
+                    continue;
+                WriteTranscriptEntry(frame, in block, index);
             }
         }
 

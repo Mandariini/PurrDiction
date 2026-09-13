@@ -15,7 +15,7 @@ namespace PurrNet.Prediction
         private readonly List<VerifiedInputTick> _verifiedInputTicks = new();
         private readonly List<InputHistorySpan> _verifiedInputEntries = new();
         private readonly HashSet<PredictedComponentID> _verifiedInputIds = new();
-        private readonly Dictionary<PredictedComponentID, int> _previousVerifiedInputIndex = new();
+        private readonly List<bool> _verifiedInputRepeatScratch = new();
         private BitPacker _verifiedInputPayload;
         private ulong _verifiedInputFrom;
         private ulong _verifiedInputThrough;
@@ -28,7 +28,7 @@ namespace PurrNet.Prediction
             _verifiedInputTicks.Clear();
             _verifiedInputEntries.Clear();
             _verifiedInputIds.Clear();
-            _previousVerifiedInputIndex.Clear();
+            _verifiedInputRepeatScratch.Clear();
         }
 
         private void BeginVerifiedInputTranscript(ulong firstTick, ulong lastTick)
@@ -53,14 +53,8 @@ namespace PurrNet.Prediction
             StageVerifiedInputSpan(tick, id, destinationOrigin, length);
         }
 
-        private void StageRepeatedVerifiedInput(ulong tick, PredictedComponentID id)
-        {
-            if (!_previousVerifiedInputIndex.TryGetValue(id, out int previousIndex))
-                throw new MissingPredictionBaselineException(
-                    $"Authoritative input for {id} at tick {tick} repeats an entry the previous tick did not carry.");
-            var previous = _verifiedInputEntries[previousIndex];
-            StageVerifiedInputSpan(tick, id, previous.bitOrigin, previous.bitLength);
-        }
+        private void StageRepeatedVerifiedInput(ulong tick, in InputHistorySpan previous)
+            => StageVerifiedInputSpan(tick, previous.id, previous.bitOrigin, previous.bitLength);
 
         private void StageVerifiedInputSpan(ulong tick, PredictedComponentID id, int origin, int length)
         {
@@ -76,14 +70,6 @@ namespace PurrNet.Prediction
             var batch = _verifiedInputTicks[index];
             batch.count++;
             _verifiedInputTicks[index] = batch;
-        }
-
-        private void EndVerifiedInputTick()
-        {
-            _previousVerifiedInputIndex.Clear();
-            var batch = _verifiedInputTicks[_verifiedInputTicks.Count - 1];
-            for (int i = batch.firstEntry; i < batch.firstEntry + batch.count; i++)
-                _previousVerifiedInputIndex[_verifiedInputEntries[i].id] = i;
         }
 
         private void ReadInputHistory(BitPacker frame, ulong serverTick, ulong baselineTick, int frameEndBit)
@@ -108,20 +94,35 @@ namespace PurrNet.Prediction
                 if (frame.positionInBits > frameEndBit || entries > (uint)(frameEndBit - frame.positionInBits))
                     throw new MissingPredictionBaselineException($"Invalid authoritative input count at tick {tick}.");
                 BeginVerifiedInputTick();
-                for (uint e = 0; e < entries; e++)
+                if (entries == 0)
+                    continue;
+
+                var previousBatch = k > 0 ? _verifiedInputTicks[(int)k - 1] : default;
+                bool sameRoster = k > 0 && Packer<bool>.Read(frame);
+                _verifiedInputRepeatScratch.Clear();
+                if (sameRoster)
                 {
-                    var id = Packer<PredictedComponentID>.Read(frame);
-                    bool repeat = Packer<bool>.Read(frame);
-                    if (frame.positionInBits > frameEndBit)
-                        throw new MissingPredictionBaselineException($"Truncated authoritative input for {id} at tick {tick}.");
-                    if (repeat)
+                    if ((uint)previousBatch.count != entries || entries > (uint)(frameEndBit - frame.positionInBits))
+                        throw new MissingPredictionBaselineException(
+                            $"Authoritative input roster at tick {tick} does not match the previous tick it repeats.");
+                    for (uint e = 0; e < entries; e++)
+                        _verifiedInputRepeatScratch.Add(Packer<bool>.Read(frame));
+                }
+                SkipTranscriptPadding(frame, frameEndBit, tick);
+
+                for (int e = 0; e < (int)entries; e++)
+                {
+                    if (sameRoster && _verifiedInputRepeatScratch[e])
                     {
-                        if (k == 0)
-                            throw new MissingPredictionBaselineException(
-                                $"Authoritative input for {id} at tick {tick} repeats before the transcript's first tick.");
-                        StageRepeatedVerifiedInput(tick, id);
+                        StageRepeatedVerifiedInput(tick, _verifiedInputEntries[previousBatch.firstEntry + e]);
                         continue;
                     }
+                    var id = Packer<PredictedComponentID>.Read(frame);
+                    if (frame.positionInBits > frameEndBit)
+                        throw new MissingPredictionBaselineException($"Truncated authoritative input for {id} at tick {tick}.");
+                    if (sameRoster && !_verifiedInputEntries[previousBatch.firstEntry + e].id.Equals(id))
+                        throw new MissingPredictionBaselineException(
+                            $"Authoritative input roster at tick {tick} does not match the previous tick it repeats.");
                     uint bits = Packer<PackedUInt>.Read(frame);
                     int origin = frame.positionInBits;
                     if (origin > frameEndBit || bits == 0 || bits > (uint)(frameEndBit - origin))
@@ -129,7 +130,6 @@ namespace PurrNet.Prediction
                     frame.SkipBits(checked((int)bits));
                     StageVerifiedInput(tick, id, frame, origin, (int)bits);
                 }
-                EndVerifiedInputTick();
             }
         }
 

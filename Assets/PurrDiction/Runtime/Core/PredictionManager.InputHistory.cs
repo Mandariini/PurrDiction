@@ -30,14 +30,13 @@ namespace PurrNet.Prediction
             }
         }
 
-        // framedPacker assumes the receiver has the preceding tick; the first transcript tick must be full.
         private struct CachedInputBlock
         {
             public ulong tick;
             public bool captured;
             public BitPacker packer;
             public List<CachedInputEntry> entries;
-            public BitPacker framedPacker;
+            public bool rosterRepeatsPrevious;
         }
 
         private CachedInputBlock[] _inputBlockCache;
@@ -60,11 +59,9 @@ namespace PurrNet.Prediction
 
             ref var scratch = ref _inputBlockScratch;
             scratch.packer ??= BitPackerPool.Get();
-            scratch.framedPacker ??= BitPackerPool.Get();
             scratch.entries ??= new List<CachedInputEntry>();
             scratch.captured = false;
             scratch.packer.ResetPositionAndMode(false);
-            scratch.framedPacker.ResetPositionAndMode(false);
             scratch.entries.Clear();
 
             _previousInputEntryIndex.Clear();
@@ -103,10 +100,10 @@ namespace PurrNet.Prediction
                 scratch.entries.Add(new CachedInputEntry(id, rootId, origin, length, repeats));
             }
 
-            var framed = scratch.framedPacker;
-            Packer<PackedUInt>.Write(framed, (uint)scratch.entries.Count);
-            for (var i = 0; i < scratch.entries.Count; i++)
-                WriteTranscriptEntry(framed, in scratch, i, scratch.entries[i].repeatsPrevious);
+            bool sameRoster = hasPrevious && previous.entries.Count == scratch.entries.Count;
+            for (var i = 0; sameRoster && i < scratch.entries.Count; i++)
+                sameRoster = scratch.entries[i].id.Equals(previous.entries[i].id);
+            scratch.rosterRepeatsPrevious = sameRoster;
 
             // Publish only after user packers succeed, preserving retained history if one throws.
             int index = (int)(tick % (ulong)_inputBlockCache.Length);
@@ -124,15 +121,29 @@ namespace PurrNet.Prediction
             _hasCapturedInputHistory = true;
         }
 
-        private static void WriteTranscriptEntry(BitPacker frame, in CachedInputBlock block, int index, bool repeat)
+        private static void WriteTranscriptEntry(BitPacker frame, in CachedInputBlock block, int index)
         {
             var entry = block.entries[index];
             Packer<PredictedComponentID>.Write(frame, entry.id);
-            Packer<bool>.Write(frame, repeat);
-            if (repeat)
-                return;
             Packer<PackedUInt>.Write(frame, (uint)entry.bitLength);
             frame.WriteBitDataWithoutConsumingIt(new BitData(block.packer, entry.bitOrigin, entry.bitLength));
+        }
+
+        private static void WriteTranscriptPadding(BitPacker frame)
+        {
+            int pad = (8 - frame.positionInBits % 8) % 8;
+            if (pad > 0)
+                frame.WriteBits(0UL, (byte)pad);
+        }
+
+        private static void SkipTranscriptPadding(BitPacker frame, int frameEndBit, ulong tick)
+        {
+            int pad = (8 - frame.positionInBits % 8) % 8;
+            if (pad == 0)
+                return;
+            if (frame.positionInBits + pad > frameEndBit)
+                throw new MissingPredictionBaselineException($"Truncated authoritative input block at tick {tick}.");
+            frame.SkipBits(pad);
         }
 
         private void EnsureInputHistoryCapacity()
@@ -203,7 +214,6 @@ namespace PurrNet.Prediction
         private static void DisposeInputBlock(ref CachedInputBlock block)
         {
             block.packer?.Dispose();
-            block.framedPacker?.Dispose();
             block = default;
         }
 
