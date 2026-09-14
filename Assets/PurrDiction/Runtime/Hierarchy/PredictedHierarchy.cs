@@ -17,6 +17,31 @@ namespace PurrNet.Prediction
         readonly Dictionary<int, PiecePrototype> _prototypes = new ();
         readonly PredictedPiecePool _pool = new ();
 
+        private PredictedNetworkMirror _networkMirror;
+
+        internal PredictedNetworkMirror networkMirror => _networkMirror ??= new PredictedNetworkMirror(predictionManager, this);
+
+        internal bool TryGetRecord(PredictedObjectID id, out InstanceDetails record)
+            => _recordsById.TryGetValue(id, out record);
+
+        internal void SyncNetworkMirror()
+        {
+            if (!predictionManager || predictionManager.isServer)
+                return;
+
+            if (!TryGetVerifiedState(predictionManager.localTick, out _, out var verified) || verified.spawnedPrefabs.isDisposed)
+                return;
+
+            networkMirror.SyncVerified(verified.spawnedPrefabs);
+        }
+
+        private static NetworkID? PieceNetworkId(NetworkID? block, PiecePrototype proto, int pieceIndex)
+        {
+            if (!block.HasValue || proto.pieces[pieceIndex].networkIdentityCount == 0)
+                return null;
+            return new NetworkID(block.Value, (ulong)proto.pieces[pieceIndex].networkIdOffset);
+        }
+
         internal bool ContainsPooledObject(PredictedObjectID id) => _pool.Contains(id);
 
         readonly Dictionary<PredictedObjectID, int> _targetIdsScratch = new ();
@@ -626,10 +651,15 @@ namespace PurrNet.Prediction
 
             _recordBuildScratch.Clear();
             var rootId = new PredictedObjectID(baseId);
-            _recordBuildScratch.Add(new InstanceDetails(prefabId, 0, rootId, position, rotation, owner, parent));
+
+            NetworkID? networkBlock = null;
+            if (proto.networkIdentityCount > 0 && networkMirror.TryReserveBlock(proto, out var reservedBlock))
+                networkBlock = reservedBlock;
+
+            _recordBuildScratch.Add(new InstanceDetails(prefabId, 0, rootId, position, rotation, owner, parent, PieceNetworkId(networkBlock, proto, 0)));
 
             for (var k = 1; k < proto.pieceCount; k++)
-                _recordBuildScratch.Add(new InstanceDetails(prefabId, (uint)k, new PredictedObjectID(baseId + (uint)k), Vector3.zero, Quaternion.identity, null, null));
+                _recordBuildScratch.Add(new InstanceDetails(prefabId, (uint)k, new PredictedObjectID(baseId + (uint)k), Vector3.zero, Quaternion.identity, null, null, PieceNetworkId(networkBlock, proto, k)));
 
             var rootGo = CreateWholeInstance(prefabId, proto, _recordBuildScratch);
 
@@ -841,6 +871,7 @@ namespace PurrNet.Prediction
 
                 bool recordReset = reset || _replacedEntrantsScratch.Contains(record.instanceId);
                 predictionManager.RegisterInstance(pieceGo, record.instanceId, instanceOwner, recordReset, removedFromPoolEvent);
+                networkMirror.OnPieceMaterialized(record, pieceGo, proto, instanceOwner);
             }
 
             if (rootGo && !rootGo.activeSelf)
@@ -959,6 +990,7 @@ namespace PurrNet.Prediction
                 recordOwner,
                 _replacedEntrantsScratch.Contains(record.instanceId),
                 false);
+            networkMirror.OnPieceMaterialized(record, pieceGo, proto, recordOwner);
         }
 
         private static void ApplySpawnPose(Transform trs, Transform parent, Vector3 position, Quaternion rotation)
@@ -1554,7 +1586,7 @@ namespace PurrNet.Prediction
                     go.transform.GetPositionAndRotation(out position, out rotation);
 
                 var rebased = new InstanceDetails(record.prefabId, record.pieceIndex.value, record.instanceId,
-                    position, rotation, record.owner, null);
+                    position, rotation, record.owner, null, record.networkId);
 
                 _spawnedPrefabs[i] = rebased;
                 _recordsById[record.instanceId] = rebased;
@@ -1623,7 +1655,7 @@ namespace PurrNet.Prediction
                     continue;
 
                 go.transform.GetPositionAndRotation(out var pos, out var rot);
-                var promoted = new InstanceDetails(record.prefabId, record.pieceIndex.value, record.instanceId, pos, rot, rootRecord.owner, record.parent);
+                var promoted = new InstanceDetails(record.prefabId, record.pieceIndex.value, record.instanceId, pos, rot, rootRecord.owner, record.parent, record.networkId);
 
                 _spawnedPrefabs[i] = promoted;
                 _recordsById[record.instanceId] = promoted;
@@ -1709,6 +1741,7 @@ namespace PurrNet.Prediction
                 var piece = _memberPiecesScratch[i];
 
                 CaptureDecoration(piece.id, piece.gameObject);
+                _networkMirror?.OnPieceUnmaterialized(piece.id);
                 predictionManager.UnregisterInstance(piece.gameObject, false, triggerDestroyEvent);
 
                 _instanceMap.Remove(piece.id);
@@ -2050,6 +2083,8 @@ namespace PurrNet.Prediction
 
         private void CleanupInternal()
         {
+            _networkMirror?.Clear();
+
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
             {
                 var record = _spawnedPrefabs[i];

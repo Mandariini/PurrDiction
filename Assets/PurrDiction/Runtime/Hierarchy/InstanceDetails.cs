@@ -15,6 +15,13 @@ namespace PurrNet.Prediction
         public readonly PredictedComponentID? parent;
 
         /// <summary>
+        /// First PurrNet id of this piece's NetworkIdentity components, allocated by the server
+        /// when the instance enters its topology. Null for pieces without network identities and
+        /// for speculative client instances, which never spawn network identities.
+        /// </summary>
+        public readonly NetworkID? networkId;
+
+        /// <summary>
         /// Id of the root piece of the spawn instance this piece belongs to.
         /// Piece ids are allocated as one contiguous block per spawn, so this is derived.
         /// </summary>
@@ -28,6 +35,11 @@ namespace PurrNet.Prediction
         }
 
         public InstanceDetails(int prefabId, uint pieceIndex, PredictedObjectID instanceId, Vector3 spawnPosition, Quaternion spawnRotation, PlayerID? owner, PredictedComponentID? parent)
+            : this(prefabId, pieceIndex, instanceId, spawnPosition, spawnRotation, owner, parent, null)
+        {
+        }
+
+        public InstanceDetails(int prefabId, uint pieceIndex, PredictedObjectID instanceId, Vector3 spawnPosition, Quaternion spawnRotation, PlayerID? owner, PredictedComponentID? parent, NetworkID? networkId)
         {
             this.prefabId = prefabId;
             this.pieceIndex = pieceIndex;
@@ -36,7 +48,11 @@ namespace PurrNet.Prediction
             this.spawnRotation = spawnRotation;
             this.owner = owner;
             this.parent = parent;
+            this.networkId = networkId;
         }
+
+        public InstanceDetails WithNetworkId(NetworkID? id)
+            => new InstanceDetails(prefabId.value, pieceIndex.value, instanceId, spawnPosition, spawnRotation, owner, parent, id);
 
         public bool Equals(InstanceDetails other)
         {
@@ -44,6 +60,7 @@ namespace PurrNet.Prediction
             return prefabId.value == other.prefabId.value && pieceIndex.value == other.pieceIndex.value &&
                    instanceId.Equals(other.instanceId) &&
                    SameOwner(owner, other.owner) && Nullable.Equals(parent, other.parent) &&
+                   Nullable.Equals(networkId, other.networkId) &&
                    Bits(spawnPosition.x) == Bits(other.spawnPosition.x) &&
                    Bits(spawnPosition.y) == Bits(other.spawnPosition.y) &&
                    Bits(spawnPosition.z) == Bits(other.spawnPosition.z) &&
@@ -66,12 +83,12 @@ namespace PurrNet.Prediction
 
         public override int GetHashCode()
         {
-            return HashCode.Combine(prefabId, pieceIndex, instanceId, spawnPosition, spawnRotation, owner, parent);
+            return HashCode.Combine(prefabId, pieceIndex, instanceId, spawnPosition, spawnRotation, owner, parent, networkId);
         }
 
         public override string ToString()
         {
-            return $"id: {instanceId} (piece {pieceIndex.value} of {rootId}), {spawnPosition} | {spawnRotation}{(parent.HasValue ? $" | parent: {parent.Value}" : string.Empty)}\n";
+            return $"id: {instanceId} (piece {pieceIndex.value} of {rootId}), {spawnPosition} | {spawnRotation}{(parent.HasValue ? $" | parent: {parent.Value}" : string.Empty)}{(networkId.HasValue ? $" | nid: {networkId.Value}" : string.Empty)}\n";
         }
     }
 }

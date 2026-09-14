@@ -24,6 +24,7 @@ Multi-process end-to-end tests for the prediction pipeline, modeled after PurrNe
 | `DesyncCorrectionScenario` | An intentionally corrupted client state receives an authoritative correction and converges |
 | `PieceLifecycleScenario` | Predicted pieces preserve lifecycle, parent links, and identity agreement |
 | `PieceReconnectScenario` | A reconnecting client restores the same piece hierarchy and state |
+| `MixedNetworkIdentityScenario` | NetworkIdentity components inside a predicted prefab need no spawner component: the server spawns them with one contiguous id block when the predicted instance is created, clients spawn them from the verified topology with the same ids, a SyncVar and a buffered ObserversRpc reach every client, ownership follows the predicted owner, `HideFrom`/`ShowTo` despawn and respawn them on the hidden client only, and deleting the predicted instance despawns them everywhere. Runs alone via `-mixedNetworkIdentityScenarioOnly` |
 | `TickAgreementScenario` | Input-driven deterministic shots agree on their ticks and resulting state across peers |
 | `SoftCorrectionPoolReuseScenario` | A scoped soft-correction object preserves its policy through replay pooling, while a completed pooled lifetime cannot leak pose-correction accumulators into the next object |
 | `GenericSoftCorrectionScenario` | An opted-in generic state consumes verified deltas and converges without rollback simulation |
