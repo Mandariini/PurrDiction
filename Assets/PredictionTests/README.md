@@ -262,6 +262,10 @@ The normal transport, latency, loss, port, and `-tickRate` arguments still apply
 - `-fpEventMask 0`: production predicted physics event mask (0..127); defaults to no replicated
   contact events. Native Enter/Exit contact counters still validate the colliding workload; the
   body deliberately declares no Stay message, since that alone forces per-step contact reporting.
+- `-fpPolicy FullPrediction`: configured prediction policy for every body component (`FullPrediction`,
+  `ServerRelay`, `SoftCorrection`, `PredictedIfOwned`, `PredictedIfOwnedWithSoftFallback`). Per-client
+  resolution is the production behaviour; reports record the resolved distribution. Relay clients
+  keep bodies kinematic and are exempt from the contact requirement. The runner exposes it as `-Policy`.
 - `-fpMetrics path.json`: per-process detailed benchmark output, separate from scenario results.
 
 Every body uses the production `PredictedRigidbody` and `PredictedTransform`, explicitly configured

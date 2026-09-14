@@ -2588,7 +2588,7 @@ namespace PurrNet.Prediction
         {
             for (var i = 0; i < _speculativeRelayLocks.Count; i++)
             {
-                if (_speculativeRelayLocks[i].system == system)
+                if (ReferenceEquals(_speculativeRelayLocks[i].system, system))
                     return true;
             }
 
@@ -2609,6 +2609,7 @@ namespace PurrNet.Prediction
             if (_speculativeRelayLocks.Count == 0)
                 return;
 
+            bool restored = false;
             for (var i = _speculativeRelayLocks.Count - 1; i >= 0; i--)
             {
                 var locked = _speculativeRelayLocks[i];
@@ -2619,10 +2620,13 @@ namespace PurrNet.Prediction
                     continue;
                 }
 
-                system.RunRollback(locked.tick);
+                restored |= system.RunRestoreLockedState(locked.tick);
             }
 
             _speculativeRelayLocks.Clear();
+            if (!restored)
+                return;
+
             SyncTransforms();
             PredictionPerformanceTelemetry.StateRestored(this);
         }

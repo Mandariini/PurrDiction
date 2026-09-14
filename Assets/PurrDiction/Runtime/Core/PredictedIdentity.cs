@@ -456,10 +456,11 @@ namespace PurrNet.Prediction
             if (manager.cachedIsServer)
                 return false;
 
-            if (UsesFullPredictionTimeline())
+            var policy = EffectivePolicy();
+            if (policy == PredictionPolicy.FullPrediction)
                 return false;
 
-            if (UsesSoftCorrectionTimeline())
+            if (policy == PredictionPolicy.SoftCorrection)
                 return manager.isReplaying && !_simulateSoftCorrectionDuringReplay;
 
             return !(manager.isReplaying && manager.isVerified);
@@ -800,6 +801,12 @@ namespace PurrNet.Prediction
         internal abstract void SaveStateInHistory(ulong tick);
 
         internal abstract void Rollback(ulong tick);
+
+        internal virtual bool RestoreLockedState(ulong tick)
+        {
+            Rollback(tick);
+            return true;
+        }
 
         public abstract void UpdateRollbackInterpolationState(float delta, bool accumulateError);
 

@@ -25,6 +25,7 @@ param(
     [ValidateRange(0, 10000)][int]$SharedBodies = 16,
     [ValidateRange(0, 100000)][int]$TotalBodies = 0,
     [ValidateRange(0, 127)][int]$EventMask = 0,
+    [ValidateSet('FullPrediction', 'ServerRelay', 'SoftCorrection', 'PredictedIfOwned', 'PredictedIfOwnedWithSoftFallback')][string]$Policy = 'FullPrediction',
     [ValidateRange(1, 1000)][int]$TickRate = 60,
     [ValidateRange(0.1, 3600)][double]$Seconds = 10,
     [ValidateRange(0, 3600)][double]$SettleSeconds = 3,
@@ -157,7 +158,7 @@ $manifest = [ordered]@{
     execution = 'Sequential cases; one dedicated server plus N clients on this machine; hidden batchmode nographics'
     measurement = 'Simulation CPU workload; no rendered FPS claim. Per-process cpuSeconds includes setup and teardown.'
     latencySemantics = 'Same fixed argument at both endpoints; each adds floor(argument/2) outbound and inbound. Half-delays <=5ms are suppressed. Nominal RTT is twice nominal effective one-way delay, plus network/scheduling.'
-    scenario = $Scenario; predictedEventMask = $EventMask; clientCounts = $ClientCounts; latencyMs = $LatencyMs; reconcileMs = $ReconcileMs; repeats = $Repeats
+    scenario = $Scenario; predictedEventMask = $EventMask; policy = $Policy; clientCounts = $ClientCounts; latencyMs = $LatencyMs; reconcileMs = $ReconcileMs; repeats = $Repeats
     cadenceOrder = 'Provided order on odd repeats, reversed on even repeats'
     bodiesPerPlayer = $BodiesPerPlayer; sharedBodies = $SharedBodies; totalBodiesOverride = $TotalBodies
     tickRate = $TickRate; seconds = $Seconds; settleSeconds = $SettleSeconds; jobWorkerCount = $JobWorkerCount
@@ -188,7 +189,7 @@ foreach ($repeat in 1..$Repeats) {
                     'Trail' { '-trailScenarioOnly' }
                 }
                 $shared = @('-batchmode', '-nographics', '-job-worker-count', "$JobWorkerCount",
-                    $scenarioFlag, '-fpEventMask', "$EventMask", '-count', "$clients", '-port', "$($BasePort + $caseIndex)",
+                    $scenarioFlag, '-fpEventMask', "$EventMask", '-fpPolicy', $Policy, '-count', "$clients", '-port', "$($BasePort + $caseIndex)",
                     '-connectTimeout', "$RunTimeoutSeconds", '-tickRate', "$TickRate",
                     '-fpBodiesPerPlayer', "$BodiesPerPlayer", '-fpSharedBodies', "$SharedBodies",
                     '-fpSeconds', (Format-Number $Seconds), '-fpSettleSeconds', (Format-Number $SettleSeconds),
@@ -201,7 +202,7 @@ foreach ($repeat in 1..$Repeats) {
                     $records.Add((New-PlayerRecord 'client' "client-$client" ($shared + @('-fpReconcileMs', $intervalText)) $caseDirectory))
                 }
                 $case = [pscustomobject]@{
-                    caseId = $caseId; repeat = $repeat; clients = $clients; totalBodies = $bodyCount
+                    caseId = $caseId; repeat = $repeat; clients = $clients; totalBodies = $bodyCount; policy = $Policy
                     configuredLatencyMs = $latency; nominalEffectiveAddedOneWayMs = $effectiveOneWay
                     nominalEffectiveAddedRttMs = 2 * $effectiveOneWay; clientReconcileMs = $interval
                     serverReconcileMs = 0; jobWorkerCount = $JobWorkerCount; port = $BasePort + $caseIndex

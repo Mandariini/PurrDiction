@@ -24,6 +24,7 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
     private float _settleSeconds;
     private double _reconcileMs;
     private int _eventMask;
+    private PredictionPolicy _policy = PredictionPolicy.FullPrediction;
     private ulong _startReliable, _startFull, _startReceived, _startFullReceived;
     private ulong _startDeltaFrames, _startDeltaBytes, _startFullBytes;
     private string _metricsPath;
@@ -50,6 +51,9 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
         _eventMask = ReadInt("-fpEventMask", 0, 0);
         if (_eventMask > 127)
             _configurationError = "-fpEventMask must be between 0 and 127";
+        if (CommandLineUtils.TryGetArgument("-fpPolicy", out var policyText) && !string.IsNullOrEmpty(policyText) &&
+            !Enum.TryParse(policyText, true, out _policy))
+            _configurationError = $"-fpPolicy '{policyText}' is not a PredictionPolicy";
         CommandLineUtils.TryGetArgument("-fpMetrics", out _metricsPath);
         if (_totalBodies - _sharedBodies < ctx.expectedConnections)
             _configurationError = "-fpTotalBodies must leave at least one owned body per client after shared bodies";
@@ -77,17 +81,19 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
         rb.sleepThreshold = 0f;
         rb.collisionDetectionMode = CollisionDetectionMode.Discrete;
         _bodyPrefab.AddComponent<BoxCollider>().size = Vector3.one * 0.8f;
+        // Every body component carries the same configured policy; per-client resolution
+        // (owned vs remote) is the production behaviour being measured.
         var predictedTransform = _bodyPrefab.AddComponent<PredictedTransform>();
-        predictedTransform.SetPredictionPolicyOverride(PredictionPolicy.FullPrediction);
+        predictedTransform.SetPredictionPolicyOverride(_policy);
         var predictedRigidbody = _bodyPrefab.AddComponent<PredictedRigidbody>();
-        predictedRigidbody.SetPredictionPolicyOverride(PredictionPolicy.FullPrediction);
+        predictedRigidbody.SetPredictionPolicyOverride(_policy);
         typeof(PredictedTransform).GetField("_floatAccuracy", BindingFlags.Instance | BindingFlags.NonPublic)
             ?.SetValue(predictedTransform, FloatAccuracy.Purrfect);
         typeof(PredictedRigidbody).GetField("_floatAccuracy", BindingFlags.Instance | BindingFlags.NonPublic)
             ?.SetValue(predictedRigidbody, FloatAccuracy.Purrfect);
         typeof(PredictedRigidbody).GetField("_eventMask", BindingFlags.Instance | BindingFlags.NonPublic)
             ?.SetValue(predictedRigidbody, (PhysicsEventMask)_eventMask);
-        _bodyPrefab.AddComponent<FullPredictionBenchmarkBody>().SetPredictionPolicyOverride(PredictionPolicy.FullPrediction);
+        _bodyPrefab.AddComponent<FullPredictionBenchmarkBody>().SetPredictionPolicyOverride(_policy);
         PredictionTestUtils.RegisterPrefab(ctx, _bodyPrefab);
     }
 
@@ -100,7 +106,7 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
             bodiesPerPlayer = _bodiesPerPlayer, sharedBodies = _sharedBodies, totalBodies = _totalBodies,
             predictedEventMask = _eventMask,
             requestedSeconds = _seconds, settleSeconds = _settleSeconds, reconcileIntervalMs = _reconcileMs,
-            tickRate = _world.tickRate, policy = "FullPrediction", physicsProvider = "UnityPhysics3D",
+            tickRate = _world.tickRate, policy = _policy.ToString(), physicsProvider = "UnityPhysics3D",
             stateAccuracy = "Purrfect", positionTolerance = 0.00001f,
             velocityTolerance = 0.00001f, rotationToleranceDegrees = 0.05f
         };
@@ -172,7 +178,9 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
         await ScenarioBarrier.Wait(ctx, SampledBarrier, Timeout);
         _world.onBeforePhysicsPass += ObserveValidationTick;
 
-        if (_report.contacts == 0 || _report.bodyContacts == 0 || _report.groundingQueries == 0)
+        // Relay clients keep every body kinematic, and kinematic pairs report no contacts.
+        bool expectContacts = ctx.isServer || _policy != PredictionPolicy.ServerRelay;
+        if ((expectContacts && (_report.contacts == 0 || _report.bodyContacts == 0)) || _report.groundingQueries == 0)
             return ScenarioResult.Fail($"inactive workload: contacts={_report.contacts}, bodyContacts={_report.bodyContacts}, groundingQueries={_report.groundingQueries}");
         if (_report.actualStartTick != _report.scheduledStartTick || _report.actualEndTick != _report.scheduledEndTick)
             return ScenarioResult.Fail($"sampling missed agreed tick window: {_report.actualStartTick}..{_report.actualEndTick} vs {_report.scheduledStartTick}..{_report.scheduledEndTick}");
@@ -299,18 +307,27 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
     private string ValidateWorkload(ScenarioContext ctx)
     {
         int owned = 0;
+        var resolved = new Dictionary<PredictionPolicy, int>();
         for (int i = 0; i < _bodies.Count; i++)
         {
             var body = _bodies[i];
             if (body.owner.HasValue)
                 owned++;
-            if (body.GetResolvedPredictionPolicy() != PredictionPolicy.FullPrediction ||
-                _rigidbodies[i].GetResolvedPredictionPolicy() != PredictionPolicy.FullPrediction ||
-                _transforms[i].GetResolvedPredictionPolicy() != PredictionPolicy.FullPrediction ||
-                body.GetComponent<Rigidbody>().isKinematic)
+            var policy = body.GetResolvedPredictionPolicy();
+            if (_rigidbodies[i].GetResolvedPredictionPolicy() != policy ||
+                _transforms[i].GetResolvedPredictionPolicy() != policy)
+                return $"body {body.id} components resolved different prediction policies";
+            if (_policy == PredictionPolicy.FullPrediction &&
+                (policy != PredictionPolicy.FullPrediction || body.GetComponent<Rigidbody>().isKinematic))
                 return $"body {body.id} is not dynamic FULL prediction";
+            resolved.TryGetValue(policy, out int count);
+            resolved[policy] = count + 1;
         }
         _report.ownedBodies = owned;
+        var resolvedText = new System.Text.StringBuilder();
+        foreach (var pair in resolved)
+            resolvedText.Append(resolvedText.Length > 0 ? ";" : "").Append(pair.Key).Append('=').Append(pair.Value);
+        _report.resolvedPolicies = resolvedText.ToString();
         return owned == _totalBodies - _sharedBodies ? null : $"owned body count={owned}, expected={_totalBodies - _sharedBodies}";
     }
 
@@ -433,7 +450,7 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
 [Serializable]
 public sealed class FullPredictionBenchmarkReport
 {
-    public string role, policy, physicsProvider, stateAccuracy, message;
+    public string role, policy, resolvedPolicies, physicsProvider, stateAccuracy, message;
     public bool success, verifiedStateMatch, requestedValidationTickApplied;
     public int clients, bodiesPerPlayer, sharedBodies, ownedBodies, totalBodies, tickRate, validatedBodies, predictedEventMask;
     public float requestedSeconds, settleSeconds, positionTolerance, velocityTolerance, rotationToleranceDegrees;

@@ -850,6 +850,58 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void RestoringRelayLocksWritesUnityStateOnlyWhenItDrifted()
+        {
+            var managerObject = new GameObject("PredictionManager");
+            var identityObject = new GameObject("RelayLockUnityProbe");
+            try
+            {
+                var manager = managerObject.AddComponent<PredictionManager>();
+                var identity = identityObject.AddComponent<RelayLockUnityProbe>();
+                identity.AttachForTest(manager);
+                identity.SetPredictionPolicyOverride(PredictionPolicy.ServerRelay);
+                identity.unityValue = 7;
+                identity.GetLatestUnityState();
+                identity.RunSaveStateUnchecked(42UL);
+
+                var locksField = typeof(PredictionManager).GetField("_speculativeRelayLocks", InstanceFields);
+                var lockType = typeof(PredictionManager).GetNestedType(
+                    "SpeculativeRelayLock", BindingFlags.Public | BindingFlags.NonPublic);
+                Assert.That(locksField, Is.Not.Null);
+                Assert.That(lockType, Is.Not.Null);
+                var locks = (IList)locksField.GetValue(manager);
+
+                void Lock()
+                {
+                    var entry = Activator.CreateInstance(lockType);
+                    lockType.GetField("system")?.SetValue(entry, identity);
+                    lockType.GetField("tick")?.SetValue(entry, 42UL);
+                    locks.Add(entry);
+                }
+
+                // Nothing touched the identity: no Unity write, no transform sync.
+                Lock();
+                InvokeLifecycle(manager, "RestoreSpeculativeRelayStates");
+                Assert.That(identity.setUnityStateCalls, Is.Zero);
+                Assert.That(locks.Count, Is.Zero);
+
+                // Something moved the Unity object during the tick: the lock re-asserts it.
+                identity.unityValue = 9;
+                Lock();
+                InvokeLifecycle(manager, "RestoreSpeculativeRelayStates");
+                Assert.That(identity.setUnityStateCalls, Is.EqualTo(1));
+                Assert.That(identity.unityValue, Is.EqualTo(7));
+                Assert.That(locks.Count, Is.Zero);
+                identity.DetachForTest();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(identityObject);
+                UnityEngine.Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
         public void RestoringRelayLocksClearsTheSnapshotForTheNextTick()
         {
             var managerObject = new GameObject("PredictionManager");
@@ -1329,6 +1381,39 @@ namespace PurrNet.Prediction.Tests.Editor
         public void DetachForTest()
         {
             predictionManager = null;
+        }
+    }
+
+    public struct RelayLockUnityState : IPredictedData<RelayLockUnityState>
+    {
+        public int value;
+        public void Dispose() { }
+    }
+
+    public sealed class RelayLockUnityProbe : PredictedIdentity<RelayLockUnityState>
+    {
+        public int unityValue;
+        public int setUnityStateCalls { get; private set; }
+
+        public void AttachForTest(PredictionManager manager)
+        {
+            predictionManager = manager;
+            typeof(PredictedIdentity<RelayLockUnityState>)
+                .GetField("_stateHistory", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.SetValue(this, new History<FULL_STATE<RelayLockUnityState>>(64));
+        }
+
+        public void DetachForTest()
+        {
+            predictionManager = null;
+        }
+
+        protected override void GetUnityState(ref RelayLockUnityState state) => state.value = unityValue;
+
+        protected override void SetUnityState(RelayLockUnityState state)
+        {
+            setUnityStateCalls++;
+            unityValue = state.value;
         }
     }
 
