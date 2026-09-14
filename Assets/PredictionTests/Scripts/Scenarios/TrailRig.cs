@@ -118,7 +118,7 @@ public class TrailViewTracker : MonoBehaviour
     public struct Observation
     {
         public uint id;
-        public int physicalInstance;
+        public EntityId physicalInstance;
         public PlayerID? owner;
         public ulong localTick;
         public uint age;
@@ -153,7 +153,7 @@ public class TrailViewTracker : MonoBehaviour
     private Vector3 _disabledView;
     private int _disabledFrame;
     private bool _checkedResurrection;
-    private int _physicalInstance;
+    private EntityId _physicalInstance;
     private bool _hasPreviousContext;
     private Observation _previousContext;
     private Observation _currentContext;
@@ -173,7 +173,7 @@ public class TrailViewTracker : MonoBehaviour
     {
         _pt = GetComponent<PredictedTransform>();
         _proj = GetComponent<TrailProjectile>();
-        _physicalInstance = gameObject.GetInstanceID();
+        _physicalInstance = gameObject.GetEntityId();
     }
 
     private void OnEnable()
