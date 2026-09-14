@@ -15,9 +15,6 @@ namespace PurrNet.Prediction
     {
         public sealed override bool supportsSoftCorrection => false;
 
-        [UsedImplicitly]
-        public new PlayerID? owner { get; }
-
         private static StatelessHeSaid _stateless;
 
         [UsedImplicitly]
@@ -65,14 +62,14 @@ namespace PurrNet.Prediction
 
         internal override void WriteFirstState(ulong tick, BitPacker packer)
         {
-            var metadata = new PredictedIdentityState { owner = base.owner };
+            var metadata = new PredictedIdentityState { owner = owner };
             RefreshMetadataLedger(tick, in metadata);
             Packer<PredictedIdentityState>.Write(packer, metadata);
         }
 
         internal override bool WriteCurrentState(PlayerID receiver, BitPacker packer, ulong baselineTick)
         {
-            var metadata = new PredictedIdentityState { owner = base.owner };
+            var metadata = new PredictedIdentityState { owner = owner };
             return WritePredictionMetadata(packer, baselineTick, in metadata);
         }
 
