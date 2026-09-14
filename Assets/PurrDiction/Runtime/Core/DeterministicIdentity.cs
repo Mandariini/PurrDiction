@@ -111,14 +111,17 @@ namespace PurrNet.Prediction
             _stateHistory.ClearFuture(stateTick);
         }
 
-        private InterpolatedWithDispose<FULL_STATE<STATE>> _interpolatedState;
+        private PredictedViewBuffer<FULL_STATE<STATE>> _interpolatedState;
+        private ulong _viewStateTick;
+
+        private ulong viewTeleportTick => predictionManager ? predictionManager.localTickInContext : 0;
         private History<FULL_STATE<STATE>> _stateHistory;
 
         protected TickManager tickModule { get; private set; }
 
         public override void ResetInterpolation()
         {
-            _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
+            _interpolatedState?.Teleport(viewTeleportTick, fullPredictedState.DeepCopy());
         }
 
         public override void ResetState()
@@ -145,7 +148,7 @@ namespace PurrNet.Prediction
             _viewState?.Dispose();
             _viewState = null;
 
-            _interpolatedState?.Teleport(default);
+            _interpolatedState?.Teleport(viewTeleportTick, default);
             _stateHistory?.Clear();
 
             fullPredictedState.Dispose();
@@ -207,11 +210,11 @@ namespace PurrNet.Prediction
 
             if (_interpolatedState == null)
             {
-                _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(
-                    FULLInterpolate, 1f / world.tickRate, fullPredictedState.DeepCopy(), interpolationBuffer);
+                _interpolatedState = new PredictedViewBuffer<FULL_STATE<STATE>>(
+                    FULLInterpolate, world.localTickInContext, fullPredictedState.DeepCopy(), interpolationBuffer + 2);
             }
             else
-                _interpolatedState.Teleport(fullPredictedState.DeepCopy());
+                _interpolatedState.Teleport(world.localTickInContext, fullPredictedState.DeepCopy());
 
             _viewState?.Dispose();
             _viewState = null;
@@ -271,6 +274,7 @@ namespace PurrNet.Prediction
 
             _viewState?.Dispose();
             _viewState = copy;
+            _viewStateTick = predictionManager ? predictionManager.localTick : 0;
         }
 
         protected virtual void ModifyRollbackViewState(ref STATE state, float delta, bool accumulateError) { }
@@ -352,17 +356,11 @@ namespace PurrNet.Prediction
 
             if (_viewState.HasValue)
             {
-                int depthBeforeAdd = _interpolatedState.bufferSize;
-                _interpolatedState.Add(_viewState.Value);
-                if (_interpolatedState.bufferSize <= depthBeforeAdd && predictionManager)
-                    predictionManager.ReportViewBufferTrim();
+                _interpolatedState.Add(_viewStateTick, _viewState.Value);
                 _viewState = null;
             }
 
-            viewState = _interpolatedState.Advance(deltaTime).state;
-
-            if (_interpolatedState.bufferSize == 0 && predictionManager)
-                predictionManager.ReportViewBufferStarved();
+            viewState = _interpolatedState.Sample(predictionManager.viewTick).state;
 
             if (_firstViewUpdate)
             {

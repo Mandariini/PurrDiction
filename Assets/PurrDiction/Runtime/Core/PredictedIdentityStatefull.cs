@@ -18,17 +18,20 @@ namespace PurrNet.Prediction
             return currentState.ToString();
         }
 
-        private InterpolatedWithDispose<FULL_STATE<STATE>> _interpolatedState;
+        private PredictedViewBuffer<FULL_STATE<STATE>> _interpolatedState;
+        private ulong _viewStateTick;
+        private ulong _viewSpawnTick;
+
+        private ulong viewTeleportTick => predictionManager ? predictionManager.localTickInContext : 0;
         private History<FULL_STATE<STATE>> _stateHistory;
         private History<FULL_STATE<STATE>> _verifiedHistory;
 
         protected TickManager tickModule { get; private set; }
         private bool _firstViewUpdate = true;
 
-
         public override void ResetInterpolation()
         {
-            _interpolatedState?.Teleport(fullPredictedState.DeepCopy());
+            _interpolatedState?.Teleport(viewTeleportTick, fullPredictedState.DeepCopy());
         }
 
         public override void ResetState()
@@ -55,7 +58,7 @@ namespace PurrNet.Prediction
             _viewState?.Dispose();
             _viewState = null;
 
-            _interpolatedState?.Teleport(default);
+            _interpolatedState?.Teleport(viewTeleportTick, default);
             _stateHistory?.Clear();
             _verifiedHistory = null;
             _liveVerifiedThroughTick = 0;
@@ -100,7 +103,8 @@ namespace PurrNet.Prediction
 
         internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
-            bool preserveInterpolation = world.isReplaying && !isFreshSpawn && this.id.Equals(id);
+            bool preserveInterpolation = world.isReplaying && !isFreshSpawn && this.id.Equals(id) &&
+                                         _viewSpawnTick == world.localTickInContext;
 
             myType = GetType();
             hierarchy = world.hierarchy;
@@ -132,13 +136,15 @@ namespace PurrNet.Prediction
 
             if (_interpolatedState == null)
             {
-                _interpolatedState = new InterpolatedWithDispose<FULL_STATE<STATE>>(
-                    FULLInterpolate, 1f / world.tickRate, fullPredictedState.DeepCopy(), interpolationBuffer);
+                _interpolatedState = new PredictedViewBuffer<FULL_STATE<STATE>>(
+                    FULLInterpolate, world.localTickInContext, fullPredictedState.DeepCopy(), interpolationBuffer + 2);
+                _viewSpawnTick = world.localTickInContext;
                 OnViewInterpolationReset();
             }
             else if (!preserveInterpolation)
             {
-                _interpolatedState.Teleport(fullPredictedState.DeepCopy());
+                _interpolatedState.Teleport(world.localTickInContext, fullPredictedState.DeepCopy());
+                _viewSpawnTick = world.localTickInContext;
                 OnViewInterpolationReset();
             }
 
@@ -226,6 +232,7 @@ namespace PurrNet.Prediction
 
             _viewState?.Dispose();
             _viewState = copy;
+            _viewStateTick = predictionManager ? predictionManager.localTick : 0;
         }
 
         protected virtual void ModifyRollbackViewState(ref STATE state, float delta, bool accumulateError) { }
@@ -254,7 +261,7 @@ namespace PurrNet.Prediction
             _viewState?.Dispose();
             _viewState = null;
 
-            _interpolatedState.Teleport(new FULL_STATE<STATE>
+            _interpolatedState.Teleport(viewTeleportTick, new FULL_STATE<STATE>
             {
                 state = state,
                 prediction = fullPredictedState.prediction
@@ -589,7 +596,21 @@ namespace PurrNet.Prediction
         /// Number of view samples currently buffered ahead of the rendered pose, or -1 before
         /// the view buffer exists.
         /// </summary>
-        public int viewInterpolationBufferSize => _interpolatedState?.bufferSize ?? -1;
+        public int viewInterpolationBufferSize => _interpolatedState?.Count ?? -1;
+
+        /// <summary>
+        /// Prediction tick of the newest view sample at or before the presented tick, or 0 before
+        /// the view buffer exists.
+        /// </summary>
+        public ulong viewAnchorTick => _interpolatedState?.anchorTick ?? 0;
+
+        /// <summary>
+        /// Prediction tick of the next pending view sample, or 0 when the view is holding its
+        /// newest state. A gap larger than one tick from <see cref="viewAnchorTick"/> means the view
+        /// is gliding across ticks that were never latched.
+        /// </summary>
+        public ulong viewNextSampleTick =>
+            _interpolatedState != null && _interpolatedState.TryGetNextTick(out var tick) ? tick : 0;
 
         /// <summary>
         /// True while a tick has produced a view sample that the next view pass has not consumed
@@ -642,17 +663,11 @@ namespace PurrNet.Prediction
 
             if (_viewState.HasValue)
             {
-                int depthBeforeAdd = _interpolatedState.bufferSize;
-                _interpolatedState.Add(_viewState.Value);
-                if (_interpolatedState.bufferSize <= depthBeforeAdd && predictionManager)
-                    predictionManager.ReportViewBufferTrim();
+                _interpolatedState.Add(_viewStateTick, _viewState.Value);
                 _viewState = null;
             }
 
-            viewState = _interpolatedState.Advance(deltaTime).state;
-
-            if (_interpolatedState.bufferSize == 0 && predictionManager)
-                predictionManager.ReportViewBufferStarved();
+            viewState = _interpolatedState.Sample(predictionManager.viewTick).state;
 
             if (_firstViewUpdate)
             {

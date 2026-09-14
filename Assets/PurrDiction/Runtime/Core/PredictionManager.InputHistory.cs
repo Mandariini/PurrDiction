@@ -37,6 +37,8 @@ namespace PurrNet.Prediction
             public BitPacker packer;
             public List<CachedInputEntry> entries;
             public bool rosterRepeatsPrevious;
+            public List<PlayerViewOffset> viewOffsets;
+            public bool viewOffsetRosterRepeatsPrevious;
         }
 
         private CachedInputBlock[] _inputBlockCache;
@@ -63,6 +65,8 @@ namespace PurrNet.Prediction
             scratch.captured = false;
             scratch.packer.ResetPositionAndMode(false);
             scratch.entries.Clear();
+            scratch.viewOffsets ??= new List<PlayerViewOffset>();
+            CollectViewOffsets(tick, scratch.viewOffsets);
 
             _previousInputEntryIndex.Clear();
             CachedInputBlock previous = default;
@@ -105,6 +109,12 @@ namespace PurrNet.Prediction
                 sameRoster = scratch.entries[i].id.Equals(previous.entries[i].id);
             scratch.rosterRepeatsPrevious = sameRoster;
 
+            bool sameOffsetRoster = hasPrevious && previous.viewOffsets != null &&
+                                    previous.viewOffsets.Count == scratch.viewOffsets.Count;
+            for (var i = 0; sameOffsetRoster && i < scratch.viewOffsets.Count; i++)
+                sameOffsetRoster = scratch.viewOffsets[i].player == previous.viewOffsets[i].player;
+            scratch.viewOffsetRosterRepeatsPrevious = sameOffsetRoster;
+
             // Publish only after user packers succeed, preserving retained history if one throws.
             int index = (int)(tick % (ulong)_inputBlockCache.Length);
             var replaced = _inputBlockCache[index];
@@ -119,6 +129,28 @@ namespace PurrNet.Prediction
                 PruneInputHistory(tick);
             _latestCapturedInputTick = tick;
             _hasCapturedInputHistory = true;
+        }
+
+        private static void WriteTranscriptViewOffsets(BitPacker frame, in CachedInputBlock block, bool allowRepeat)
+        {
+            var offsets = block.viewOffsets;
+            int count = offsets?.Count ?? 0;
+            Packer<PackedUInt>.Write(frame, (uint)count);
+            if (count == 0)
+                return;
+
+            bool sameRoster = allowRepeat && block.viewOffsetRosterRepeatsPrevious;
+            if (allowRepeat)
+                Packer<bool>.Write(frame, sameRoster);
+
+            if (!sameRoster)
+            {
+                for (var i = 0; i < count; i++)
+                    Packer<PlayerID>.Write(frame, offsets[i].player);
+            }
+
+            for (var i = 0; i < count; i++)
+                frame.WriteBits(offsets[i].quantized, (byte)ViewOffsetBits);
         }
 
         private static void WriteTranscriptEntry(BitPacker frame, in CachedInputBlock block, int index)

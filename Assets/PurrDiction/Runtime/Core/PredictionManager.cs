@@ -46,6 +46,10 @@ namespace PurrNet.Prediction
         [Tooltip("When a client's input for the current tick has not arrived, reuse its last known input instead of simulating with default input.")]
         [SerializeField] private bool _extrapolateMissingInputs = true;
 
+        [Header("Lag Compensation")]
+        [Tooltip("Longest rewind a client may request when hit tests are resolved against collider rollback history, in seconds. Requests beyond this are clamped on the server. The view interpolation buffer never holds more than 0.1 s, so 0.15 s covers legitimate clients with headroom.")]
+        [SerializeField, Min(0f)] private float _maxLagCompensationSeconds = 0.15f;
+
         [Header("Determinism")]
         [Tooltip("How the server responds when a client's deterministic state diverges. Per-identity overrides on DeterministicIdentity take precedence. Ignore has zero overhead.")]
         [SerializeField] private DesyncPolicy _desyncPolicy = DesyncPolicy.Ignore;
@@ -465,6 +469,7 @@ namespace PurrNet.Prediction
             DisposeLifecycleHistory();
             ClearVerifiedInputTranscript();
             DisposeCachedInputPayload();
+            ResetLagCompensation();
             _nextSystemId = 0;
             foreach (var queue in _clientTicks.Values)
                 queue.Clear();
@@ -820,6 +825,7 @@ namespace PurrNet.Prediction
             if (!cachedIsServer && _pauseAdvanceTicks > 0)
             {
                 _pauseAdvanceTicks--;
+                RecordColliderTick(localTick);
                 return;
             }
 
@@ -833,6 +839,9 @@ namespace PurrNet.Prediction
 
             if (cachedIsServer)
                 PrepareInputs();
+
+            if (cachedIsClient)
+                RecordLocalViewOffset(localTick);
 
             using var ownedIdentities = DisposableList<PredictedIdentity>.Create(_systemsCount);
 
@@ -982,6 +991,7 @@ namespace PurrNet.Prediction
 
             localTick += 1;
             localTickInContext = localTick;
+            RecordColliderTick(localTick);
         }
 
         private void PrepareInputs()
@@ -990,6 +1000,7 @@ namespace PurrNet.Prediction
             {
                 if (queue.byTick.Remove(localTick, out var entry))
                 {
+                    RecordViewOffset(player, localTick, entry.viewOffset);
                     HandleIncomingInput(entry.inputPacket, entry.count, player);
                     entry.inputPacket.Dispose();
                     queue.lastConsumedTick = localTick;
@@ -1200,6 +1211,7 @@ namespace PurrNet.Prediction
                 }
 
                 int blockBits = wireBlock.positionInBits;
+                payload.WriteBits(GetUploadViewOffset(tick), (byte)ViewOffsetBits);
                 Packer<PackedUInt>.Write(payload, (uint)blockBits);
                 Packer<PackedUInt>.Write(payload, (uint)curSpans.Count);
                 payload.WriteBitsWithoutConsumingIt(wireBlock, blockBits);
@@ -1644,7 +1656,6 @@ namespace PurrNet.Prediction
         /// <see cref="isVerified"/> directly for visual/audio feedback.
         /// </summary>
         public bool isVerifiedView => isVerified && !isCatchingUpFrames;
-
 
         /// <summary>
         /// Is the prediction manager currently simulating a frame?
@@ -2622,6 +2633,7 @@ namespace PurrNet.Prediction
 
         private void UpdateInterpolation(bool accumulateError)
         {
+            LatchViewClock();
             for (var j = 0; j < _systemsCount; j++)
                 _systems[j].RunUpdateRollbackInterpolation(tickDelta, accumulateError);
         }
@@ -2775,6 +2787,7 @@ namespace PurrNet.Prediction
             public PackedUInt count;
             public BitPacker inputPacket;
             public ulong clientTick;
+            public uint viewOffset;
         }
 
         public class InputQueue
@@ -2871,6 +2884,8 @@ namespace PurrNet.Prediction
 
                 for (uint i = 0; i < tickCount; i++)
                 {
+                    uint viewOffset = ClampViewOffset(
+                        (uint)payload.ReadBits((byte)ViewOffsetBits), maxLagCompensationTicks);
                     PackedUInt blockBits = default;
                     Packer<PackedUInt>.Read(payload, ref blockBits);
                     PackedUInt count = default;
@@ -2956,7 +2971,8 @@ namespace PurrNet.Prediction
                         {
                             count = count,
                             inputPacket = slice,
-                            clientTick = tick
+                            clientTick = tick,
+                            viewOffset = viewOffset
                         };
                     }
 
@@ -3043,6 +3059,7 @@ namespace PurrNet.Prediction
             try
             {
                 var dt = Time.unscaledDeltaTime;
+                AdvanceViewClock(dt);
                 for (var i = 0; i < _systemsCount; i++)
                     _systems[i].RunUpdateView(dt);
             }

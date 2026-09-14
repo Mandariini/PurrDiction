@@ -16,6 +16,8 @@ namespace PurrNet.Prediction
         private readonly List<InputHistorySpan> _verifiedInputEntries = new();
         private readonly HashSet<PredictedComponentID> _verifiedInputIds = new();
         private readonly List<bool> _verifiedInputRepeatScratch = new();
+        private readonly List<VerifiedInputTick> _verifiedViewOffsetTicks = new();
+        private readonly List<PlayerViewOffset> _verifiedViewOffsets = new();
         private BitPacker _verifiedInputPayload;
         private ulong _verifiedInputFrom;
         private ulong _verifiedInputThrough;
@@ -29,6 +31,50 @@ namespace PurrNet.Prediction
             _verifiedInputEntries.Clear();
             _verifiedInputIds.Clear();
             _verifiedInputRepeatScratch.Clear();
+            _verifiedViewOffsetTicks.Clear();
+            _verifiedViewOffsets.Clear();
+        }
+
+        private void ReadTranscriptViewOffsets(BitPacker frame, int frameEndBit, ulong tick, bool allowRepeat)
+        {
+            uint count = Packer<PackedUInt>.Read(frame);
+            if (frame.positionInBits > frameEndBit || count > (uint)(frameEndBit - frame.positionInBits))
+                throw new MissingPredictionBaselineException($"Invalid view offset count at tick {tick}.");
+
+            int first = _verifiedViewOffsets.Count;
+            int tickIndex = _verifiedViewOffsetTicks.Count;
+            _verifiedViewOffsetTicks.Add(new VerifiedInputTick { firstEntry = first, count = (int)count });
+            if (count == 0)
+                return;
+
+            bool sameRoster = allowRepeat && Packer<bool>.Read(frame);
+            if (sameRoster)
+            {
+                var previous = _verifiedViewOffsetTicks[tickIndex - 1];
+                if (previous.count != (int)count)
+                    throw new MissingPredictionBaselineException(
+                        $"View offset roster at tick {tick} does not match the previous tick it repeats.");
+                for (var i = 0; i < count; i++)
+                    _verifiedViewOffsets.Add(new PlayerViewOffset(_verifiedViewOffsets[previous.firstEntry + i].player, 0));
+            }
+            else
+            {
+                for (var i = 0; i < count; i++)
+                {
+                    var player = Packer<PlayerID>.Read(frame);
+                    if (frame.positionInBits > frameEndBit)
+                        throw new MissingPredictionBaselineException($"Truncated view offset roster at tick {tick}.");
+                    _verifiedViewOffsets.Add(new PlayerViewOffset(player, 0));
+                }
+            }
+
+            for (var i = 0; i < count; i++)
+            {
+                if (frame.positionInBits + ViewOffsetBits > frameEndBit)
+                    throw new MissingPredictionBaselineException($"Truncated view offsets at tick {tick}.");
+                uint quantized = (uint)frame.ReadBits((byte)ViewOffsetBits);
+                _verifiedViewOffsets[first + i] = new PlayerViewOffset(_verifiedViewOffsets[first + i].player, quantized);
+            }
         }
 
         private void BeginVerifiedInputTranscript(ulong firstTick, ulong lastTick)
@@ -95,10 +141,14 @@ namespace PurrNet.Prediction
                     throw new MissingPredictionBaselineException($"Invalid authoritative input count at tick {tick}.");
                 BeginVerifiedInputTick();
                 if (entries == 0)
+                {
+                    _verifiedViewOffsetTicks.Add(new VerifiedInputTick { firstEntry = _verifiedViewOffsets.Count });
                     continue;
+                }
 
                 var previousBatch = k > 0 ? _verifiedInputTicks[(int)k - 1] : default;
                 bool sameRoster = k > 0 && Packer<bool>.Read(frame);
+                ReadTranscriptViewOffsets(frame, frameEndBit, tick, k > 0 && previousBatch.count > 0);
                 _verifiedInputRepeatScratch.Clear();
                 if (sameRoster)
                 {
@@ -140,7 +190,15 @@ namespace PurrNet.Prediction
                 tick - _verifiedInputFrom >= (ulong)_verifiedInputTicks.Count)
                 throw new MissingPredictionBaselineException($"Missing authoritative input transcript at tick {tick}.");
 
-            var batch = _verifiedInputTicks[(int)(tick - _verifiedInputFrom)];
+            int tickIndex = (int)(tick - _verifiedInputFrom);
+            if (tickIndex < _verifiedViewOffsetTicks.Count)
+            {
+                var offsets = _verifiedViewOffsetTicks[tickIndex];
+                for (int i = offsets.firstEntry; i < offsets.firstEntry + offsets.count; i++)
+                    RecordViewOffset(_verifiedViewOffsets[i].player, tick, _verifiedViewOffsets[i].quantized);
+            }
+
+            var batch = _verifiedInputTicks[tickIndex];
             _verifiedInputIds.Clear();
             using var payload = BitPackerPool.Get();
             for (int i = batch.firstEntry; i < batch.firstEntry + batch.count; i++)

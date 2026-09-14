@@ -750,6 +750,16 @@ namespace PurrNet.Prediction
 
         public bool isOwner => IsOwner();
 
+        /// <summary>
+        /// The precise prediction tick the controlling player was presenting when it produced the
+        /// input for the tick being simulated. Pass it to <see cref="PredictionManager.lagCompensation"/>
+        /// queries to hit-test the world as that player saw it. Server-controlled identities return
+        /// the tick being simulated. Only meaningful inside Simulate.
+        /// </summary>
+        public double lagCompensationTick => predictionManager
+            ? predictionManager.GetLagCompensationTick(owner, predictionManager.localTickInContext)
+            : 0d;
+
         public bool isController
         {
             get

@@ -542,7 +542,6 @@ namespace PurrNet.Prediction
             dirty.Add(rootId);
         }
 
-
         void MarkVisibilityDirtyForOwnership(
             PlayerID player,
             PredictedObjectID rootId)
@@ -1075,20 +1074,30 @@ namespace PurrNet.Prediction
                 return;
 
             bool sameRoster = false;
+            bool previousWroteOffsets = false;
             if (allowRepeat)
             {
-                if (timeline.isPassThrough)
-                    sameRoster = block.rosterRepeatsPrevious;
-                else if (TryGetInputBlockForTick(tick - 1, out var previous))
+                if (TryGetInputBlockForTick(tick - 1, out var previous))
                 {
-                    var previousVisible = _previousVisibleInputEntryScratch;
-                    CollectVisibleInputEntries(timeline, in previous, tick - 1, previousVisible);
-                    sameRoster = previousVisible.Count == visible.Count;
-                    for (var i = 0; sameRoster && i < visible.Count; i++)
-                        sameRoster = entries[visible[i]].id.Equals(previous.entries[previousVisible[i]].id);
+                    if (timeline.isPassThrough)
+                    {
+                        sameRoster = block.rosterRepeatsPrevious;
+                        previousWroteOffsets = previous.entries.Count > 0;
+                    }
+                    else
+                    {
+                        var previousVisible = _previousVisibleInputEntryScratch;
+                        CollectVisibleInputEntries(timeline, in previous, tick - 1, previousVisible);
+                        previousWroteOffsets = previousVisible.Count > 0;
+                        sameRoster = previousVisible.Count == visible.Count;
+                        for (var i = 0; sameRoster && i < visible.Count; i++)
+                            sameRoster = entries[visible[i]].id.Equals(previous.entries[previousVisible[i]].id);
+                    }
                 }
                 Packer<bool>.Write(frame, sameRoster);
             }
+
+            WriteTranscriptViewOffsets(frame, in block, allowRepeat && previousWroteOffsets);
 
             if (sameRoster)
             {
