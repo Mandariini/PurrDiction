@@ -14,6 +14,13 @@ using UnityEngine.SceneManagement;
 
 namespace PurrNet.Prediction
 {
+    public enum SimulationOnlyOutsideSimulationBehavior
+    {
+        ReturnEarly,
+        LogAndReturnEarly,
+        LogOnly
+    }
+
     [DefaultExecutionOrder(1000)]
     [AddComponentMenu("PurrDiction/Prediction Manager")]
     public partial class PredictionManager : NetworkIdentity
@@ -22,7 +29,7 @@ namespace PurrNet.Prediction
         static void Initialize() => _instances.Clear();
 
 #if UNITY_6000_3_OR_NEWER
-        static readonly Dictionary<SceneHandle, PredictionManager> _instances = new ();
+        static readonly Dictionary<SceneHandle, PredictionManager> _instances = new();
 #else
         static readonly Dictionary<int, PredictionManager> _instances = new ();
 #endif
@@ -35,7 +42,8 @@ namespace PurrNet.Prediction
 
         [SerializeField] private PredictionPhysicsProvider _physicsProvider;
         [SerializeField] private UpdateViewMode _updateViewMode = UpdateViewMode.Update;
-        [SerializeField, PurrLock] private BuiltInSystems _builtInSystems =
+        [SerializeField, PurrLock]
+        private BuiltInSystems _builtInSystems =
             BuiltInSystems.Physics3D |
             BuiltInSystems.Physics2D |
             BuiltInSystems.Time |
@@ -58,6 +66,9 @@ namespace PurrNet.Prediction
         [Tooltip("How often clients report deterministic state hashes to the server, in seconds. Only applies when the resolved policy of at least one identity is not Ignore.")]
         [SerializeField, Min(0.05f)] private float _desyncCheckIntervalSeconds = 0.25f;
 
+        [Header("Simulation Only Outside Simulation")]
+        [SerializeField] private SimulationOnlyOutsideSimulationBehavior _simulationOnlyOutsideSimulationBehavior = SimulationOnlyOutsideSimulationBehavior.LogAndReturnEarly;
+
         public PredictedPrefabs predictedPrefabs
         {
             get => _predictedPrefabs;
@@ -69,6 +80,8 @@ namespace PurrNet.Prediction
         }
 
         public DesyncPolicy desyncPolicy => _desyncPolicy;
+
+        public SimulationOnlyOutsideSimulationBehavior simulationOnlyOutsideSimulationBehavior => _simulationOnlyOutsideSimulationBehavior;
 
         static readonly ProfilerMarker SimulateMarker = new("PredictionManager.Simulate");
         static readonly ProfilerMarker SimulateInputsMarker = new("PredictionManager.PrepareSimulationInputs");
@@ -85,8 +98,8 @@ namespace PurrNet.Prediction
         static readonly ProfilerMarker ReadInputHistoryMarker = new("PredictionManager.ReadInputHistory");
         static readonly ProfilerMarker ReplayToLatestTickMarker = new("PredictionManager.ReplayToLatestTick");
 
-        readonly List<PredictedIdentity> _queue = new ();
-        readonly List<PredictedIdentity> _systems = new ();
+        readonly List<PredictedIdentity> _queue = new();
+        readonly List<PredictedIdentity> _systems = new();
         private int _systemsCount;
 
         GameObjectPoolCollection _pools;
@@ -213,8 +226,8 @@ namespace PurrNet.Prediction
             }
         }
 
-        readonly Dictionary<(uint, PredictedComponentID, int), IVerifiedStateStore> _verifiedStores = new ();
-        readonly List<(PredictedComponentID componentId, IVerifiedStateStore store)> _verifiedStoreMaintenance = new ();
+        readonly Dictionary<(uint, PredictedComponentID, int), IVerifiedStateStore> _verifiedStores = new();
+        readonly List<(PredictedComponentID componentId, IVerifiedStateStore store)> _verifiedStoreMaintenance = new();
         int _verifiedStoreMaintenanceCursor;
         const int VerifiedStoresInspectedPerFrame = 8;
         const int VerifiedStoreCompactionPayloadBudget = 64 * 1024;
@@ -572,7 +585,7 @@ namespace PurrNet.Prediction
                     if (!preserveSoftState)
                         component.OnPreSetup();
                     if (reset || recycledForNewId)
-                         component.ResetState();
+                        component.ResetState();
                     if (triggedOnRemovedFromPool)
                         component.TriggerOnRemovedFromPool();
                     RegisterInstance(component, objectID, i, owner, preserveSoftState);
@@ -622,7 +635,7 @@ namespace PurrNet.Prediction
             ListPool<PredictedIdentity>.Destroy(components);
         }
 
-        readonly Dictionary<PredictedComponentID, PredictedIdentity> _instanceMap = new ();
+        readonly Dictionary<PredictedComponentID, PredictedIdentity> _instanceMap = new();
 
         public bool TryGetIdentity(PredictedComponentID id, out PredictedIdentity instance)
         {
@@ -741,7 +754,7 @@ namespace PurrNet.Prediction
                 OnPreTick();
         }
 
-        readonly List<PlayerID> _pendingFullSync = new ();
+        readonly List<PlayerID> _pendingFullSync = new();
 
         protected override void OnObserverAdded(PlayerID player)
         {
@@ -817,7 +830,7 @@ namespace PurrNet.Prediction
             PredictionPerformanceTelemetry.StateRestored(this);
         }
 
-        readonly List<PlayerPacker> _clientFrames = new (16);
+        readonly List<PlayerPacker> _clientFrames = new(16);
 
         public bool cachedIsServer { get; private set; }
 
@@ -1019,7 +1032,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        private static readonly List<ulong> _staleInputScratch = new ();
+        private static readonly List<ulong> _staleInputScratch = new();
 
         private void PruneStaleInputs(InputQueue queue)
         {
@@ -1697,6 +1710,30 @@ namespace PurrNet.Prediction
         /// </summary>
         public event Action onAfterPhysicsPass;
 
+        internal bool CanRunSimulationOnly(PredictedIdentity identity, string methodName)
+        {
+            if (isSimulating)
+                return true;
+
+            switch (_simulationOnlyOutsideSimulationBehavior)
+            {
+                case SimulationOnlyOutsideSimulationBehavior.ReturnEarly:
+                    return false;
+                case SimulationOnlyOutsideSimulationBehavior.LogAndReturnEarly:
+                    PurrLogger.LogWarning(
+                        $"Ignored [SimulationOnly] call to '{methodName}' on '{identity.GetType().Name}' because the prediction manager is not simulating.",
+                        identity);
+                    return false;
+                case SimulationOnlyOutsideSimulationBehavior.LogOnly:
+                    PurrLogger.LogWarning(
+                        $"[SimulationOnly] method '{methodName}' on '{identity.GetType().Name}' was called while the prediction manager was not simulating. Continuing because the behavior is set to LogOnly.",
+                        identity);
+                    return true;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+        }
+
         private void DoPhysicsPass(PredictionPerformanceTelemetry.PassScope performance)
         {
             var delta = tickDelta;
@@ -1770,7 +1807,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        readonly Queue<FrameDelta> _deltas = new ();
+        readonly Queue<FrameDelta> _deltas = new();
 
         [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Fast, mtuExceeded: MTUBehaviour.Fragment, immediate: true)]
         private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, PackedULong checkpointTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
@@ -2564,7 +2601,7 @@ namespace PurrNet.Prediction
             PurrLogger.LogError($"Cannot apply prediction frame {frame.serverTick}: {details} {reason}");
         }
 
-        readonly List<PredictedIdentity> _replayFrozenSystems = new ();
+        readonly List<PredictedIdentity> _replayFrozenSystems = new();
 
         private void NotifyReplayStart()
         {
@@ -2804,7 +2841,7 @@ namespace PurrNet.Prediction
             public ulong lastConsumedTick;
             public double pendingInputSlackMs;
             public bool hasPendingInputSlack;
-            public readonly Dictionary<ulong, InputQueueValue> byTick = new ();
+            public readonly Dictionary<ulong, InputQueueValue> byTick = new();
             public int Count => byTick.Count;
 
             public void Clear()
@@ -2818,7 +2855,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        readonly Dictionary<PlayerID, InputQueue> _clientTicks = new ();
+        readonly Dictionary<PlayerID, InputQueue> _clientTicks = new();
 
         [ServerRpc(requireOwnership: false, channel: Channel.Unreliable, mtuExceeded: MTUBehaviour.Fragment, immediate: true)]
         private void SendInputToServerFragmented(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)
@@ -3144,7 +3181,7 @@ namespace PurrNet.Prediction
             }
 #endif
 #if UNITY_PHYSICS_3D
-            if  (transform.TryGetComponent(out Rigidbody rb))
+            if (transform.TryGetComponent(out Rigidbody rb))
             {
                 rb.position = position;
                 rb.rotation = rotation;
