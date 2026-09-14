@@ -1769,7 +1769,7 @@ namespace PurrNet.Prediction
                 delta.packer.Dispose();
                 return;
             }
-            HandleFrameFromServer(serverTick, baselineTick, checkpointTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
+            HandleFrameFromServer(serverTick, baselineTick, checkpointTick, inputAck, false, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
         }
 
         [TargetRpc(compressionLevel: CompressionLevel.Best)]
@@ -1780,7 +1780,7 @@ namespace PurrNet.Prediction
                 delta.packer.Dispose();
                 return;
             }
-            HandleFrameFromServer(serverTick, baselineTick, checkpointTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
+            HandleFrameFromServer(serverTick, baselineTick, checkpointTick, inputAck, true, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
         }
 
         /// <summary>
@@ -3088,6 +3088,7 @@ namespace PurrNet.Prediction
             }
             catch
             {
+                /* ignored */
             }
         }
 

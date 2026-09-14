@@ -61,8 +61,10 @@ public sealed class FullPredictionBenchmarkBody : PredictedIdentity<FullPredicti
         _body.AddForce(force * (state.grounded ? 1f : 0.5f), ForceMode.Acceleration);
     }
 
+    // Enter/Exit only: a Stay message would force per-step contact reporting on every body and
+    // measure the benchmark's own callback cost rather than the production rigidbody's.
     private void OnCollisionEnter(Collision collision) => RecordContact(collision);
-    private void OnCollisionStay(Collision collision) => RecordContact(collision);
+    private void OnCollisionExit(Collision collision) => RecordContact(collision);
 
     private static void RecordContact(Collision collision)
     {

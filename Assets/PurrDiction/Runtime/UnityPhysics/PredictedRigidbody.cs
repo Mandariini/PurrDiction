@@ -1,5 +1,4 @@
 using System;
-using PurrNet.Modules;
 using PurrNet.Packing;
 using PurrNet.Utils;
 using UnityEngine;
@@ -43,8 +42,14 @@ namespace PurrNet.Prediction
 #if UNITY_PHYSICS_3D
         [SerializeField, PurrLock] private Rigidbody _rigidbody;
         [SerializeField, PurrLock] private FloatAccuracy _floatAccuracy = FloatAccuracy.Medium;
-        [SerializeField, PurrLock] private PhysicsEventMask _eventMask = (PhysicsEventMask)0x3F;
+        // Stay events fire once per touching pair per physics step and are opt-in; see eventMask.
+        [SerializeField, PurrLock] private PhysicsEventMask _eventMask = DEFAULT_EVENT_MASK;
         [SerializeField] private bool _ignoreTriggerOnTrigger;
+
+        public const PhysicsEventMask DEFAULT_EVENT_MASK =
+            PhysicsEventMask.CollisionEnter | PhysicsEventMask.CollisionExit |
+            PhysicsEventMask.TriggerEnter | PhysicsEventMask.TriggerExit;
+
         public new Rigidbody rigidbody => _rigidbody;
 
         public Rigidbody rb => _rigidbody;
@@ -164,6 +169,7 @@ namespace PurrNet.Prediction
                 RestoreDefaultPhysicsMode();
 
             base.Setup(manager, world, id, owner);
+            SyncEventProxies();
 
             if (!_rigidbody)
                 return;
@@ -655,42 +661,49 @@ namespace PurrNet.Prediction
             }
         }
 
-        private void OnCollisionEnter(Collision other)
+        public PhysicsEventMask eventMask
         {
-            if (!_eventMask.HasFlag(PhysicsEventMask.CollisionEnter))
+            get => _eventMask;
+            set
+            {
+                if (_eventMask == value)
+                    return;
+                _eventMask = value;
+                SyncEventProxies();
+            }
+        }
+
+        private const PhysicsEventMask ContactProxyMask =
+            PhysicsEventMask.CollisionEnter | PhysicsEventMask.CollisionExit |
+            PhysicsEventMask.TriggerEnter | PhysicsEventMask.TriggerExit;
+
+        private const PhysicsEventMask StayProxyMask =
+            PhysicsEventMask.CollisionStay | PhysicsEventMask.TriggerStay;
+
+        internal void SyncEventProxies()
+        {
+            if (PredictedPhysicsEventProxies.Sync<PredictedRigidbodyContactProxy>(
+                    gameObject, (_eventMask & ContactProxyMask) != 0, out var contact))
+                contact.target = this;
+            if (PredictedPhysicsEventProxies.Sync<PredictedRigidbodyStayProxy>(
+                    gameObject, (_eventMask & StayProxyMask) != 0, out var stay))
+                stay.target = this;
+        }
+
+        internal void HandleCollision(PhysicsEventType type, PhysicsEventMask kind, Collision other)
+        {
+            if ((_eventMask & kind) == 0)
                 return;
 
             if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
-            predictionManager.physics3d.RegisterEvent(PhysicsEventType.Enter, this, other);
+            predictionManager.physics3d.RegisterEvent(type, this, other);
         }
 
-        private void OnCollisionExit(Collision other)
+        internal void HandleTrigger(PhysicsEventType type, PhysicsEventMask kind, Collider other)
         {
-            if (!_eventMask.HasFlag(PhysicsEventMask.CollisionExit))
-                return;
-
-            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
-                return;
-
-            predictionManager.physics3d.RegisterEvent(PhysicsEventType.Exit, this, other);
-        }
-
-        private void OnCollisionStay(Collision other)
-        {
-            if (!_eventMask.HasFlag(PhysicsEventMask.CollisionStay))
-                return;
-
-            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
-                return;
-
-            predictionManager.physics3d.RegisterEvent(PhysicsEventType.Stay, this, other);
-        }
-
-        private void OnTriggerEnter(Collider other)
-        {
-            if (!_eventMask.HasFlag(PhysicsEventMask.TriggerEnter))
+            if ((_eventMask & kind) == 0)
                 return;
 
             if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
@@ -699,35 +712,7 @@ namespace PurrNet.Prediction
             if (_ignoreTriggerOnTrigger && other.isTrigger)
                 return;
 
-            predictionManager.physics3d.RegisterEvent(PhysicsEventType.Enter, this, other);
-        }
-
-        private void OnTriggerExit(Collider other)
-        {
-            if (!_eventMask.HasFlag(PhysicsEventMask.TriggerExit))
-                return;
-
-            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
-                return;
-
-            if (_ignoreTriggerOnTrigger && other.isTrigger)
-                return;
-
-            predictionManager.physics3d.RegisterEvent(PhysicsEventType.Exit, this, other);
-        }
-
-        private void OnTriggerStay(Collider other)
-        {
-            if (!_eventMask.HasFlag(PhysicsEventMask.TriggerStay))
-                return;
-
-            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
-                return;
-
-            if (_ignoreTriggerOnTrigger && other.isTrigger)
-                return;
-
-            predictionManager.physics3d.RegisterEvent(PhysicsEventType.Stay, this, other);
+            predictionManager.physics3d.RegisterEvent(type, this, other);
         }
 
         public void MovePosition(Vector3 position)

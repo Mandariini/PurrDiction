@@ -260,7 +260,8 @@ The normal transport, latency, loss, port, and `-tickRate` arguments still apply
   Unity's unscaled frame time is constant within that frame. This historical probe is now
   redundant for active clients, whose normal scheduling already coalesces corrections per frame.
 - `-fpEventMask 0`: production predicted physics event mask (0..127); defaults to no replicated
-  contact events. Native contact counters still validate the colliding workload.
+  contact events. Native Enter/Exit contact counters still validate the colliding workload; the
+  body deliberately declares no Stay message, since that alone forces per-step contact reporting.
 - `-fpMetrics path.json`: per-process detailed benchmark output, separate from scenario results.
 
 Every body uses the production `PredictedRigidbody` and `PredictedTransform`, explicitly configured

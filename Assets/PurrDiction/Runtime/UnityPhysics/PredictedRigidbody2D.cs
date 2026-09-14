@@ -19,7 +19,9 @@ namespace PurrNet.Prediction
         public delegate void OnTriggerDelegate(GameObject other);
 
         [SerializeField] private Rigidbody2D _rigidbody;
-        [SerializeField] private PhysicsEventMask _eventMask = (PhysicsEventMask)0x3F;
+        [SerializeField] private PhysicsEventMask _eventMask = PredictedRigidbody.DEFAULT_EVENT_MASK;
+
+        public new Rigidbody2D rigidbody => _rigidbody;
 
         public event OnCollisionDelegate onCollisionEnter;
         public event OnCollisionDelegate onCollisionExit;
@@ -89,6 +91,7 @@ namespace PurrNet.Prediction
                 RestoreDefaultPhysicsMode();
 
             base.Setup(manager, world, id, owner);
+            SyncEventProxies();
 
             if (!_rigidbody)
                 return;
@@ -437,70 +440,55 @@ namespace PurrNet.Prediction
 #endif
         }
 
-        private void OnCollisionEnter2D(Collision2D other)
+        public PhysicsEventMask eventMask
         {
-            if (!_eventMask.HasFlag(PhysicsEventMask.CollisionEnter))
-                return;
-
-            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
-                return;
-
-            predictionManager.physics2d.RegisterEvent(PhysicsEventType.Enter, this, other);
+            get => _eventMask;
+            set
+            {
+                if (_eventMask == value)
+                    return;
+                _eventMask = value;
+                SyncEventProxies();
+            }
         }
 
-        private void OnCollisionExit2D(Collision2D other)
+        private const PhysicsEventMask ContactProxyMask =
+            PhysicsEventMask.CollisionEnter | PhysicsEventMask.CollisionExit |
+            PhysicsEventMask.TriggerEnter | PhysicsEventMask.TriggerExit;
+
+        private const PhysicsEventMask StayProxyMask =
+            PhysicsEventMask.CollisionStay | PhysicsEventMask.TriggerStay;
+
+        internal void SyncEventProxies()
         {
-            if (!_eventMask.HasFlag(PhysicsEventMask.CollisionExit))
-                return;
-
-            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
-                return;
-
-            predictionManager.physics2d.RegisterEvent(PhysicsEventType.Exit, this, other);
+            if (PredictedPhysicsEventProxies.Sync<PredictedRigidbody2DContactProxy>(
+                    gameObject, (_eventMask & ContactProxyMask) != 0, out var contact))
+                contact.target = this;
+            if (PredictedPhysicsEventProxies.Sync<PredictedRigidbody2DStayProxy>(
+                    gameObject, (_eventMask & StayProxyMask) != 0, out var stay))
+                stay.target = this;
         }
 
-        private void OnCollisionStay2D(Collision2D other)
+        internal void HandleCollision(PhysicsEventType type, PhysicsEventMask kind, Collision2D other)
         {
-            if (!_eventMask.HasFlag(PhysicsEventMask.CollisionStay))
+            if ((_eventMask & kind) == 0)
                 return;
 
             if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
-            predictionManager.physics2d.RegisterEvent(PhysicsEventType.Stay, this, other);
+            predictionManager.physics2d.RegisterEvent(type, this, other);
         }
 
-        private void OnTriggerEnter2D(Collider2D other)
+        internal void HandleTrigger(PhysicsEventType type, PhysicsEventMask kind, Collider2D other)
         {
-            if (!_eventMask.HasFlag(PhysicsEventMask.TriggerEnter))
+            if ((_eventMask & kind) == 0)
                 return;
 
             if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
                 return;
 
-            predictionManager.physics2d.RegisterEvent(PhysicsEventType.Enter, this, other);
-        }
-
-        private void OnTriggerExit2D(Collider2D other)
-        {
-            if (!_eventMask.HasFlag(PhysicsEventMask.TriggerExit))
-                return;
-
-            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
-                return;
-
-            predictionManager.physics2d.RegisterEvent(PhysicsEventType.Exit, this, other);
-        }
-
-        private void OnTriggerStay2D(Collider2D other)
-        {
-            if (!_eventMask.HasFlag(PhysicsEventMask.TriggerStay))
-                return;
-
-            if (!predictionManager || !predictionManager.isSimulating || predictionManager.isVerifiedAndReplaying)
-                return;
-
-            predictionManager.physics2d.RegisterEvent(PhysicsEventType.Stay, this, other);
+            predictionManager.physics2d.RegisterEvent(type, this, other);
         }
 
         public void RaiseTriggerEnter(GameObject other) => onTriggerEnter?.Invoke(other);
