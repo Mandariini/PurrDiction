@@ -585,6 +585,39 @@ namespace PurrNet.Prediction
 
         public STATE viewState;
 
+        /// <summary>
+        /// Number of view samples currently buffered ahead of the rendered pose, or -1 before
+        /// the view buffer exists.
+        /// </summary>
+        public int viewInterpolationBufferSize => _interpolatedState?.bufferSize ?? -1;
+
+        /// <summary>
+        /// True while a tick has produced a view sample that the next view pass has not consumed
+        /// yet.
+        /// </summary>
+        public bool hasPendingViewLatch => _viewState.HasValue;
+
+        /// <summary>
+        /// Latest verified state stored for this identity's id, independent of whether this
+        /// component instance has consumed it.
+        /// </summary>
+        public bool TryGetLatestVerifiedState(out ulong tick, out STATE state)
+        {
+            if (_verifiedHistory != null && _verifiedHistory.Count > 0)
+            {
+                tick = _verifiedHistory.MostRecentTick;
+                if (_verifiedHistory.ReadOrPrevious(tick, out var full))
+                {
+                    state = full.state;
+                    return true;
+                }
+            }
+
+            tick = 0;
+            state = default;
+            return false;
+        }
+
         public STATE? verifiedState
         {
             get

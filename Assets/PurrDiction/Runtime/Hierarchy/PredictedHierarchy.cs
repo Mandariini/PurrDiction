@@ -1188,6 +1188,7 @@ namespace PurrNet.Prediction
 
             return instance.TryGetComponent(out PredictedTransform predictedTransform) &&
                    predictedTransform.id.objectId.Equals(instanceId) &&
+                   predictedTransform.owner == owner &&
                    predictedTransform.previousRegisteredEffectivePredictionPolicy == PredictionPolicy.SoftCorrection &&
                    predictedTransform.ResolveEffectivePredictionPolicyForSetup(owner, predictionManager) ==
                        PredictionPolicy.SoftCorrection;

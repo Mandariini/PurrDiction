@@ -240,7 +240,8 @@ public class TrailIntegrityScenario : Scenario
         var sb = new StringBuilder();
         sb.Append($"samples={TrailViewTracker.totalSamples} segments={TrailViewTracker.segmentsStarted} ");
         sb.Append($"failures={TrailViewTracker.failures.Count} diagnostics={TrailViewTracker.diagnostics.Count} ");
-        sb.Append($"resurrections={TrailViewTracker.resurrections} maxBackward={TrailViewTracker.maxBackward:F3}");
+        sb.Append($"resurrections={TrailViewTracker.resurrections} maxBackward={TrailViewTracker.maxBackward:F3} ");
+        sb.Append($"kinds={TrailViewTracker.DescribeKindCounts()}");
 
         AppendSamples(sb, " | FAIL ", TrailViewTracker.failures, 10);
         AppendSamples(sb, " | diag ", TrailViewTracker.diagnostics, 10);
