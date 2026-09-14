@@ -558,7 +558,6 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(client.isSimulating, Is.False);
                 Assert.That(client.isInPhysicsPass, Is.False);
                 Assert.That(client.localTickInContext, Is.EqualTo(client.localTick));
-                Assert.That(Get<IList>(client, "_speculativeRelayLocks"), Is.Empty);
                 Assert.That(Get<ulong>(client, "_applyingFrameServerTick"), Is.Zero);
             }
 

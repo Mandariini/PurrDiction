@@ -802,12 +802,6 @@ namespace PurrNet.Prediction
 
         internal abstract void Rollback(ulong tick);
 
-        internal virtual bool RestoreLockedState(ulong tick)
-        {
-            Rollback(tick);
-            return true;
-        }
-
         public abstract void UpdateRollbackInterpolationState(float delta, bool accumulateError);
 
         public abstract void ResetInterpolation();

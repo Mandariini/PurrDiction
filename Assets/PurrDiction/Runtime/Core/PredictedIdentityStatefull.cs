@@ -279,22 +279,6 @@ namespace PurrNet.Prediction
             SetUnityState(fullPredictedState.state);
         }
 
-        internal override bool RestoreLockedState(ulong tick)
-        {
-            if (_stateHistory == null)
-                return base.RestoreLockedState(tick);
-
-            if (!_stateHistory.ReadOrPrevious(tick, out var locked))
-                return false;
-
-            GetLatestUnityState();
-            if (locked.HasSameContents(ref fullPredictedState))
-                return false;
-
-            Rollback(tick);
-            return true;
-        }
-
         protected virtual void SetUnityState(STATE state) {}
 
         private void ApplyVerifiedPredictionMetadata(in PredictedIdentityState prediction)

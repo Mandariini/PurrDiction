@@ -67,13 +67,6 @@ namespace PurrNet.Prediction
             Rollback(tick);
         }
 
-        internal bool RunRestoreLockedState(ulong tick)
-        {
-            RollbackDynamicModules(tick);
-            RollbackModules(tick);
-            return RestoreLockedState(tick);
-        }
-
         internal void RunSaveState(ulong tick)
         {
             if (SkipsCurrentSimulationPhase())
