@@ -239,7 +239,7 @@
       "hash": "a122dc90cbe2d4cc2669ddad00b12b3917ef934b"
     },
     "dev.purrnet.purrnet": {
-      "version": "https://github.com/PurrNet/PurrNet.git?path=/Assets/PurrNet#v1.24.0-beta.2",
+      "version": "https://github.com/PurrNet/PurrNet.git?path=/Assets/PurrNet#v1.24.0-beta.3",
       "depth": 0,
       "source": "git",
       "dependencies": {
@@ -248,7 +248,7 @@
         "com.unity.collections": "2.6.2",
         "com.unity.mathematics": "1.3.2"
       },
-      "hash": "d1bae27645348234360bc43d713204e573fb6a38"
+      "hash": "299e1e62a52e6fbf6c11011c4f04974dcff80afb"
     },
     "com.unity.modules.accessibility": {
       "version": "1.0.0",
