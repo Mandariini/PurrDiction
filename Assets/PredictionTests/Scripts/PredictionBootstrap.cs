@@ -214,6 +214,18 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-lagCompensationScenariosOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<ViewPhaseScenario>(),
+                gameObject.AddComponent<LagCompensationScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-includeHistoryStressScenario"))
             gameObject.AddComponent<HistoryStressScenario>();
 
@@ -228,6 +240,8 @@ public class PredictionBootstrap : Scenario
         gameObject.AddComponent<TickAgreementScenario>();
         gameObject.AddComponent<DeterministicGauntletScenario>();
         gameObject.AddComponent<CliffRecoveryScenario>();
+        gameObject.AddComponent<ViewPhaseScenario>();
+        gameObject.AddComponent<LagCompensationScenario>();
 
         bool policyRegressionsOnly = CommandLineUtils.HasFlag("-policyRegressionScenariosOnly");
         var policyRegressionScenarios = AddPolicyRegressionScenarios();

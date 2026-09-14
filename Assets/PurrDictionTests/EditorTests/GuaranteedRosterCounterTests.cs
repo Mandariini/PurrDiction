@@ -178,8 +178,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(2), $"tick {tick}");
                     if (tick > 16)
-                    {
                         Assert.That(Packer<bool>.Read(frame), Is.True, "the same two identities are present every tick");
+                    Assert.That(Packer<PackedUInt>.Read(frame).value, Is.Zero, "no player view offsets were recorded");
+                    if (tick > 16)
+                    {
                         for (var record = 0; record < 2; record++)
                             Assert.That(Packer<bool>.Read(frame), Is.False, "changing inputs are never encoded as repeats");
                     }

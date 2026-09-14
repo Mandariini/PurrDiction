@@ -290,14 +290,29 @@ namespace PurrNet.Prediction.Tests.Editor
                     // re-emit the canonical no-repeat layout, since byte padding depends on position.
                     var previous = new List<(PredictedComponentID id, BitPacker payload)>();
                     var current = new List<(PredictedComponentID id, BitPacker payload)>();
+                    var previousOffsets = new List<(PlayerID player, uint value)>();
+                    var offsets = new List<(PlayerID player, uint value)>();
+                    bool previousSourceHadEntries = false;
+                    bool previousEmittedHadEntries = false;
                     for (uint tick = 0; tick < tickCount; tick++)
                     {
                         uint entryCount = Packer<PackedUInt>.Read(source).value;
                         var repeats = new bool[entryCount];
                         current.Clear();
+                        offsets.Clear();
                         if (entryCount > 0)
                         {
-                            if (tick > 0 && Packer<bool>.Read(source))
+                            bool sameRoster = tick > 0 && Packer<bool>.Read(source);
+                            uint offsetCount = Packer<PackedUInt>.Read(source).value;
+                            if (offsetCount > 0)
+                            {
+                                bool sameOffsetRoster = previousSourceHadEntries && Packer<bool>.Read(source);
+                                for (uint i = 0; i < offsetCount; i++)
+                                    offsets.Add((sameOffsetRoster ? previousOffsets[(int)i].player : Packer<PlayerID>.Read(source), 0u));
+                                for (int i = 0; i < offsets.Count; i++)
+                                    offsets[i] = (offsets[i].player, (uint)source.ReadBits((byte)PredictionManager.ViewOffsetBits));
+                            }
+                            if (sameRoster)
                                 for (uint i = 0; i < entryCount; i++) repeats[i] = Packer<bool>.Read(source);
                             source.SkipBits((8 - source.positionInBits % 8) % 8);
                         }
@@ -316,7 +331,8 @@ namespace PurrNet.Prediction.Tests.Editor
                             current.Add((id, payload));
                         }
 
-                        if (original.baseline + tick + 1 == targetTick)
+                        bool omitted = original.baseline + tick + 1 == targetTick;
+                        if (omitted)
                         {
                             Assert.That(entryCount, Is.EqualTo(1));
                             Packer<PackedUInt>.Write(altered, 0u);
@@ -328,6 +344,16 @@ namespace PurrNet.Prediction.Tests.Editor
                             {
                                 if (tick > 0)
                                     Packer<bool>.Write(altered, false);
+                                Packer<PackedUInt>.Write(altered, (uint)offsets.Count);
+                                if (offsets.Count > 0)
+                                {
+                                    if (previousEmittedHadEntries)
+                                        Packer<bool>.Write(altered, false);
+                                    foreach (var (player, _) in offsets)
+                                        Packer<PlayerID>.Write(altered, player);
+                                    foreach (var (_, value) in offsets)
+                                        altered.WriteBits(value, (byte)PredictionManager.ViewOffsetBits);
+                                }
                                 altered.WriteBits(0UL, (byte)((8 - altered.positionInBits % 8) % 8));
                                 foreach (var (id, payload) in current)
                                 {
@@ -339,6 +365,10 @@ namespace PurrNet.Prediction.Tests.Editor
                         }
                         previous.Clear();
                         previous.AddRange(current);
+                        previousOffsets.Clear();
+                        previousOffsets.AddRange(offsets);
+                        previousSourceHadEntries = entryCount > 0;
+                        previousEmittedHadEntries = !omitted && entryCount > 0;
                     }
                 }
                 altered.WriteBitDataWithoutConsumingIt(

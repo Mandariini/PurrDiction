@@ -177,6 +177,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Packer<PackedUInt>.Write(frame, explicitAbsent ? 1U : 0U);
             if (explicitAbsent)
             {
+                Packer<PackedUInt>.Write(frame, 0U);
                 PadToByte(frame);
                 Packer<PredictedComponentID>.Write(frame,
                     new PredictedComponentID(new PredictedObjectID(635), 0));
@@ -240,6 +241,7 @@ namespace PurrNet.Prediction.Tests.Editor
             using var frame = BitPackerPool.Get();
             Packer<PackedUInt>.Write(frame, 1U);
             Packer<PackedUInt>.Write(frame, duplicate ? 2U : 1U);
+            Packer<PackedUInt>.Write(frame, 0U);
             PadToByte(frame);
             for (var record = 0; record < (duplicate ? 2 : 1); record++)
             {
@@ -564,20 +566,20 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(received.Count, Is.Zero);
         }
 
-        // Reads what follows a tick's entry count: the same-roster flag and repeat mask on ticks
-        // after the first, then the zero bits up to the byte boundary that precede the entries.
         private static bool[] ReadTickHeader(BitPacker frame, bool afterFirstTick, int count, bool expectSameRoster)
         {
             var repeats = new bool[count];
             if (count == 0)
                 return repeats;
+            bool sameRoster = false;
             if (afterFirstTick)
             {
-                bool sameRoster = Packer<bool>.Read(frame);
+                sameRoster = Packer<bool>.Read(frame);
                 Assert.That(sameRoster, Is.EqualTo(expectSameRoster), "same-roster flag");
-                if (sameRoster)
-                    for (int i = 0; i < count; i++) repeats[i] = Packer<bool>.Read(frame);
             }
+            Assert.That(ReadPackedUInt(frame), Is.Zero, "view offset count");
+            if (sameRoster)
+                for (int i = 0; i < count; i++) repeats[i] = Packer<bool>.Read(frame);
             frame.SkipBits((8 - frame.positionInBits % 8) % 8);
             return repeats;
         }

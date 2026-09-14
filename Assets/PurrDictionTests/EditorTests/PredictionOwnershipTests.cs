@@ -832,9 +832,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     state = state.state.Duplicate()
                 };
-                var interpolation = new InterpolatedWithDispose<FULL_STATE<PlayerSpawnerState>>(
+                var interpolation = new PredictedViewBuffer<FULL_STATE<PlayerSpawnerState>>(
                     (from, _, _) => from,
-                    1f,
+                    0,
                     initial,
                     2);
                 SetField(typeof(DeterministicIdentity<PlayerSpawnerState>), identity,

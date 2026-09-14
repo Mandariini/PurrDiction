@@ -383,8 +383,70 @@ namespace PurrNet.Prediction.Tests.Editor
             public int payloadBitLength;
         }
 
+        [Test]
+        public void ViewOffsetRidesEveryUploadTickAndIsClampedOnTheServer()
+        {
+            var clientObject = new GameObject("View offset upload client");
+            var serverObject = new GameObject("View offset upload server");
+            var probeObject = new GameObject("View offset upload probe");
+            try
+            {
+                var client = CreateManager(clientObject);
+                SetLocalTick(client, 40);
+                SetInputAckTick(client, 30);
+
+                var probe = probeObject.AddComponent<StatefulInputProbe>();
+                var probeId = new PredictedComponentID(new PredictedObjectID(720), 0);
+                AttachIdentity(probe, client, probeId);
+                SeedInputs(
+                    probe,
+                    typeof(PredictedIdentity<TrackedInput, EmptyState>),
+                    30,
+                    40,
+                    _ => 7);
+
+                for (ulong tick = 36; tick <= 40; tick++)
+                    client.RecordViewOffset(default, tick, (uint)(tick - 36) * 100);
+
+                FinalizeInput(client, probe);
+                var cached = GetCachedPayload(client, out var firstTick, out var tickCount);
+                Assert.That(firstTick, Is.EqualTo(36UL));
+                Assert.That(tickCount, Is.EqualTo(5U));
+
+                var parsed = ParseUpload(cached, tickCount);
+                for (var i = 0; i < parsed.Count; i++)
+                {
+                    Assert.That(parsed[i].viewOffset, Is.EqualTo((uint)i * 100),
+                        $"tick block {i} must carry the offset recorded for its tick");
+                }
+
+                var server = CreateManager(serverObject);
+                SetLocalTick(server, 2);
+                var sender = new PlayerID(9, false);
+                Deliver(server, firstTick, tickCount, CopyForRead(cached), sender);
+
+                uint cap = PredictionManager.QuantizeViewOffset(server.maxLagCompensationTicks);
+                Assert.That(cap, Is.EqualTo(192u));
+
+                var queue = GetQueue(server, sender);
+                for (ulong tick = 36; tick <= 40; tick++)
+                {
+                    uint sent = (uint)(tick - 36) * 100;
+                    Assert.That(queue.byTick[tick].viewOffset, Is.EqualTo(Math.Min(sent, cap)),
+                        $"tick {tick} must keep the sent offset up to the server cap");
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(probeObject);
+                Object.DestroyImmediate(serverObject);
+                Object.DestroyImmediate(clientObject);
+            }
+        }
+
         private sealed class ParsedUploadTick
         {
+            public uint viewOffset;
             public uint declaredBlockBits;
             public readonly List<ParsedUploadEntry> entries = new List<ParsedUploadEntry>();
         }
@@ -555,6 +617,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var result = new List<ParsedUploadTick>();
                 for (uint i = 0; i < tickCount; i++)
                 {
+                    uint viewOffset = (uint)payload.ReadBits((byte)PredictionManager.ViewOffsetBits);
                     PackedUInt blockBits = default;
                     Packer<PackedUInt>.Read(payload, ref blockBits);
                     PackedUInt entryCount = default;
@@ -563,6 +626,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
                     var tickBlock = new ParsedUploadTick
                     {
+                        viewOffset = viewOffset,
                         declaredBlockBits = blockBits.value
                     };
 
