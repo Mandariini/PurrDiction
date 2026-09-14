@@ -21,6 +21,41 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void ViewOffsetRosterRepeatsCostOneBitPerTick()
+        {
+            const ulong first = 11, last = 30;
+            int BitsFor(int players, bool changeRosterEveryTick)
+            {
+                using var sender = new InputTranscriptFixture("sender");
+                var inputs = sender.AddInput(false, 661);
+                for (ulong tick = first; tick <= last; tick++)
+                {
+                    inputs.Write(tick, new TrackedInput(7));
+                    for (uint p = 1; p <= players; p++)
+                    {
+                        ulong id = changeRosterEveryTick ? p + 10 * (tick - first) : p;
+                        sender.manager.RecordViewOffset(new PlayerID(id, false), tick, 40 + p);
+                    }
+                    sender.Capture(tick);
+                }
+                using var frame = sender.Write(last, first - 1);
+                return frame.positionInBits;
+            }
+
+            int ticks = (int)(last - first + 1);
+            int none = BitsFor(0, false);
+            int repeating = BitsFor(4, false);
+            int churning = BitsFor(4, true);
+            TestContext.Out.WriteLine(
+                $"transcript bits per tick: no offsets {none / (double)ticks:F1}, four players repeating " +
+                $"{repeating / (double)ticks:F1}, four players churning {churning / (double)ticks:F1}");
+            UnityEngine.Debug.Log($"[ViewOffsetTranscriptCost] none={none / (double)ticks:F1} repeating={repeating / (double)ticks:F1} churning={churning / (double)ticks:F1} bits/tick");
+            // Four ids per tick are written once when the roster repeats, every tick when it churns.
+            Assert.That(churning - repeating, Is.GreaterThan(ticks * 4 * 8 / 2),
+                $"repeating={repeating} churning={churning}: a repeating roster must not re-send player ids");
+        }
+
+        [Test]
         public void ViewOffsetsRideTheVerifiedInputTranscriptAndSurviveRosterChanges()
         {
             using var sender = new InputTranscriptFixture("sender");

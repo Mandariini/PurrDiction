@@ -49,6 +49,8 @@ namespace PurrNet.Prediction
         [Header("Lag Compensation")]
         [Tooltip("Longest rewind a client may request when hit tests are resolved against collider rollback history, in seconds. Requests beyond this are clamped on the server. The view interpolation buffer never holds more than 0.1 s, so 0.15 s covers legitimate clients with headroom.")]
         [SerializeField, Min(0f)] private float _maxLagCompensationSeconds = 0.15f;
+        [Tooltip("Forward every player's view offset in verified frames so clients replay other players' lag-compensated hits with the exact rewind. Costs about 10 bits per player per transcript tick downstream. Off, clients predict other players' hits with an estimated rewind; the server's result is unaffected either way.")]
+        [SerializeField] private bool _forwardViewOffsets = true;
 
         [Header("Determinism")]
         [Tooltip("How the server responds when a client's deterministic state diverges. Per-identity overrides on DeterministicIdentity take precedence. Ignore has zero overhead.")]

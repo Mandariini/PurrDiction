@@ -236,6 +236,9 @@ namespace PurrNet.Prediction
         private void CollectViewOffsets(ulong tick, List<PlayerViewOffset> into)
         {
             into.Clear();
+            if (!_forwardViewOffsets)
+                return;
+
             _viewOffsetPlayerScratch.Clear();
             foreach (var pair in _viewOffsets)
             {
