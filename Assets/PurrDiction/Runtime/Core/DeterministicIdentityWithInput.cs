@@ -38,13 +38,46 @@ namespace PurrNet.Prediction
         private INPUT? _lastInput;
         private INPUT _nextInput;
 
+        /// <summary>
+        /// Per-frame view input for this identity. While the local player controls this
+        /// identity it reflects the freshly accumulated input from
+        /// <see cref="UpdateInput(ref INPUT)"/> (or <see cref="GetViewInput"/>), so visuals can
+        /// react on the same frame as the player without waiting for the next tick. For remote
+        /// identities it is the authoritative input history interpolated with
+        /// <see cref="InterpolateInput"/> and advanced once per view frame. Meant for
+        /// view/visuals only; never feed it back into simulation.
+        /// </summary>
+        public INPUT viewInput;
+
+        private INPUT _viewInput;
+        private INPUT? _viewInputLatch;
+        private InterpolatedWithDispose<INPUT> _interpolatedInput;
+        private ulong _lastViewInputTick;
+
         internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
             base.Setup(manager, world, id, owner);
 
             if (_inputHistory == null)
                 _inputHistory = new History<INPUT>(world.tickRate * 5);
+
             DisposeInputStorage();
+
+            if (tickModule == null)
+                return;
+
+            if (_interpolatedInput == null)
+            {
+                _interpolatedInput = new InterpolatedWithDispose<INPUT>(
+                    InterpolateInput,
+                    1f / world.tickRate,
+                    GetDefaultInput(),
+                    PredictionManager.GetViewInterpolationMaxBufferSize(world.tickRate));
+            }
+            else
+            {
+                _interpolatedInput.Teleport(GetDefaultInput());
+            }
         }
 
         internal override void ReleasePredictionStateForPool()
@@ -74,6 +107,14 @@ namespace PurrNet.Prediction
                 queuedInput.Dispose();
                 _queuedInput = null;
             }
+
+            _interpolatedInput?.Teleport(default);
+            _viewInputLatch?.Dispose();
+            _viewInputLatch = null;
+            _lastViewInputTick = 0;
+            // Both alias live storage owned and disposed elsewhere.
+            viewInput = default;
+            _viewInput = default;
         }
 
         internal override void SimulateTick(ulong tick, float delta)
@@ -144,6 +185,7 @@ namespace PurrNet.Prediction
                 _lastInput?.Dispose();
                 _lastInput = _nextInput;
                 _inputHistory.Write(tick, Packer.Copy(_nextInput));
+                CaptureViewInput(tick, _nextInput);
                 _nextInput = GetDefaultInput();
             }
             else if (isServer)
@@ -157,6 +199,7 @@ namespace PurrNet.Prediction
                     }
 
                     _inputHistory.Write(tick, Packer.Copy(_lastInput.GetValueOrDefault()));
+                    CaptureViewInput(tick, _lastInput.GetValueOrDefault());
                     return;
                 }
 
@@ -165,14 +208,74 @@ namespace PurrNet.Prediction
                 _lastInput?.Dispose();
                 _lastInput = input;
                 _inputHistory.Write(tick, Packer.Copy(input));
+                CaptureViewInput(tick, input);
                 _queuedInput = null;
             }
         }
 
         protected virtual void Update()
         {
-            if(isController)
-                UpdateInput(ref _nextInput);
+            if (!isController)
+                return;
+
+            UpdateInput(ref _nextInput);
+            _viewInput = _nextInput;
+        }
+
+        internal override void UpdateView(float deltaTime)
+        {
+            UpdateViewInput(deltaTime);
+            base.UpdateView(deltaTime);
+        }
+
+        private void UpdateViewInput(float deltaTime)
+        {
+            if (isController)
+            {
+                viewInput = GetViewInput();
+                return;
+            }
+
+            if (_interpolatedInput == null)
+                return;
+
+            if (_viewInputLatch.HasValue)
+            {
+                _interpolatedInput.Add(_viewInputLatch.Value);
+                _viewInputLatch = null;
+            }
+
+            viewInput = _interpolatedInput.Advance(deltaTime);
+        }
+
+        /// <summary>
+        /// Input exposed through <see cref="viewInput"/> while the local player controls this
+        /// identity. Defaults to the input accumulated this frame by
+        /// <see cref="UpdateInput(ref INPUT)"/>; override to sample the local input source
+        /// directly so <see cref="viewInput"/> stays in sync with the controller each frame
+        /// instead of the tick it gets simulated in.
+        /// </summary>
+        protected virtual INPUT GetViewInput() => _viewInput;
+
+        /// <summary>
+        /// Blends two consecutive inputs from the authoritative history for
+        /// <see cref="viewInput"/> when this identity is not controlled locally. Defaults to
+        /// snapping to the newest input; override to interpolate continuous fields such as a
+        /// move direction while keeping edge-triggered values (buttons) on <paramref name="to"/>.
+        /// The result is transient and non-owning: do not allocate disposable members in it.
+        /// </summary>
+        protected virtual INPUT InterpolateInput(INPUT from, INPUT to, float t) => to;
+
+        private void CaptureViewInput(ulong tick, in INPUT input)
+        {
+            if (_interpolatedInput == null || tick <= _lastViewInputTick)
+                return;
+
+            _lastViewInputTick = tick;
+
+            var copy = PurrCopy<INPUT>.Copy(input);
+            _viewInputLatch?.Dispose();
+            _viewInputLatch = copy;
         }
 
         protected virtual INPUT GetDefaultInput() => default;
@@ -215,6 +318,7 @@ namespace PurrNet.Prediction
             if (Packer<bool>.Read(packer))
             {
                 var input = Packer<INPUT>.Read(packer);
+                CaptureViewInput(localTick, input);
                 _inputHistory.Write(localTick, input);
             }
             else _inputHistory.Remove(localTick);
