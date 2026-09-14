@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
 using JetBrains.Annotations;
 using PurrNet.Logging;
 using PurrNet.Modules;
@@ -127,14 +126,6 @@ namespace PurrNet.Prediction
                 Physics.simulationMode = SimulationMode.Script;
 #endif
             InitPooling();
-        }
-
-        [ServerRpc(requireOwnership: false)]
-        public Task ClientRequestedToBeObserver(PredictedComponentID component, RPCInfo info = default)
-        {
-            if (component.TryGetIdentity<PredictedIdentitySpawner>(this, out var pidSpawner))
-                pidSpawner.ClientRequestedToBeObserver(info.sender);
-            return Task.CompletedTask;
         }
 
         private GameObject _poolParent;
@@ -555,8 +546,11 @@ namespace PurrNet.Prediction
                 if (!_systems.Contains(component))
                 {
                     var componentId = new PredictedComponentID(objectID, i);
-                    bool preserveState = !reset && !component.isFreshSpawn && component.id.Equals(componentId);
-                    bool recycledForNewId = !reset && !component.isFreshSpawn && !component.id.Equals(componentId);
+                    bool sameLogicalObject = !component.isFreshSpawn &&
+                                             component.id.Equals(componentId) &&
+                                             component.owner == owner;
+                    bool preserveState = !reset && sameLogicalObject;
+                    bool recycledForNewId = !reset && !component.isFreshSpawn && !sameLogicalObject;
                     var incomingPolicy = component.ResolveEffectivePredictionPolicyForSetup(owner, this);
                     bool preserveSoftState = preserveState &&
                                              component.previousRegisteredEffectivePredictionPolicy == PredictionPolicy.SoftCorrection &&
@@ -707,6 +701,8 @@ namespace PurrNet.Prediction
 
         protected override void OnObserverRemoved(PlayerID player)
         {
+            if (hierarchy)
+                hierarchy.networkMirror.RemovePlayer(player);
             _clientTicks.Remove(player);
             _pendingFullSync.Remove(player);
             RemovePlayerVisibility(player);
@@ -1292,6 +1288,8 @@ namespace PurrNet.Prediction
                 historyUnavailable |= !HasPhysicsEventHistory(baselineTick, localTick);
                 historyUnavailable |= !HasReplayHistory(baselineTick, localTick);
                 var timeline = PreparePlayerVisibility(player, localTick, baselineTick);
+                if (hierarchy)
+                    hierarchy.networkMirror.SyncObservers(player, timeline, ackQueue?.ackedServerTick ?? 0);
                 historyUnavailable |= !timeline.isPassThrough && hierarchy &&
                     !hierarchy.TryGetVerifiedState(baselineTick + 1, out _, out _);
                 clientFrame.requiresFullCheckpoint |= clientFrame.fullFrame || historyUnavailable;
@@ -2492,6 +2490,9 @@ namespace PurrNet.Prediction
             if (!renderPhase)
                 TickBandwidthProfiler.MarkEndOfTick();
 
+            if (applied && hierarchy)
+                hierarchy.SyncNetworkMirror();
+
             onRollbackFinished?.Invoke();
         }
 
@@ -3213,6 +3214,9 @@ namespace PurrNet.Prediction
             }
 
             ListPool<PredictedIdentity>.Destroy(children);
+
+            if (hierarchy && isServer)
+                hierarchy.networkMirror.OnOwnershipChanged(root!.Value, player, cascade);
         }
 
         public static bool TryGetClosestPredictedID(GameObject go, out PredictedComponentID pid)

@@ -192,6 +192,17 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-mixedNetworkIdentityScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<MixedNetworkIdentityScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-immediateRpcRegressionScenarioOnly"))
         {
             _scenarios = new Scenario[]
@@ -213,6 +224,7 @@ public class PredictionBootstrap : Scenario
 
         gameObject.AddComponent<PieceLifecycleScenario>();
         gameObject.AddComponent<PieceReconnectScenario>();
+        gameObject.AddComponent<MixedNetworkIdentityScenario>();
         gameObject.AddComponent<TickAgreementScenario>();
         gameObject.AddComponent<DeterministicGauntletScenario>();
         gameObject.AddComponent<CliffRecoveryScenario>();

@@ -102,16 +102,32 @@ public class TrailViewTracker : MonoBehaviour
         public bool hasSpawnRecord;
         public Vector3 spawnPosition;
         public PlayerID? spawnOwner;
+        // Latest verified pose stored for this logical id, read only when a sample is recorded.
+        public bool hasVerified;
+        public ulong verifiedTick;
+        public Vector3 verifiedPose;
+        // Last observation of this physical instance before it was disabled (pooled), and the
+        // frames at which it was disabled and re-enabled. Shows pooled reuse between samples.
+        public bool hasPooledContext;
+        public Observation pooledContext;
+        public int pooledFrame;
+        public int enabledFrame;
 
         public override string ToString()
         {
+            var verified = hasVerified ? $"{verifiedTick}:({verifiedPose.x:F3},{verifiedPose.y:F3},{verifiedPose.z:F3})" : "none";
+            var pooled = hasPooledContext ? $"{pooledContext}@{pooledFrame}" : "none";
+            var idChanged = hasPooledContext && pooledContext.id != currentContext.id;
+            var ownerChanged = hasPooledContext && pooledContext.owner != currentContext.owner;
             return $"{kind}/{channel} id={instanceId} owned={owned} seg={segment} " +
                    $"frames={prevFrame}->{frame} tick={tick} " +
                    $"prev=({prev.x:F3},{prev.y:F3},{prev.z:F3}) cur=({cur.x:F3},{cur.y:F3},{cur.z:F3}) " +
                    $"contextPrev={hasPreviousContext}:{previousContext} contextNow={currentContext} " +
                    $"samePhysical={hasPreviousContext && previousContext.physicalInstance == currentContext.physicalInstance} " +
                    $"ageRewind={hasPreviousContext && currentContext.age < previousContext.age} registered={isRegisteredInstance} " +
-                   $"spawnRecord={hasSpawnRecord}:({spawnPosition.x:F3},{spawnPosition.y:F3},{spawnPosition.z:F3}) owner={spawnOwner}";
+                   $"spawnRecord={hasSpawnRecord}:({spawnPosition.x:F3},{spawnPosition.y:F3},{spawnPosition.z:F3}) owner={spawnOwner} " +
+                   $"latestVerified={verified} enabledFrame={enabledFrame} pooledPrev={pooled} " +
+                   $"idChangedSincePool={idChanged} ownerChangedSincePool={ownerChanged}";
         }
     }
 
@@ -125,14 +141,27 @@ public class TrailViewTracker : MonoBehaviour
         public bool deleteRequested;
         public ulong? projectileVerifiedTick;
         public ulong? transformVerifiedTick;
+        // Rendered view pose and live predicted pose at this frame.
+        public Vector3 view;
+        public Vector3 live;
+        // View interpolation buffer depth and whether a tick sample is waiting to be consumed.
+        public int viewBuffer;
+        public bool pendingLatch;
+        // Server-frame batches applied so far; a change between frames marks a rollback batch.
+        public ulong frameApplies;
 
         public override string ToString()
-            => $"[id={id},physical={physicalInstance},owner={owner},tick={localTick},age={age},delete={deleteRequested},verified={projectileVerifiedTick},transformVerified={transformVerifiedTick}]";
+            => $"[id={id},physical={physicalInstance},owner={owner},tick={localTick},age={age},delete={deleteRequested}," +
+               $"verified={projectileVerifiedTick},transformVerified={transformVerifiedTick}," +
+               $"view=({view.x:F3},{view.y:F3},{view.z:F3}),live=({live.x:F3},{live.y:F3},{live.z:F3})," +
+               $"buffer={viewBuffer},latch={pendingLatch},applies={frameApplies}]";
     }
 
     public static readonly List<Sample> failures = new();
     public static readonly List<Sample> diagnostics = new();
     public static readonly HashSet<uint> deadIds = new();
+    // Unbounded count per kind/channel so the bounded sample lists do not hide the mix.
+    public static readonly Dictionary<string, int> kindCounts = new();
     public static long totalSamples;
     public static int segmentsStarted;
     public static int resurrections;
@@ -157,16 +186,34 @@ public class TrailViewTracker : MonoBehaviour
     private bool _hasPreviousContext;
     private Observation _previousContext;
     private Observation _currentContext;
+    private bool _hasPooledContext;
+    private Observation _pooledContext;
+    private int _pooledFrame;
+    private int _enabledFrame;
 
     public static void ResetAll()
     {
         failures.Clear();
         diagnostics.Clear();
         deadIds.Clear();
+        kindCounts.Clear();
         totalSamples = 0;
         segmentsStarted = 0;
         resurrections = 0;
         maxBackward = 0f;
+    }
+
+    public static string DescribeKindCounts()
+    {
+        var sb = new System.Text.StringBuilder();
+        foreach (var pair in kindCounts)
+        {
+            if (sb.Length > 0)
+                sb.Append(';');
+            sb.Append(pair.Key).Append(':').Append(pair.Value);
+        }
+
+        return sb.Length > 0 ? sb.ToString() : "none";
     }
 
     private void Awake()
@@ -182,6 +229,7 @@ public class TrailViewTracker : MonoBehaviour
         segmentsStarted++;
         _hasPrev = false;
         _checkedResurrection = false;
+        _enabledFrame = Time.frameCount;
     }
 
     private void OnDisable()
@@ -195,6 +243,13 @@ public class TrailViewTracker : MonoBehaviour
                 deadIds.Add(_lastId);
         }
 
+        if (_hasPreviousContext)
+        {
+            _hasPooledContext = true;
+            _pooledContext = _previousContext;
+            _pooledFrame = Time.frameCount;
+        }
+
         _hasPrev = false;
     }
 
@@ -205,10 +260,11 @@ public class TrailViewTracker : MonoBehaviour
 
         totalSamples++;
 
+        var pm = _pt.predictionManager;
         _pt.GetViewWorldPose(out var viewPos, out _);
         var simPos = transform.position;
         var frame = Time.frameCount;
-        var tick = _pt.predictionManager.localTick;
+        var tick = pm.localTick;
         bool owned = _proj && _proj.isOwner;
         uint instanceId = _proj ? _proj.id.objectId.instanceId.value : 0;
         _lastId = instanceId;
@@ -223,7 +279,12 @@ public class TrailViewTracker : MonoBehaviour
             age = _proj ? _proj.currentState.age : 0,
             deleteRequested = _proj && _proj.currentState.deleteRequested,
             projectileVerifiedTick = _proj ? _proj.lastVerifiedTick : null,
-            transformVerifiedTick = _pt.lastVerifiedTick
+            transformVerifiedTick = _pt.lastVerifiedTick,
+            view = viewPos,
+            live = _pt.currentState.unityPosition,
+            viewBuffer = _pt.viewInterpolationBufferSize,
+            pendingLatch = _pt.hasPendingViewLatch,
+            frameApplies = pm.renderPhaseFrameAppliesTotal + pm.tickPhaseFrameAppliesTotal
         };
 
         if (!_checkedResurrection && instanceId != 0)
@@ -292,6 +353,10 @@ public class TrailViewTracker : MonoBehaviour
     private void Record(List<Sample> target, string kind, string channel, int frame, int prevFrame, ulong tick,
         uint instanceId, bool owned, Vector3 prev, Vector3 cur)
     {
+        var key = kind + "/" + channel;
+        kindCounts.TryGetValue(key, out var count);
+        kindCounts[key] = count + 1;
+
         if (target.Count >= MaxRecorded)
             return;
 
@@ -309,8 +374,19 @@ public class TrailViewTracker : MonoBehaviour
             cur = cur,
             hasPreviousContext = _hasPreviousContext,
             previousContext = _previousContext,
-            currentContext = _currentContext
+            currentContext = _currentContext,
+            hasPooledContext = _hasPooledContext,
+            pooledContext = _pooledContext,
+            pooledFrame = _pooledFrame,
+            enabledFrame = _enabledFrame
         };
+
+        if (_pt && _pt.TryGetLatestVerifiedState(out var verifiedTick, out var verifiedState))
+        {
+            sample.hasVerified = true;
+            sample.verifiedTick = verifiedTick;
+            sample.verifiedPose = verifiedState.unityPosition;
+        }
 
         if (_proj && _pt.predictionManager)
         {
