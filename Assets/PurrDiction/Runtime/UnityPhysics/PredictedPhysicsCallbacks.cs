@@ -1,3 +1,4 @@
+using System;
 using PurrNet.Utils;
 using UnityEngine;
 
@@ -7,16 +8,31 @@ namespace PurrNet.Prediction
     {
         [SerializeField, PurrLock] private PhysicsEventMask _eventMask = (PhysicsEventMask)0x7F;
 
+        [Obsolete("Use onPredictedCollisionEnter. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnCollisionDelegate onCollisionEnter;
+        [Obsolete("Use onPredictedCollisionExit. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnCollisionDelegate onCollisionExit;
+        [Obsolete("Use onPredictedCollisionStay. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnCollisionDelegate onCollisionStay;
 
+        [Obsolete("Use onPredictedTriggerEnter. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnTriggerDelegate onTriggerEnter;
+        [Obsolete("Use onPredictedTriggerExit. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnTriggerDelegate onTriggerExit;
+        [Obsolete("Use onPredictedTriggerStay. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnTriggerDelegate onTriggerStay;
+
+        public event OnPredictedCollisionDelegate onPredictedCollisionEnter;
+        public event OnPredictedCollisionDelegate onPredictedCollisionExit;
+        public event OnPredictedCollisionDelegate onPredictedCollisionStay;
+
+        public event OnPredictedTriggerDelegate onPredictedTriggerEnter;
+        public event OnPredictedTriggerDelegate onPredictedTriggerExit;
+        public event OnPredictedTriggerDelegate onPredictedTriggerStay;
 
         public event OnControllerColliderHitDelegate onControllerColliderHit;
 
+#pragma warning disable CS0618 // the GameObject-only events stay raised until they are removed
         public void RaiseTriggerEnter(GameObject other) => onTriggerEnter?.Invoke(other);
 
         public void RaiseTriggerExit(GameObject other) => onTriggerExit?.Invoke(other);
@@ -28,6 +44,19 @@ namespace PurrNet.Prediction
         public void RaiseCollisionExit(GameObject other, PhysicsCollision evContacts) => onCollisionExit?.Invoke(other, evContacts);
 
         public void RaiseCollisionStay(GameObject other, PhysicsCollision evContacts) => onCollisionStay?.Invoke(other, evContacts);
+#pragma warning restore CS0618
+
+        public void RaiseTriggerEnter(PredictedTrigger trigger) => onPredictedTriggerEnter?.Invoke(trigger);
+
+        public void RaiseTriggerExit(PredictedTrigger trigger) => onPredictedTriggerExit?.Invoke(trigger);
+
+        public void RaiseTriggerStay(PredictedTrigger trigger) => onPredictedTriggerStay?.Invoke(trigger);
+
+        public void RaiseCollisionEnter(PredictedCollision collision) => onPredictedCollisionEnter?.Invoke(collision);
+
+        public void RaiseCollisionExit(PredictedCollision collision) => onPredictedCollisionExit?.Invoke(collision);
+
+        public void RaiseCollisionStay(PredictedCollision collision) => onPredictedCollisionStay?.Invoke(collision);
 
         public void RaiseControllerColliderHit(GameObject other, PhysicsControllerHit hit)
             => onControllerColliderHit?.Invoke(other, hit);

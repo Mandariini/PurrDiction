@@ -25,7 +25,11 @@ namespace PurrNet.Prediction.Tests.Editor
             var target = fixture.target.AddComponent<PredictedPhysicsCallbacks>();
             fixture.RegisterObjects();
             int calls = 0;
-            caller.onCollisionEnter += (_, _) => calls++;
+            int legacyCalls = 0;
+            caller.onPredictedCollisionEnter += _ => calls++;
+#pragma warning disable CS0618 // the GameObject-only events must keep firing until they are removed
+            caller.onCollisionEnter += (_, _) => legacyCalls++;
+#pragma warning restore CS0618
             bool authoritative = verified && replaying;
             if (authoritative)
                 physics.currentState.events.Add(new PhysicsEvent { me = caller.id, other = target.id });
@@ -39,6 +43,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(calls, Is.EqualTo(authoritative ? 0 : 1));
             physics.PostSimulate();
             Assert.That(calls, Is.EqualTo(1), "the authoritative batch still dispatches normally exactly once");
+            Assert.That(legacyCalls, Is.EqualTo(calls), "the GameObject-only event mirrors the id-carrying one");
             Assert.That(physics.currentState.events.Count, Is.Zero);
         }
 
@@ -86,7 +91,11 @@ namespace PurrNet.Prediction.Tests.Editor
             var collider = fixture.target.AddComponent<BoxCollider2D>();
             fixture.RegisterObjects();
             int calls = 0;
-            caller.onTriggerEnter += _ => calls++;
+            int legacyCalls = 0;
+            caller.onPredictedTriggerEnter += _ => calls++;
+#pragma warning disable CS0618 // the GameObject-only events must keep firing until they are removed
+            caller.onTriggerEnter += _ => legacyCalls++;
+#pragma warning restore CS0618
             bool authoritative = verified && replaying;
             if (authoritative)
                 physics.currentState.events.Add(new Physics2DEvent { me = caller.id, other = target.id, isTrigger = true });
@@ -100,6 +109,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(calls, Is.EqualTo(authoritative ? 0 : 1));
             physics.PostSimulate();
             Assert.That(calls, Is.EqualTo(1));
+            Assert.That(legacyCalls, Is.EqualTo(calls), "the GameObject-only event mirrors the id-carrying one");
             Assert.That(physics.currentState.events.Count, Is.Zero);
         }
 #endif

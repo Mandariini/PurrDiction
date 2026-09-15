@@ -59,36 +59,47 @@ namespace PurrNet.Prediction
             if (ev.me.TryGetIdentity<IPredictedPhysicsCallbacks>(predictionManager, out var me))
             {
                 var otherGo = ev.other.GetGameObject(predictionManager);
-                if (!otherGo && ev.other.objectId.instanceId.value != 0)
+                bool hasOther = otherGo || ev.other.objectId.instanceId.value == 0;
+                if (!hasOther && ev.type != PhysicsEventType.Exit)
                     return;
                 if (ev.isTrigger)
                 {
+                    var trigger = new PredictedTrigger(otherGo, ev.other);
                     switch (ev.type)
                     {
                         case PhysicsEventType.Enter:
                             me.RaiseTriggerEnter(otherGo);
+                            me.RaiseTriggerEnter(trigger);
                             break;
                         case PhysicsEventType.Exit:
-                            me.RaiseTriggerExit(otherGo);
+                            if (hasOther)
+                                me.RaiseTriggerExit(otherGo);
+                            me.RaiseTriggerExit(trigger);
                             break;
                         case PhysicsEventType.Stay:
                             me.RaiseTriggerStay(otherGo);
+                            me.RaiseTriggerStay(trigger);
                             break;
                         default: throw new ArgumentOutOfRangeException();
                     }
                 }
                 else
                 {
+                    var collision = new PredictedCollision(otherGo, ev.other, ev.collision);
                     switch (ev.type)
                     {
                         case PhysicsEventType.Enter:
                             me.RaiseCollisionEnter(otherGo, ev.collision);
+                            me.RaiseCollisionEnter(collision);
                             break;
                         case PhysicsEventType.Exit:
-                            me.RaiseCollisionExit(otherGo, ev.collision);
+                            if (hasOther)
+                                me.RaiseCollisionExit(otherGo, ev.collision);
+                            me.RaiseCollisionExit(collision);
                             break;
                         case PhysicsEventType.Stay:
                             me.RaiseCollisionStay(otherGo, ev.collision);
+                            me.RaiseCollisionStay(collision);
                             break;
                         default: throw new ArgumentOutOfRangeException();
                     }

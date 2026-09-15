@@ -23,13 +23,27 @@ namespace PurrNet.Prediction
 
         public new Rigidbody2D rigidbody => _rigidbody;
 
+        [Obsolete("Use onPredictedCollisionEnter. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnCollisionDelegate onCollisionEnter;
+        [Obsolete("Use onPredictedCollisionExit. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnCollisionDelegate onCollisionExit;
+        [Obsolete("Use onPredictedCollisionStay. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnCollisionDelegate onCollisionStay;
 
+        [Obsolete("Use onPredictedTriggerEnter. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnTriggerDelegate onTriggerEnter;
+        [Obsolete("Use onPredictedTriggerExit. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnTriggerDelegate onTriggerExit;
+        [Obsolete("Use onPredictedTriggerStay. It also carries the other object's PredictedComponentID and, on Exit, still fires after the other object was deleted.")]
         public event OnTriggerDelegate onTriggerStay;
+
+        public event OnPredictedCollision2DDelegate onPredictedCollisionEnter;
+        public event OnPredictedCollision2DDelegate onPredictedCollisionExit;
+        public event OnPredictedCollision2DDelegate onPredictedCollisionStay;
+
+        public event OnPredictedTriggerDelegate onPredictedTriggerEnter;
+        public event OnPredictedTriggerDelegate onPredictedTriggerExit;
+        public event OnPredictedTriggerDelegate onPredictedTriggerStay;
 
         private void Reset()
         {
@@ -491,6 +505,7 @@ namespace PurrNet.Prediction
             predictionManager.physics2d.RegisterEvent(type, this, other);
         }
 
+#pragma warning disable CS0618 // the GameObject-only events stay raised until they are removed
         public void RaiseTriggerEnter(GameObject other) => onTriggerEnter?.Invoke(other);
 
         public void RaiseTriggerExit(GameObject other) => onTriggerExit?.Invoke(other);
@@ -498,19 +513,26 @@ namespace PurrNet.Prediction
         public void RaiseTriggerStay(GameObject other) => onTriggerStay?.Invoke(other);
 
         public void RaiseCollisionEnter(GameObject other, DisposableList<Physics2DContactPoint> evContacts)
-        {
-            onCollisionEnter?.Invoke(other, evContacts);
-        }
+            => onCollisionEnter?.Invoke(other, evContacts);
 
         public void RaiseCollisionExit(GameObject other, DisposableList<Physics2DContactPoint> evContacts)
-        {
-            onCollisionExit?.Invoke(other, evContacts);
-        }
+            => onCollisionExit?.Invoke(other, evContacts);
 
         public void RaiseCollisionStay(GameObject other, DisposableList<Physics2DContactPoint> evContacts)
-        {
-            onCollisionStay?.Invoke(other, evContacts);
-        }
+            => onCollisionStay?.Invoke(other, evContacts);
+#pragma warning restore CS0618
+
+        public void RaiseTriggerEnter(PredictedTrigger trigger) => onPredictedTriggerEnter?.Invoke(trigger);
+
+        public void RaiseTriggerExit(PredictedTrigger trigger) => onPredictedTriggerExit?.Invoke(trigger);
+
+        public void RaiseTriggerStay(PredictedTrigger trigger) => onPredictedTriggerStay?.Invoke(trigger);
+
+        public void RaiseCollisionEnter(PredictedCollision2D collision) => onPredictedCollisionEnter?.Invoke(collision);
+
+        public void RaiseCollisionExit(PredictedCollision2D collision) => onPredictedCollisionExit?.Invoke(collision);
+
+        public void RaiseCollisionStay(PredictedCollision2D collision) => onPredictedCollisionStay?.Invoke(collision);
 
         public Vector2 position
         {

@@ -886,24 +886,24 @@ namespace PurrNet.Prediction.Tests.Editor
                     var callbacks = _callbackObject.AddComponent<PredictedRigidbody2D>();
                     _callbackObject.GetComponent<Rigidbody2D>().simulated = false;
                     AttachCallbacks(callbacks);
-                    callbacks.onCollisionEnter += (_, contacts) => Record("collision/Enter", contacts[0].point.x);
-                    callbacks.onCollisionStay += (_, contacts) => Record("collision/Stay", contacts[0].point.x);
-                    callbacks.onCollisionExit += (_, contacts) => Record("collision/Exit", contacts[0].point.x);
-                    callbacks.onTriggerEnter += _ => Record("trigger/Enter", 0);
-                    callbacks.onTriggerStay += _ => Record("trigger/Stay", 0);
-                    callbacks.onTriggerExit += _ => Record("trigger/Exit", 0);
+                    callbacks.onPredictedCollisionEnter += c => Record("collision/Enter", c.contacts[0].point.x);
+                    callbacks.onPredictedCollisionStay += c => Record("collision/Stay", c.contacts[0].point.x);
+                    callbacks.onPredictedCollisionExit += c => Record("collision/Exit", c.contacts[0].point.x);
+                    callbacks.onPredictedTriggerEnter += _ => Record("trigger/Enter", 0);
+                    callbacks.onPredictedTriggerStay += _ => Record("trigger/Stay", 0);
+                    callbacks.onPredictedTriggerExit += _ => Record("trigger/Exit", 0);
                 }
                 else
 #endif
                 {
                     var callbacks = _callbackObject.AddComponent<PredictedPhysicsCallbacks>();
                     AttachCallbacks(callbacks);
-                    callbacks.onCollisionEnter += (_, collision) => Record("collision/Enter", collision.relativeVelocity.magnitude);
-                    callbacks.onCollisionStay += (_, collision) => Record("collision/Stay", collision.relativeVelocity.magnitude);
-                    callbacks.onCollisionExit += (_, collision) => Record("collision/Exit", collision.relativeVelocity.magnitude);
-                    callbacks.onTriggerEnter += _ => Record("trigger/Enter", 0);
-                    callbacks.onTriggerStay += _ => Record("trigger/Stay", 0);
-                    callbacks.onTriggerExit += _ => Record("trigger/Exit", 0);
+                    callbacks.onPredictedCollisionEnter += c => Record("collision/Enter", c.collision.relativeVelocity.magnitude);
+                    callbacks.onPredictedCollisionStay += c => Record("collision/Stay", c.collision.relativeVelocity.magnitude);
+                    callbacks.onPredictedCollisionExit += c => Record("collision/Exit", c.collision.relativeVelocity.magnitude);
+                    callbacks.onPredictedTriggerEnter += _ => Record("trigger/Enter", 0);
+                    callbacks.onPredictedTriggerStay += _ => Record("trigger/Stay", 0);
+                    callbacks.onPredictedTriggerExit += _ => Record("trigger/Exit", 0);
                 }
             }
 
