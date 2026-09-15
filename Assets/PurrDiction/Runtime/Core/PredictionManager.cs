@@ -1822,9 +1822,7 @@ namespace PurrNet.Prediction
                 hasInputMargin = hasInputMargin,
                 inputMargin = inputMargin,
                 hasInputSlack = hasInputSlack,
-                inputSlackMs = inputSlackMs,
-                enqueuedFrame = Time.frameCount,
-                trackAge = localTick > 1
+                inputSlackMs = inputSlackMs
             });
         }
 
@@ -2332,7 +2330,7 @@ namespace PurrNet.Prediction
 
                     if (frame.trackAge)
                     {
-                        int age = Time.frameCount - frame.enqueuedFrame;
+                        int age = currentFrameCount - frame.enqueuedFrame;
                         if (age > maxFrameApplyAgeFrames)
                             maxFrameApplyAgeFrames = age;
                     }

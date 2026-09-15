@@ -73,6 +73,38 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void StagedContinuationAgeCountsFromItsReleaseNotItsArrival()
+        {
+            using var f = new Fixture();
+            using var full = f.Prepare(11, 110, full: true);
+            using var continuation = f.Prepare(12, 120);
+            Set(f.client, "<localTick>k__BackingField", 14UL);
+            Set(f.client, "<localTickInContext>k__BackingField", 14UL);
+
+            try
+            {
+                PredictionManager.frameCountOverrideForTests = 1000;
+                f.Receive(continuation);
+                f.Drain();
+                Assert.That(f.client.stagedCheckpointFrames, Is.EqualTo(1), "the delta waits for its checkpoint");
+
+                // The checkpoint lands many render frames later, as it does behind packet loss.
+                PredictionManager.frameCountOverrideForTests = 1000 + 1687;
+                f.Receive(full);
+                f.Drain();
+            }
+            finally
+            {
+                PredictionManager.frameCountOverrideForTests = null;
+            }
+
+            Assert.That(f.AppliedCheckpoint, Is.EqualTo(11));
+            Assert.That(f.ClientAck, Is.EqualTo(12));
+            Assert.That(f.client.maxFrameApplyAgeFrames, Is.Zero,
+                "waiting for a checkpoint is delivery, not apply latency; both frames applied the frame they became eligible");
+        }
+
+        [Test]
         public void NewestStagedContinuationWinsRegardlessOfArrivalOrder()
         {
             using var f = new Fixture();

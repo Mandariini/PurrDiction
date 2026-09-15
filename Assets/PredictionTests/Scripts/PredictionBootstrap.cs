@@ -336,7 +336,10 @@ public class PredictionBootstrap : Scenario
             expectedConnections = _expectedConnections,
             networkManager = _networkManager,
             predictionManager = _predictionManager,
-            cancellationToken = _runCts.Token
+            cancellationToken = _runCts.Token,
+            packetLossPercent = _packetLossChance,
+            minLatencyMs = _simulateLatency ? _minLatencyMs : 0,
+            maxLatencyMs = _simulateLatency ? _maxLatencyMs : 0
         };
     }
 
@@ -464,6 +467,15 @@ public class PredictionBootstrap : Scenario
         if (CommandLineUtils.TryGetArgument("-tickRate", out var tickRate) &&
             int.TryParse(tickRate, out var parsedTickRate) && parsedTickRate > 0)
             _networkManager.tickRate = parsedTickRate;
+
+        // Headless players otherwise spin at thousands of frames per second; several of them on a
+        // small CI runner starve each other and turn timing assertions into a test of the host.
+        if (CommandLineUtils.TryGetArgument("-targetFrameRate", out var targetFrameRate) &&
+            int.TryParse(targetFrameRate, out var parsedTargetFrameRate) && parsedTargetFrameRate > 0)
+        {
+            QualitySettings.vSyncCount = 0;
+            Application.targetFrameRate = parsedTargetFrameRate;
+        }
 
         if (CommandLineUtils.HasFlag("-mtuFragment"))
             _networkManager.mtuExceededBehaviour = MTUExceededBehaviour.Fragment;

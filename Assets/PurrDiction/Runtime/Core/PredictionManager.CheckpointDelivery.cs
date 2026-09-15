@@ -17,6 +17,17 @@ namespace PurrNet.Prediction
         private FrameDelta? _stagedCheckpointFrame;
         private double _stagedCheckpointReceivedAt;
 
+        internal static int? frameCountOverrideForTests;
+
+        private static int currentFrameCount => frameCountOverrideForTests ?? Time.frameCount;
+
+        private void EnqueueDelta(FrameDelta frame)
+        {
+            frame.enqueuedFrame = currentFrameCount;
+            frame.trackAge = localTick > 1;
+            _deltas.Enqueue(frame);
+        }
+
         public int stagedCheckpointFrames => _stagedCheckpointFrame.HasValue ? 1 : 0;
         public int stagedCheckpointBytes => _stagedCheckpointFrame.HasValue
             ? _stagedCheckpointFrame.Value.packer.ToByteData().length
@@ -74,7 +85,7 @@ namespace PurrNet.Prediction
                     _deltas.Dequeue().Dispose();
 
                 _queuedCheckpointTick = checkpoint;
-                _deltas.Enqueue(frame);
+                EnqueueDelta(frame);
                 return;
             }
 
@@ -95,7 +106,7 @@ namespace PurrNet.Prediction
             if (checkpoint == _appliedCheckpointTick)
             {
                 // Receipt alone must not advance ACKs; replay must succeed first.
-                _deltas.Enqueue(frame);
+                EnqueueDelta(frame);
                 return;
             }
 
@@ -195,7 +206,7 @@ namespace PurrNet.Prediction
             ClearWaitingCheckpoint();
 
             if (continuation.HasValue)
-                _deltas.Enqueue(continuation.Value);
+                EnqueueDelta(continuation.Value);
 
             if (repairAfter > checkpoint)
                 MarkHistoryResyncNeeded(repairAfter);
