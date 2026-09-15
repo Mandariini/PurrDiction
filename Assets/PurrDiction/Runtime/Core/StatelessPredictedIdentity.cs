@@ -34,6 +34,7 @@ namespace PurrNet.Prediction
 
         internal override void UpdateView(float deltaTime)
         {
+            base.UpdateView(deltaTime);
 #pragma warning disable CS0618 // Type or member is obsolete
             UpdateView(default, default);
 #pragma warning restore CS0618 // Type or member is obsolete
