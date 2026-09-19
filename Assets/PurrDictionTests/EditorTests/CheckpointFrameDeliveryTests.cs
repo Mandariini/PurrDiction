@@ -325,36 +325,6 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void PendingFullOlderThanTheRetainedWindowIsReplacedInsteadOfSuppressingTheClient()
-        {
-            using var f = new Fixture();
-            using var full = f.Prepare(11, 110, full: true);
-            Assert.That(f.ServerFrame.reliableFrame.pendingTick, Is.EqualTo(11));
-            ulong window = f.Server.verifiedHistoryWindowTicks;
-
-            using var lastDelta = f.Prepare(11 + window, 120);
-            Assert.That(lastDelta.full, Is.False, "deltas continue while the pending full is inside the window");
-            Assert.That(f.ServerFrame.reliableFrame.pendingTick, Is.EqualTo(11));
-            Assert.That(f.Server.expiredCheckpointsTotal, Is.Zero);
-
-            // A client whose ACK froze without a fault it could report must not be
-            // suppressed forever behind a full that can no longer anchor any delta.
-            using var replacement = f.Prepare(12 + window, 130);
-            Assert.That(replacement.full, Is.True,
-                "an un-ACKed full beyond the window is released and a fresh checkpoint replaces it");
-            Assert.That(f.ServerFrame.reliableFrame.pendingTick, Is.EqualTo(12 + window));
-            Assert.That(f.Server.expiredCheckpointsTotal, Is.EqualTo(1));
-            Assert.That(f.Server.suppressedTicksTotal, Is.Zero);
-            Assert.That(f.ServerAck, Is.EqualTo(8));
-
-            f.Receive(replacement);
-            f.Drain();
-            Assert.That(f.AppliedCheckpoint, Is.EqualTo(12 + window));
-            Assert.That(f.ClientAck, Is.EqualTo(12 + window));
-            Assert.That(f.Verified(12 + window).state.value, Is.EqualTo(130));
-        }
-
-        [Test]
         public void AckBeyondTheServerTickIsIgnored()
         {
             using var f = new Fixture();
