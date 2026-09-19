@@ -354,7 +354,7 @@ namespace PurrNet.Prediction
                 known.Add(_queue[i]);
 
             // SortMode was obsoleted in Unity 6.4. Skip the argument in future versions.
-            var all = 
+            var all =
 #if UNITY_6000_4_OR_NEWER
                 UnityEngine.Object.FindObjectsByType<PredictedIdentity>();
 #else
@@ -482,6 +482,7 @@ namespace PurrNet.Prediction
             foreach (var queue in _clientTicks.Values)
                 queue.Clear();
             _clientTicks.Clear();
+            _pendingFullSync.Clear();
             foreach (var packer in _clientFrames)
                 packer.Dispose();
             _clientFrames.Clear();
@@ -716,8 +717,9 @@ namespace PurrNet.Prediction
         {
             if (hierarchy)
                 hierarchy.networkMirror.RemovePlayer(player);
-            _clientTicks.Remove(player);
-            _pendingFullSync.Remove(player);
+            if (_clientTicks.Remove(player, out var input))
+                input.Clear();
+            _pendingFullSync.RemoveAll(pending => pending == player);
             RemovePlayerVisibility(player);
 
             var frames = _clientFrames.Count;
@@ -1291,15 +1293,6 @@ namespace PurrNet.Prediction
                     clientFrame.ClearRecoveryFrame();
                 }
 
-                // An expired checkpoint can no longer anchor a delta, even if its ACK eventually arrives.
-                if (checkpointPending && localTick > clientFrame.reliableFrame.pendingTick &&
-                    localTick - clientFrame.reliableFrame.pendingTick > verifiedHistoryWindowTicks)
-                {
-                    clientFrame.ClearRecoveryFrame();
-                    clientFrame.requiresFullCheckpoint = true;
-                    checkpointPending = false;
-                    expiredCheckpointsTotal++;
-                }
 
                 // Continuations must use the promised checkpoint baseline even before its ACK arrives.
                 baselineTick = Math.Max(baselineTick, clientFrame.lastFullFrameSentTick);
@@ -1312,8 +1305,8 @@ namespace PurrNet.Prediction
                     hierarchy.networkMirror.SyncObservers(player, timeline, ackQueue?.ackedServerTick ?? 0);
                 historyUnavailable |= !timeline.isPassThrough && hierarchy &&
                     !hierarchy.TryGetVerifiedState(baselineTick + 1, out _, out _);
-                clientFrame.requiresFullCheckpoint |= clientFrame.fullFrame || historyUnavailable;
-                clientFrame.fullFrame = clientFrame.requiresFullCheckpoint && !checkpointPending;
+                clientFrame.requiresFullCheckpoint |= clientFrame.fullFrame;
+                clientFrame.fullFrame = (clientFrame.requiresFullCheckpoint || historyUnavailable) && !checkpointPending;
 
                 if (checkpointPending && historyUnavailable)
                 {
@@ -1428,7 +1421,6 @@ namespace PurrNet.Prediction
         /// checkpoints, cumulative and worst acknowledgement delay in ticks. Diagnostic only.
         /// </summary>
         public ulong suppressedTicksTotal { get; private set; }
-        public ulong expiredCheckpointsTotal { get; private set; }
         public ulong latchCyclesTotal { get; private set; }
         public ulong latchTicksTotal { get; private set; }
         public ulong maxLatchTicks { get; private set; }
