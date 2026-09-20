@@ -61,10 +61,10 @@ namespace PurrNet.Prediction.Tests.Editor
             for (ulong tick = 17; tick <= 20; tick++)
             {
                 Assert.That(ReadPackedUInt(frameB), Is.EqualTo(2));
-                Assert.That(ReadTickHeader(frameB, tick > 17, 2, expectSameRoster: true), Is.All.False,
+                Assert.That(ReadTickHeader(frameB, tick > 17, 2, true, out var deltas), Is.All.False,
                     "changing inputs are never encoded as repeats");
-                AssertRecord(frameB, 600, (int)(100 + tick));
-                AssertRecord(frameB, 601, tick == 20 ? 555 : (int)(200 + tick));
+                AssertRecord(frameB, 600, (int)(100 + tick), tick > 17, deltas[0], (int)(99 + tick));
+                AssertRecord(frameB, 601, tick == 20 ? 555 : (int)(200 + tick), tick > 17, deltas[1], (int)(199 + tick));
             }
             Assert.That(frameB.positionInBits, Is.EqualTo(writtenBits),
                 "the transcript must be the complete input section, with no newest-only trailer");
@@ -131,9 +131,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 var count = (ordinaryVisible ? 1 : 0) + (deterministicVisible ? 1 : 0);
                 Assert.That(ReadPackedUInt(frame), Is.EqualTo(count), $"tick {tick}");
                 // Only tick 15 sees the same roster as its predecessor (620 alone at 14 and 15).
-                Assert.That(ReadTickHeader(frame, tick > 11, count, expectSameRoster: tick == 15), Is.All.False);
+                Assert.That(ReadTickHeader(frame, tick > 11, count, tick == 15, out var deltas), Is.All.False);
                 if (ordinaryVisible)
-                    AssertRecord(frame, 620, (int)tick);
+                    AssertRecord(frame, 620, (int)tick, tick == 15, deltas[0], (int)tick - 1);
                 if (deterministicVisible)
                     AssertRecord(frame, 621, (int)tick);
             }
@@ -470,7 +470,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var received = receiver.AddInput(false, 660);
             for (ulong tick = 11; tick <= 20; tick++)
             {
-                sent.Write(tick, new TrackedInput(tick <= 15 ? 7 : 8));
+                sent.Write(tick, new TrackedInput(tick <= 15 ? 7 : ~7));
                 sender.Capture(tick);
             }
 
@@ -481,21 +481,21 @@ namespace PurrNet.Prediction.Tests.Editor
             for (ulong tick = 11; tick <= 20; tick++)
             {
                 Assert.That(ReadPackedUInt(frame), Is.EqualTo(1), $"tick {tick}");
-                bool repeat = ReadTickHeader(frame, tick > 11, 1, expectSameRoster: tick > 11)[0];
+                bool repeat = ReadTickHeader(frame, tick > 11, 1, tick > 11, out var deltas)[0];
                 Assert.That(repeat, Is.EqualTo(tick != 11 && tick != 16),
-                    $"tick {tick}: the first tick and every changed value are written in full; unchanged values repeat");
+                    $"tick {tick}: unchanged values repeat; changed values carry a payload");
                 if (repeat)
                     continue;
-                Assert.That(Packer<PredictedComponentID>.Read(frame),
-                    Is.EqualTo(new PredictedComponentID(new PredictedObjectID(660), 0)));
-                frame.SkipBits((int)ReadPackedUInt(frame));
+                if (tick == 16)
+                    Assert.That(deltas[0], Is.False, "a change touching every byte is written as an id-less full record");
+                AssertRecord(frame, 660, tick <= 15 ? 7 : ~7, tick > 11, deltas[0], 7);
             }
             Assert.That(frame.positionInBits, Is.EqualTo(writtenBits),
                 "transcript size must not scale with the number of unchanged ticks");
 
             receiver.Read(frame, 20, 10);
             for (ulong tick = 11; tick <= 20; tick++)
-                AssertInput(received, tick, tick <= 15 ? 7 : 8);
+                AssertInput(received, tick, tick <= 15 ? 7 : ~7);
         }
 
         [Test]
@@ -524,7 +524,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 if (!visible)
                     continue;
                 // Tick 14 re-enters after two empty ticks, so its roster differs and it is written in full.
-                bool repeat = ReadTickHeader(frame, tick > 11, 1, expectSameRoster: tick == 15)[0];
+                bool repeat = ReadTickHeader(frame, tick > 11, 1, tick == 15, out _)[0];
                 Assert.That(repeat, Is.EqualTo(tick == 15),
                     $"tick {tick}: an entry re-entering this receiver's view is written in full even when its value is unchanged");
                 if (repeat)
@@ -566,9 +566,10 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(received.Count, Is.Zero);
         }
 
-        private static bool[] ReadTickHeader(BitPacker frame, bool afterFirstTick, int count, bool expectSameRoster)
+        private static bool[] ReadTickHeader(BitPacker frame, bool afterFirstTick, int count, bool expectSameRoster, out bool[] deltas)
         {
             var repeats = new bool[count];
+            deltas = new bool[count];
             if (count == 0)
                 return repeats;
             bool sameRoster = false;
@@ -579,7 +580,11 @@ namespace PurrNet.Prediction.Tests.Editor
             }
             Assert.That(ReadPackedUInt(frame), Is.Zero, "view offset count");
             if (sameRoster)
-                for (int i = 0; i < count; i++) repeats[i] = Packer<bool>.Read(frame);
+                for (int i = 0; i < count; i++)
+                {
+                    repeats[i] = Packer<bool>.Read(frame);
+                    deltas[i] = !repeats[i] && Packer<bool>.Read(frame);
+                }
             frame.SkipBits((8 - frame.positionInBits % 8) % 8);
             return repeats;
         }
@@ -587,10 +592,24 @@ namespace PurrNet.Prediction.Tests.Editor
         private static void PadToByte(BitPacker frame)
             => frame.WriteBits(0UL, (byte)((8 - frame.positionInBits % 8) % 8));
 
-        private static void AssertRecord(BitPacker frame, uint objectId, int value)
+        private static void AssertRecord(BitPacker frame, uint objectId, int value,
+            bool sameRoster = false, bool delta = false, int previousValue = 0)
         {
-            Assert.That(Packer<PredictedComponentID>.Read(frame),
-                Is.EqualTo(new PredictedComponentID(new PredictedObjectID(objectId), 0)));
+            if (!sameRoster)
+                Assert.That(Packer<PredictedComponentID>.Read(frame),
+                    Is.EqualTo(new PredictedComponentID(new PredictedObjectID(objectId), 0)));
+            if (delta)
+            {
+                using var baseline = BitPackerPool.Get();
+                Packer<bool>.Write(baseline, true);
+                Packer<TrackedInput>.Write(baseline, new TrackedInput(previousValue));
+                using var decoded = BitPackerPool.Get();
+                InputHistoryDelta.Read(frame, frame.buffer.Length * 8, new BitData(baseline), decoded);
+                decoded.ResetPositionAndMode(true);
+                Assert.That(Packer<bool>.Read(decoded), Is.True);
+                Assert.That(Packer<TrackedInput>.Read(decoded).id, Is.EqualTo(value));
+                return;
+            }
             var declaredBits = ReadPackedUInt(frame);
             var origin = frame.positionInBits;
             Assert.That(Packer<bool>.Read(frame), Is.True);

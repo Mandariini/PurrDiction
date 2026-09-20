@@ -482,7 +482,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(Get<Dictionary<PlayerID, HashSet<PredictedComponentID>>>(
                     _server, "_preparedDesyncHeals")[_player], Does.Contain(_sender.id),
                     "the actual serializer must have prepared this heal before deferral");
-                Invoke(_server, "SendFrameToOthers");
+                Invoke(_server, "SendPreparedServerFrame", 0);
             }
 
             public void DeliverAck(ulong? ack = null) => Invoke(_server, "ReceivedInput", 0UL, 0u, ack ?? ClientAck,

@@ -289,7 +289,10 @@ public sealed class ReliablePipelineScenario : Scenario
             if (last.ack - first.ack < 0.85 * (last.tick - first.tick)) throw new InvalidOperationException($"ACK cadence did not recover for {player}.");
             if (_ctx.isServer)
             {
-                if (fresh < 0.9 * (samples.Count - 1)) throw new InvalidOperationException($"Fresh snapshot cadence {fresh}/{samples.Count - 1} for {player}.");
+                // A server update rate below the tick rate coalesces ticks by design.
+                int updateRate = _ctx.predictionManager.serverUpdateRate;
+                double expectedShare = updateRate > 0 && updateRate < _report.tickRate ? (double)updateRate / _report.tickRate : 1.0;
+                if (fresh < 0.9 * expectedShare * (samples.Count - 1)) throw new InvalidOperationException($"Fresh snapshot cadence {fresh}/{samples.Count - 1} for {player} (update rate {updateRate}, tick rate {_report.tickRate}).");
                 if (last.lastFull != first.lastFull) throw new InvalidOperationException($"Full snapshot fallback during healthy tail for {player}.");
                 if (_report.fault == "recovery" && !_report.samples.Exists(s => s.player == player && s.pendingTick > s.ack &&
                     s.lastFull == s.pendingTick && s.sent > s.pendingTick)) throw new InvalidOperationException($"No fresh delta sent past an outstanding reliable full checkpoint for {player}.");

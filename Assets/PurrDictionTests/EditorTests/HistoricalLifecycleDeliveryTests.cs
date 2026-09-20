@@ -163,6 +163,135 @@ namespace PurrNet.Prediction.Tests.Editor
 
         [TestCase(false)]
         [TestCase(true)]
+        public void CoalescedUnsentFramesRetainAnEntireTransientLifetime(bool pooled)
+        {
+            using var f = new Fixture(pooled);
+            PredictedObjectID born = default;
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                if (tick == 13)
+                    born = f.CreateServerIdentity(700);
+                if (tick == 15)
+                    f.server.hierarchy.Delete(born);
+                using var packet = f.StepServer(tick, deferSend: true);
+                Assert.That(packet.full, Is.False, $"coalescing forced a checkpoint at tick {tick}");
+                Assert.That(f.PreparedFrame.sentVisibilityTick, Is.EqualTo(Baseline),
+                    "preparing another frame must not mark any skipped visibility state as sent");
+                if (tick == FinalTick)
+                {
+                    f.CompleteDeferredSend(packet);
+                    f.Deliver(packet);
+                }
+            }
+
+            f.AssertVerifiedAgreement();
+            Assert.That(f.clientLedger.observations, Is.EqualTo(new[]
+            {
+                new LifecycleObservation(born, 13, 700, 13, 1),
+                new LifecycleObservation(born, 14, 713, 14, 1)
+            }));
+            Assert.That(f.client.hierarchy.TryGetGameObject(born, out _), Is.False);
+            Assert.That(f.clientLedger.currentState.count, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void CoalescedUnsentVisibilityTransitionsReplayOnlyOriginalVisibleIntervals()
+        {
+            PredictedObjectID id = default;
+            using var f = new Fixture(true, beforeBaseline: world => id = world.CreateServerIdentity(100));
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                if (tick == 11 || tick == 13)
+                {
+                    f.SetVisible(id, false);
+                    f.ServerProbe(id).currentState.value = tick == 11 ? 700 : 900;
+                }
+                if (tick == 12 || tick == 16)
+                    f.SetVisible(id, true);
+                using var packet = f.StepServer(tick, deferSend: true);
+                Assert.That(packet.full, Is.False);
+                Assert.That(f.PreparedFrame.sentVisibilityTick, Is.EqualTo(Baseline));
+                if (tick == FinalTick)
+                {
+                    f.CompleteDeferredSend(packet);
+                    f.Deliver(packet);
+                }
+            }
+
+            f.AssertVerifiedAgreement(compareObservations: false);
+            Assert.That(f.clientLedger.observations, Is.EqualTo(new[]
+            {
+                new LifecycleObservation(id, 12, 711, 12, 1),
+                new LifecycleObservation(id, 16, 942, 16, 1),
+                new LifecycleObservation(id, 17, 958, 17, 1)
+            }));
+            Assert.That(f.client.hierarchy.TryGetGameObject(id, out _), Is.True);
+        }
+
+        [Test]
+        public void CoalescedUnsentDeleteCannotBeRetiredByAnEarlierAcknowledgement()
+        {
+            PredictedObjectID id = default;
+            using var f = new Fixture(true, beforeBaseline: world => id = world.CreateServerIdentity(100));
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                if (tick == 13)
+                    f.server.hierarchy.Delete(id);
+                using var packet = f.StepServer(tick, deferSend: true);
+                Assert.That(packet.full, Is.False);
+                if (tick >= 13)
+                {
+                    var tombstones = f.PendingVisibilityDeletes;
+                    Assert.That(tombstones, Is.Not.Null);
+                    Assert.That(tombstones.Count, Is.EqualTo(1));
+                    tombstones.Acknowledge(tick - 1);
+                    Assert.That(tombstones.Count, Is.EqualTo(1),
+                        "an unsent tombstone has no delivery tick that an ACK can retire");
+                }
+                if (tick == FinalTick)
+                {
+                    f.CompleteDeferredSend(packet);
+                    f.Deliver(packet);
+                    f.PendingVisibilityDeletes.Acknowledge(FinalTick - 1);
+                    Assert.That(f.PendingVisibilityDeletes.Count, Is.EqualTo(1));
+                    f.PendingVisibilityDeletes.Acknowledge(FinalTick);
+                    Assert.That(f.PendingVisibilityDeletes.Count, Is.Zero);
+                }
+            }
+
+            f.AssertVerifiedAgreement();
+            Assert.That(f.client.hierarchy.TryGetGameObject(id, out _), Is.False);
+            Assert.That(f.clientLedger.observations.Count, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void ReplacingUnsentFramesKeepsTheDesyncHealPendingUntilDelivery()
+        {
+            PredictedObjectID id = default;
+            using var f = new Fixture(true, beforeBaseline: world => id = world.CreateServerIdentity(100));
+            var component = f.ServerProbe(id).id;
+            f.QueueDesyncHeal(component);
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                using var packet = f.StepServer(tick, deferSend: true);
+                Assert.That(packet.full, Is.False, "an identity heal must remain an ordinary continuation");
+                Assert.That(f.PendingDesyncHeals, Does.Contain(component),
+                    "preparing or coalescing a heal must not consume the pending request");
+                Assert.That(f.PreparedDesyncHeals, Does.Contain(component));
+                if (tick == FinalTick)
+                {
+                    f.CompleteDeferredSend(packet);
+                    Assert.That(f.PendingDesyncHeals, Is.Empty);
+                    Assert.That(f.PreparedDesyncHeals, Is.Empty);
+                    f.Deliver(packet);
+                }
+            }
+
+            f.AssertVerifiedAgreement();
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public void LaterBirthKeepsDistinctIdsAndInitializationAfterAnEarlierLifetimeEnds(bool pooled)
         {
             using var f = new Fixture(pooled);
@@ -566,7 +695,21 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(visible ? server.ShowTo(_recipient, id) : server.HideFrom(_recipient, id), Is.True);
             }
 
-            internal Packet StepServer(ulong tick, Action afterCapture = null, bool assertNoLifecycleFullWrites = false)
+            internal PlayerPacker PreparedFrame => _frames[0];
+            internal PlayerPendingVisibilityDeletes PendingVisibilityDeletes =>
+                Get<Dictionary<PlayerID, PlayerPendingVisibilityDeletes>>(server, "_pendingVisibilityDeletes")
+                    .TryGetValue(_recipient, out var pending) ? pending : null;
+            internal HashSet<PredictedComponentID> PendingDesyncHeals =>
+                Get<Dictionary<PlayerID, HashSet<PredictedComponentID>>>(server, "_pendingDesyncHeals")[_recipient];
+            internal HashSet<PredictedComponentID> PreparedDesyncHeals =>
+                Get<Dictionary<PlayerID, HashSet<PredictedComponentID>>>(server, "_preparedDesyncHeals")[_recipient];
+
+            internal void QueueDesyncHeal(PredictedComponentID id)
+                => Get<Dictionary<PlayerID, HashSet<PredictedComponentID>>>(server, "_pendingDesyncHeals")
+                    .Add(_recipient, new HashSet<PredictedComponentID> { id });
+
+            internal Packet StepServer(ulong tick, Action afterCapture = null, bool assertNoLifecycleFullWrites = false,
+                bool deferSend = false)
             {
                 Set(server, "<localTick>k__BackingField", tick);
                 Set(server, "<localTickInContext>k__BackingField", tick);
@@ -599,6 +742,28 @@ namespace PurrNet.Prediction.Tests.Editor
                 var prepared = _frames[0];
                 var packet = new Packet(tick, prepared);
 
+                if (deferSend)
+                {
+                    Assert.That(prepared.fullFrame, Is.False,
+                        "this transport seam only defers ordinary updates; checkpoints bypass coalescing");
+                    Invoke(server, "DispatchPreparedServerFrames");
+                    Assert.That(_frames[0].preparedFrameTick, Is.EqualTo(tick));
+                    Assert.That(server.freshFramesSentTotal, Is.Zero,
+                        "per-tick dispatch must defer this update until the host's final flush");
+                }
+                else
+                    CompleteDeferredSend(packet);
+                Set(server, "<isVerified>k__BackingField", false);
+                return packet;
+            }
+
+            internal void CompleteDeferredSend(Packet packet)
+            {
+                // Keep the existing explicit transport seam: dispatch/capture/replay are real,
+                // while the final copied packet replaces a successful socket/RPC handoff.
+                var prepared = _frames[0];
+                ulong tick = packet.tick;
+                Assert.That(prepared.preparedFrameTick, Is.EqualTo(tick));
                 var visibility = Get<Dictionary<PlayerID, PlayerVisibilityTimeline>>(server, "_playerVisibility")[_recipient];
                 Invoke(server, "HandleVisibilityFrameSent", _recipient, visibility, tick);
                 Invoke(server, "MarkPendingVisibilityDeletesSent", _recipient, tick);
@@ -610,8 +775,6 @@ namespace PurrNet.Prediction.Tests.Editor
                 prepared.preparedVisibilityTick = 0;
                 prepared.preparedFrameTick = 0;
                 _frames[0] = prepared;
-                Set(server, "<isVerified>k__BackingField", false);
-                return packet;
             }
 
             internal void AssertLifecycleRepeatsAndChangesWithoutFullWriter(bool filtered)

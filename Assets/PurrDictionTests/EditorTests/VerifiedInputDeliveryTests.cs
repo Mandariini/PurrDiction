@@ -298,11 +298,13 @@ namespace PurrNet.Prediction.Tests.Editor
                     {
                         uint entryCount = Packer<PackedUInt>.Read(source).value;
                         var repeats = new bool[entryCount];
+                        var deltas = new bool[entryCount];
+                        bool sameRoster = false;
                         current.Clear();
                         offsets.Clear();
                         if (entryCount > 0)
                         {
-                            bool sameRoster = tick > 0 && Packer<bool>.Read(source);
+                            sameRoster = tick > 0 && Packer<bool>.Read(source);
                             uint offsetCount = Packer<PackedUInt>.Read(source).value;
                             if (offsetCount > 0)
                             {
@@ -313,7 +315,11 @@ namespace PurrNet.Prediction.Tests.Editor
                                     offsets[i] = (offsets[i].player, (uint)source.ReadBits((byte)PredictionManager.ViewOffsetBits));
                             }
                             if (sameRoster)
-                                for (uint i = 0; i < entryCount; i++) repeats[i] = Packer<bool>.Read(source);
+                                for (uint i = 0; i < entryCount; i++)
+                                {
+                                    repeats[i] = Packer<bool>.Read(source);
+                                    deltas[i] = !repeats[i] && Packer<bool>.Read(source);
+                                }
                             source.SkipBits((8 - source.positionInBits % 8) % 8);
                         }
                         for (uint i = 0; i < entryCount; i++)
@@ -323,11 +329,16 @@ namespace PurrNet.Prediction.Tests.Editor
                                 current.Add(previous[(int)i]);
                                 continue;
                             }
-                            var id = Packer<PredictedComponentID>.Read(source);
-                            int bits = checked((int)Packer<PackedUInt>.Read(source).value);
+                            var id = sameRoster ? previous[(int)i].id : Packer<PredictedComponentID>.Read(source);
                             var payload = BitPackerPool.Get();
-                            payload.WriteBitDataWithoutConsumingIt(new BitData(source, source.positionInBits, bits));
-                            source.SkipBits(bits);
+                            if (deltas[i])
+                                InputHistoryDelta.Read(source, end, new BitData(previous[(int)i].payload), payload);
+                            else
+                            {
+                                int bits = checked((int)Packer<PackedUInt>.Read(source).value);
+                                payload.WriteBitDataWithoutConsumingIt(new BitData(source, source.positionInBits, bits));
+                                source.SkipBits(bits);
+                            }
                             current.Add((id, payload));
                         }
 

@@ -468,6 +468,17 @@ public class PredictionBootstrap : Scenario
             int.TryParse(tickRate, out var parsedTickRate) && parsedTickRate > 0)
             _networkManager.tickRate = parsedTickRate;
 
+        if (CommandLineUtils.TryGetArgument("-serverUpdateRate", out var serverUpdateRate))
+        {
+            if (!int.TryParse(serverUpdateRate, out var parsedServerUpdateRate) || parsedServerUpdateRate < 0)
+            {
+                Debug.LogError($"Could not parse nonnegative -serverUpdateRate value '{serverUpdateRate}'");
+                Application.Quit(-1);
+                return;
+            }
+            _predictionManager.serverUpdateRate = parsedServerUpdateRate;
+        }
+
         // Headless players otherwise spin at thousands of frames per second; several of them on a
         // small CI runner starve each other and turn timing assertions into a test of the host.
         if (CommandLineUtils.TryGetArgument("-targetFrameRate", out var targetFrameRate) &&

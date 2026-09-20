@@ -649,7 +649,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     _delayedDeltaCheckpoint = frame.lastFullFrameSentTick;
                 }
                 else QueuePacket(tick, baseline, full ? tick : frame.lastFullFrameSentTick, full, frame.packer);
-                // Mirror only the transport-success bookkeeping from SendFrameToOthers;
+                // Mirror only the transport-success bookkeeping from SendPreparedServerFrame;
                 // no hand-built state records or direct receiver state writes are used.
                 if (full) frame.BeginFullFrame(tick);
                 frame.fullFrame = false;
@@ -750,26 +750,15 @@ namespace PurrNet.Prediction.Tests.Editor
                 LastInputTranscriptTicks = 0;
                 if (!frame.fullFrame)
                 {
+                    int transcriptStart = packer.positionInBits;
                     LastInputTranscriptTicks = Packer<PackedUInt>.Read(packer).value;
                     Assert.That(LastInputTranscriptTicks,
                         Is.EqualTo(frame.preparedFrameTick - frame.preparedBaselineTick));
-                    for (uint tick = 0; tick < LastInputTranscriptTicks; tick++)
-                    {
-                        uint inputCount = Packer<PackedUInt>.Read(packer).value;
-                        if (inputCount == 0)
-                            continue;
-                        var repeats = new bool[inputCount];
-                        if (tick > 0 && Packer<bool>.Read(packer))
-                            for (uint i = 0; i < inputCount; i++) repeats[i] = Packer<bool>.Read(packer);
-                        packer.SkipBits((8 - packer.positionInBits % 8) % 8);
-                        for (uint i = 0; i < inputCount; i++)
-                        {
-                            if (repeats[i])
-                                continue;
-                            Packer<PredictedComponentID>.Read(packer);
-                            packer.SkipBits(checked((int)Packer<PackedUInt>.Read(packer).value));
-                        }
-                    }
+                    // Inspect with server-side staging so the receiver's missing baseline remains
+                    // untouched. The counter does not apply inputs or retain a verified transcript.
+                    packer.SetBitPosition(transcriptStart);
+                    Invoke(_server, "ReadInputHistory", packer, frame.preparedFrameTick, frame.preparedBaselineTick, end);
+                    Invoke(_server, "ClearVerifiedInputTranscript");
                     Assert.That(Packer<bool>.Read(packer), Is.False,
                         "this fixture has no historical lifecycle hierarchy");
                 }

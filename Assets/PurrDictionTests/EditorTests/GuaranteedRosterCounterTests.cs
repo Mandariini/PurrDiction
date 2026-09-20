@@ -174,23 +174,45 @@ namespace PurrNet.Prediction.Tests.Editor
                 var writtenBits = frame.positionInBits;
                 frame.ResetPositionAndMode(true);
                 Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(5));
+                var previous = new List<(PredictedComponentID id, int value)>();
                 for (ulong tick = 16; tick <= 20; tick++)
                 {
                     Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(2), $"tick {tick}");
                     if (tick > 16)
+                    {
                         Assert.That(Packer<bool>.Read(frame), Is.True, "the same two identities are present every tick");
+                    }
                     Assert.That(Packer<PackedUInt>.Read(frame).value, Is.Zero, "no player view offsets were recorded");
+                    var deltas = new bool[2];
                     if (tick > 16)
                     {
                         for (var record = 0; record < 2; record++)
+                        {
                             Assert.That(Packer<bool>.Read(frame), Is.False, "changing inputs are never encoded as repeats");
+                            deltas[record] = Packer<bool>.Read(frame);
+                        }
                     }
                     frame.SkipBits((8 - frame.positionInBits % 8) % 8);
                     var values = new Dictionary<PredictedComponentID, int>();
                     for (var record = 0; record < 2; record++)
                     {
-                        var id = Packer<PredictedComponentID>.Read(frame);
-                        values.Add(id, ReadLengthPrefixedInput(frame).id);
+                        var id = tick > 16 ? previous[record].id : Packer<PredictedComponentID>.Read(frame);
+                        int value;
+                        if (deltas[record])
+                        {
+                            using var baseline = BitPackerPool.Get();
+                            Packer<bool>.Write(baseline, true);
+                            Packer<TrackedInput>.Write(baseline, new TrackedInput(previous[record].value));
+                            using var decoded = BitPackerPool.Get();
+                            InputHistoryDelta.Read(frame, writtenBits, new BitData(baseline), decoded);
+                            decoded.ResetPositionAndMode(true);
+                            Assert.That(Packer<bool>.Read(decoded), Is.True);
+                            value = Packer<TrackedInput>.Read(decoded).id;
+                        }
+                        else value = ReadLengthPrefixedInput(frame).id;
+                        values.Add(id, value);
+                        if (tick == 16) previous.Add((id, value));
+                        else previous[record] = (id, value);
                     }
                     Assert.That(values[deterministic.id], Is.EqualTo((int)tick));
                     Assert.That(values[ordinary.id], Is.EqualTo((int)(100 + tick)));
