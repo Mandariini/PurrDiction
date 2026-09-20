@@ -14,19 +14,25 @@ namespace PurrNet.Prediction
             public readonly int bitLength;
             // The previous tick contains identical bits for this ID under the same root.
             public readonly bool repeatsPrevious;
+            public readonly int deltaOrigin;
+            public readonly int deltaLength;
 
             public CachedInputEntry(
                 PredictedComponentID id,
                 PredictedObjectID rootId,
                 int bitOrigin,
                 int bitLength,
-                bool repeatsPrevious)
+                bool repeatsPrevious,
+                int deltaOrigin,
+                int deltaLength)
             {
                 this.id = id;
                 this.rootId = rootId;
                 this.bitOrigin = bitOrigin;
                 this.bitLength = bitLength;
                 this.repeatsPrevious = repeatsPrevious;
+                this.deltaOrigin = deltaOrigin;
+                this.deltaLength = deltaLength;
             }
         }
 
@@ -35,6 +41,7 @@ namespace PurrNet.Prediction
             public ulong tick;
             public bool captured;
             public BitPacker packer;
+            public BitPacker deltas;
             public List<CachedInputEntry> entries;
             public bool rosterRepeatsPrevious;
             public List<PlayerViewOffset> viewOffsets;
@@ -61,9 +68,11 @@ namespace PurrNet.Prediction
 
             ref var scratch = ref _inputBlockScratch;
             scratch.packer ??= BitPackerPool.Get();
+            scratch.deltas ??= BitPackerPool.Get();
             scratch.entries ??= new List<CachedInputEntry>();
             scratch.captured = false;
             scratch.packer.ResetPositionAndMode(false);
+            scratch.deltas.ResetPositionAndMode(false);
             scratch.entries.Clear();
             scratch.viewOffsets ??= new List<PlayerViewOffset>();
             CollectViewOffsets(tick, scratch.viewOffsets);
@@ -93,15 +102,22 @@ namespace PurrNet.Prediction
                 int length = scratch.packer.positionInBits - origin;
 
                 bool repeats = false;
+                int deltaOrigin = scratch.deltas.positionInBits;
+                int deltaLength = 0;
                 if (hasPrevious && _previousInputEntryIndex.TryGetValue(id, out int previousIndex))
                 {
                     var previousEntry = previous.entries[previousIndex];
-                    repeats = previousEntry.rootId.Equals(rootId) &&
-                              new BitData(scratch.packer, origin, length).Equals(
-                                  new BitData(previous.packer, previousEntry.bitOrigin, previousEntry.bitLength));
+                    if (previousEntry.rootId.Equals(rootId))
+                    {
+                        var currentBits = new BitData(scratch.packer, origin, length);
+                        var previousBits = new BitData(previous.packer, previousEntry.bitOrigin, previousEntry.bitLength);
+                        repeats = currentBits.Equals(previousBits);
+                        if (!repeats && InputHistoryDelta.TryWrite(scratch.deltas, in previousBits, in currentBits))
+                            deltaLength = scratch.deltas.positionInBits - deltaOrigin;
+                    }
                 }
 
-                scratch.entries.Add(new CachedInputEntry(id, rootId, origin, length, repeats));
+                scratch.entries.Add(new CachedInputEntry(id, rootId, origin, length, repeats, deltaOrigin, deltaLength));
             }
 
             bool sameRoster = hasPrevious && previous.entries.Count == scratch.entries.Count;
@@ -153,10 +169,16 @@ namespace PurrNet.Prediction
                 frame.WriteBits(offsets[i].quantized, (byte)ViewOffsetBits);
         }
 
-        private static void WriteTranscriptEntry(BitPacker frame, in CachedInputBlock block, int index)
+        private static void WriteTranscriptEntry(BitPacker frame, in CachedInputBlock block, int index, bool sameRoster)
         {
             var entry = block.entries[index];
-            Packer<PredictedComponentID>.Write(frame, entry.id);
+            if (!sameRoster)
+                Packer<PredictedComponentID>.Write(frame, entry.id);
+            else if (entry.deltaLength > 0)
+            {
+                frame.WriteBitDataWithoutConsumingIt(new BitData(block.deltas, entry.deltaOrigin, entry.deltaLength));
+                return;
+            }
             Packer<PackedUInt>.Write(frame, (uint)entry.bitLength);
             frame.WriteBitDataWithoutConsumingIt(new BitData(block.packer, entry.bitOrigin, entry.bitLength));
         }
@@ -246,6 +268,7 @@ namespace PurrNet.Prediction
         private static void DisposeInputBlock(ref CachedInputBlock block)
         {
             block.packer?.Dispose();
+            block.deltas?.Dispose();
             block = default;
         }
 

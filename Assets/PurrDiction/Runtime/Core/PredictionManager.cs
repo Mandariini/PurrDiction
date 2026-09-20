@@ -45,6 +45,8 @@ namespace PurrNet.Prediction
         [SerializeField] private PredictedPrefabs _predictedPrefabs;
         [Tooltip("When a client's input for the current tick has not arrived, reuse its last known input instead of simulating with default input.")]
         [SerializeField] private bool _extrapolateMissingInputs = true;
+        [Tooltip("Ordinary server updates per second. 0 follows the simulation tick rate; higher values are capped at it. Simulation, client input uploads and reliable checkpoints are unaffected.")]
+        [SerializeField, Min(0)] private int _serverUpdateRate;
 
         [Header("Lag Compensation")]
         [Tooltip("Longest rewind a client may request when hit tests are resolved against collider rollback history, in seconds. Requests beyond this are clamped on the server. The view interpolation buffer never holds more than 0.1 s, so 0.15 s covers legitimate clients with headroom.")]
@@ -979,7 +981,7 @@ namespace PurrNet.Prediction
                         _systems[i].lastVerifiedTick = localTick;
                     CapturePhysicsEventState(localTick);
                     WriteEventHandles();
-                    SendFrameToOthers();
+                    DispatchPreparedServerFrames();
                 }
             }
 
@@ -1501,107 +1503,101 @@ namespace PurrNet.Prediction
             }
         }
 
-        private void SendFrameToOthers()
+        private void SendPreparedServerFrame(int index)
         {
             using var _ = SendFrameMarker.Auto();
+            var clientFrame = _clientFrames[index];
+            ulong frameTick = clientFrame.preparedFrameTick;
 
-            var fCount = _clientFrames.Count;
-
-            for (var j = 0; j < fCount; j++)
+            var player = clientFrame.player;
+            var packer = clientFrame.packer;
+            var deltaLen = packer.ToByteData().length;
+            var fullFrame = clientFrame.fullFrame;
+            if (!fullFrame && deltaLen > clientFrame.maxUnreliableFrameBytes)
             {
-                var clientFrame = _clientFrames[j];
-                if (clientFrame.preparedFrameTick != localTick)
-                    continue;
-
-                var player = clientFrame.player;
-                var packer = clientFrame.packer;
-                var deltaLen = packer.ToByteData().length;
-                var fullFrame = clientFrame.fullFrame;
-                if (!fullFrame && deltaLen > clientFrame.maxUnreliableFrameBytes)
-                {
-                    // Oversized deltas require a checkpoint to fit the transport fragmentation limit.
-                    clientFrame.requiresFullCheckpoint = true;
-                    clientFrame.preparedFrameTick = 0;
-                    clientFrame.preparedVisibilityTick = 0;
-                    oversizedFramesDeferredTotal++;
-                    _clientFrames[j] = clientFrame;
-                    continue;
-                }
-
-                ulong inputAck = 0;
-                ulong baselineTick = clientFrame.preparedBaselineTick;
-                bool hasInputMargin = false;
-                PackedInt inputMargin = 0;
-                bool hasInputSlack = false;
-                PackedInt inputSlackMs = 0;
-
-                if (_clientTicks.TryGetValue(player, out var queue))
-                {
-                    ulong contiguous = queue.lastConsumedTick;
-                    while (queue.byTick.ContainsKey(contiguous + 1))
-                        contiguous++;
-                    inputAck = contiguous;
-
-                    if (queue.rawHighestReceivedTick > 0)
-                    {
-                        long margin = (long)queue.rawHighestReceivedTick - (long)localTick;
-                        if (margin > InputMarginClamp) margin = InputMarginClamp;
-                        else if (margin < -InputMarginClamp) margin = -InputMarginClamp;
-                        hasInputMargin = true;
-                        inputMargin = (int)margin;
-                    }
-
-                    if (queue.hasPendingInputSlack)
-                    {
-                        double slack = queue.pendingInputSlackMs;
-                        if (slack > InputSlackClampMs) slack = InputSlackClampMs;
-                        else if (slack < -InputSlackClampMs) slack = -InputSlackClampMs;
-                        hasInputSlack = true;
-                        inputSlackMs = (int)Math.Round(slack);
-                        queue.hasPendingInputSlack = false;
-                    }
-                }
-
-                ulong checkpointTick = fullFrame ? localTick : clientFrame.lastFullFrameSentTick;
-                if (fullFrame)
-                    SendFrameToRemoteReliable(player, localTick, baselineTick, checkpointTick, inputAck, true, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
-                else
-                    SendFrameToRemote(player, localTick, baselineTick, checkpointTick, inputAck, false, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
-
-                freshFramesSentTotal++;
-                if (fullFrame)
-                {
-                    reliableFramesSentTotal++;
-                    fullFramesSentTotal++;
-                    fullFrameBytesTotal += (ulong)deltaLen;
-                }
-                else
-                {
-                    if (clientFrame.reliableFrame.pendingTick != 0)
-                        pipelinedDeltaFramesSentTotal++;
-                    deltaFrameBytesTotal += (ulong)deltaLen;
-                    if (deltaLen > maxDeltaFrameBytes)
-                        maxDeltaFrameBytes = deltaLen;
-                }
-
-                clientFrame.sentVisibilityTick = localTick;
-                clientFrame.preparedVisibilityTick = 0;
-                if (_playerVisibility.TryGetValue(player, out var visibilityTimeline))
-                    HandleVisibilityFrameSent(player, visibilityTimeline, localTick);
-                MarkPendingVisibilityDeletesSent(player, localTick);
-                CommitPreparedDesyncHeals(player);
-
-                if (fullFrame)
-                    clientFrame.BeginFullFrame(localTick);
-
+                // Oversized deltas require a checkpoint to fit the transport fragmentation limit.
+                clientFrame.requiresFullCheckpoint = true;
                 clientFrame.preparedFrameTick = 0;
-                if (fullFrame)
+                clientFrame.preparedVisibilityTick = 0;
+                oversizedFramesDeferredTotal++;
+                _clientFrames[index] = clientFrame;
+                return;
+            }
+
+            ulong inputAck = 0;
+            ulong baselineTick = clientFrame.preparedBaselineTick;
+            bool hasInputMargin = false;
+            PackedInt inputMargin = 0;
+            bool hasInputSlack = false;
+            PackedInt inputSlackMs = 0;
+
+            if (_clientTicks.TryGetValue(player, out var queue))
+            {
+                ulong contiguous = queue.lastConsumedTick;
+                while (queue.byTick.ContainsKey(contiguous + 1))
+                    contiguous++;
+                inputAck = contiguous;
+
+                if (queue.rawHighestReceivedTick > 0)
                 {
-                    clientFrame.fullFrame = false;
+                    long margin = (long)queue.rawHighestReceivedTick - (long)frameTick;
+                    if (margin > InputMarginClamp) margin = InputMarginClamp;
+                    else if (margin < -InputMarginClamp) margin = -InputMarginClamp;
+                    hasInputMargin = true;
+                    inputMargin = (int)margin;
                 }
 
-                _clientFrames[j] = clientFrame;
+                if (queue.hasPendingInputSlack)
+                {
+                    double slack = queue.pendingInputSlackMs;
+                    if (slack > InputSlackClampMs) slack = InputSlackClampMs;
+                    else if (slack < -InputSlackClampMs) slack = -InputSlackClampMs;
+                    hasInputSlack = true;
+                    inputSlackMs = (int)Math.Round(slack);
+                    queue.hasPendingInputSlack = false;
+                }
             }
+
+            ulong checkpointTick = fullFrame ? frameTick : clientFrame.lastFullFrameSentTick;
+            if (fullFrame)
+                SendFrameToRemoteReliable(player, frameTick, baselineTick, checkpointTick, inputAck, true, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
+            else
+                SendFrameToRemote(player, frameTick, baselineTick, checkpointTick, inputAck, false, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
+
+            freshFramesSentTotal++;
+            if (fullFrame)
+            {
+                reliableFramesSentTotal++;
+                fullFramesSentTotal++;
+                fullFrameBytesTotal += (ulong)deltaLen;
+            }
+            else
+            {
+                if (clientFrame.reliableFrame.pendingTick != 0)
+                    pipelinedDeltaFramesSentTotal++;
+                deltaFrameBytesTotal += (ulong)deltaLen;
+                if (deltaLen > maxDeltaFrameBytes)
+                    maxDeltaFrameBytes = deltaLen;
+            }
+
+            clientFrame.sentVisibilityTick = frameTick;
+            clientFrame.preparedVisibilityTick = 0;
+            if (_playerVisibility.TryGetValue(player, out var visibilityTimeline))
+                HandleVisibilityFrameSent(player, visibilityTimeline, frameTick);
+            MarkPendingVisibilityDeletesSent(player, frameTick);
+            CommitPreparedDesyncHeals(player);
+
+            if (fullFrame)
+                clientFrame.BeginFullFrame(frameTick);
+
+            clientFrame.preparedFrameTick = 0;
+            clientFrame.frameSendSchedule.MarkSent(frameTick, fullFrame);
+            if (fullFrame)
+            {
+                clientFrame.fullFrame = false;
+            }
+
+            _clientFrames[index] = clientFrame;
         }
 
         internal static int GetMaxUnreliableFrameBytes(int mtu)
@@ -3014,6 +3010,8 @@ namespace PurrNet.Prediction
         private void Update()
         {
             PredictionPerformanceTelemetry.ObserveFrame(this);
+            if (isSpawned && isServer)
+                FlushPendingServerFrames();
             if (isSpawned && isClient && !isServer)
             {
                 ResendCachedInput();

@@ -9,6 +9,7 @@ namespace PurrNet.Prediction
         public bool fullFrame;
         public bool requiresFullCheckpoint;
         public ulong preparedFrameTick;
+        public ServerFrameSendSchedule frameSendSchedule;
         public ulong preparedBaselineTick;
         public ulong preparedVisibilityTick;
         public ulong sentVisibilityTick;
@@ -38,6 +39,7 @@ namespace PurrNet.Prediction
             packer?.Dispose();
             packer = null;
             preparedFrameTick = 0;
+            frameSendSchedule = default;
             preparedBaselineTick = 0;
             preparedVisibilityTick = 0;
             sentVisibilityTick = 0;

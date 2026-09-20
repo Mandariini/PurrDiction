@@ -1096,13 +1096,16 @@ namespace PurrNet.Prediction
                 }
                 Packer<bool>.Write(frame, sameRoster);
             }
-
             WriteTranscriptViewOffsets(frame, in block, allowRepeat && previousWroteOffsets);
 
             if (sameRoster)
             {
                 for (var i = 0; i < visible.Count; i++)
+                {
                     Packer<bool>.Write(frame, entries[visible[i]].repeatsPrevious);
+                    if (!entries[visible[i]].repeatsPrevious)
+                        Packer<bool>.Write(frame, entries[visible[i]].deltaLength > 0);
+                }
             }
 
             WriteTranscriptPadding(frame);
@@ -1111,7 +1114,7 @@ namespace PurrNet.Prediction
                 int index = visible[i];
                 if (sameRoster && entries[index].repeatsPrevious)
                     continue;
-                WriteTranscriptEntry(frame, in block, index);
+                WriteTranscriptEntry(frame, in block, index, sameRoster);
             }
         }
 

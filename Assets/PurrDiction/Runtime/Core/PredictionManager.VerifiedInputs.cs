@@ -16,6 +16,7 @@ namespace PurrNet.Prediction
         private readonly List<InputHistorySpan> _verifiedInputEntries = new();
         private readonly HashSet<PredictedComponentID> _verifiedInputIds = new();
         private readonly List<bool> _verifiedInputRepeatScratch = new();
+        private readonly List<bool> _verifiedInputDeltaScratch = new();
         private readonly List<VerifiedInputTick> _verifiedViewOffsetTicks = new();
         private readonly List<PlayerViewOffset> _verifiedViewOffsets = new();
         private BitPacker _verifiedInputPayload;
@@ -31,6 +32,7 @@ namespace PurrNet.Prediction
             _verifiedInputEntries.Clear();
             _verifiedInputIds.Clear();
             _verifiedInputRepeatScratch.Clear();
+            _verifiedInputDeltaScratch.Clear();
             _verifiedViewOffsetTicks.Clear();
             _verifiedViewOffsets.Clear();
         }
@@ -150,13 +152,22 @@ namespace PurrNet.Prediction
                 bool sameRoster = k > 0 && Packer<bool>.Read(frame);
                 ReadTranscriptViewOffsets(frame, frameEndBit, tick, k > 0 && previousBatch.count > 0);
                 _verifiedInputRepeatScratch.Clear();
+                _verifiedInputDeltaScratch.Clear();
                 if (sameRoster)
                 {
                     if ((uint)previousBatch.count != entries || entries > (uint)(frameEndBit - frame.positionInBits))
                         throw new MissingPredictionBaselineException(
                             $"Authoritative input roster at tick {tick} does not match the previous tick it repeats.");
                     for (uint e = 0; e < entries; e++)
-                        _verifiedInputRepeatScratch.Add(Packer<bool>.Read(frame));
+                    {
+                        if (frame.positionInBits >= frameEndBit)
+                            throw new MissingPredictionBaselineException($"Truncated input mode at tick {tick}.");
+                        bool repeats = Packer<bool>.Read(frame);
+                        _verifiedInputRepeatScratch.Add(repeats);
+                        if (!repeats && frame.positionInBits >= frameEndBit)
+                            throw new MissingPredictionBaselineException($"Truncated input mode at tick {tick}.");
+                        _verifiedInputDeltaScratch.Add(!repeats && Packer<bool>.Read(frame));
+                    }
                 }
                 SkipTranscriptPadding(frame, frameEndBit, tick);
 
@@ -167,12 +178,20 @@ namespace PurrNet.Prediction
                         StageRepeatedVerifiedInput(tick, _verifiedInputEntries[previousBatch.firstEntry + e]);
                         continue;
                     }
-                    var id = Packer<PredictedComponentID>.Read(frame);
+                    var previous = sameRoster ? _verifiedInputEntries[previousBatch.firstEntry + e] : default;
+                    var id = sameRoster ? previous.id : Packer<PredictedComponentID>.Read(frame);
                     if (frame.positionInBits > frameEndBit)
                         throw new MissingPredictionBaselineException($"Truncated authoritative input for {id} at tick {tick}.");
-                    if (sameRoster && !_verifiedInputEntries[previousBatch.firstEntry + e].id.Equals(id))
-                        throw new MissingPredictionBaselineException(
-                            $"Authoritative input roster at tick {tick} does not match the previous tick it repeats.");
+                    if (sameRoster && !previous.id.Equals(id))
+                        throw new MissingPredictionBaselineException($"Authoritative input roster mismatch at tick {tick}.");
+                    if (sameRoster && _verifiedInputDeltaScratch[e])
+                    {
+                        int destinationOrigin = _verifiedInputPayload.positionInBits;
+                        var previousBits = new BitData(_verifiedInputPayload, previous.bitOrigin, previous.bitLength);
+                        InputHistoryDelta.Read(frame, frameEndBit, in previousBits, _verifiedInputPayload);
+                        StageVerifiedInputSpan(tick, id, destinationOrigin, previous.bitLength);
+                        continue;
+                    }
                     uint bits = Packer<PackedUInt>.Read(frame);
                     int origin = frame.positionInBits;
                     if (origin > frameEndBit || bits == 0 || bits > (uint)(frameEndBit - origin))
