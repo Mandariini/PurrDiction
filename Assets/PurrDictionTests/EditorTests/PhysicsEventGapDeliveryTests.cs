@@ -1240,6 +1240,8 @@ namespace PurrNet.Prediction.Tests.Editor
                         Packer<float>.Write(frame, 1f / 60);
                         Packer<uint>.Write(frame, 123u);
                     }
+                    if (!events.fullFrame)
+                        Packer<PackedUInt>.Write(frame, checked((uint)(tick - events.baselineTick))); // input window ticks
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // unchanged topology: no hierarchy record
                     if (!events.fullFrame)

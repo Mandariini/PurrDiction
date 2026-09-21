@@ -229,6 +229,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var frame = BitPackerPool.Get();
                 try
                 {
+                    Packer<PackedUInt>.Write(frame, checked((uint)(tick - 10))); // input window ticks
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // hierarchy record
                     Packer<PackedUInt>.Write(frame, checked((uint)(tick - 10)));

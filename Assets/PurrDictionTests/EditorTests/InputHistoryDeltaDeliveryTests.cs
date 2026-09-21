@@ -209,6 +209,8 @@ namespace PurrNet.Prediction.Tests.Editor
                 if (afterFirst && !repeats)
                     Assert.That(delta, Is.EqualTo((value & 1) == (values[(int)(tick - 11)] & 1)),
                         $"tick {tick}: a size change falls back to a full record, stable sizes use the delta");
+                if (afterFirst && !repeats && !delta)
+                    Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");
                 frame.SkipBits((8 - frame.positionInBits % 8) % 8);
                 if (repeats)
                     continue;
@@ -226,8 +228,11 @@ namespace PurrNet.Prediction.Tests.Editor
                 else
                 {
                     if (!afterFirst)
+                    {
                         Assert.That(Packer<PredictedComponentID>.Read(frame),
                             Is.EqualTo(new PredictedComponentID(new PredictedObjectID(812), 0)));
+                        Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");
+                    }
                     int length = (int)(uint)Packer<PackedUInt>.Read(frame);
                     Assert.That(length, Is.EqualTo(33 + ((value & 1) != 0 ? 8 : 0)));
                     int origin = frame.positionInBits;

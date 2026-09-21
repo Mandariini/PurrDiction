@@ -98,6 +98,9 @@ public class LagCompShooter : PredictedIdentity<LagCompShooter.FireInput, LagCom
         public double errorTicks;
         public double naiveErrorTicks;
         public bool nearTurn;
+        // Client collider history holds rendered poses: a render stall freezes them and a view
+        // phase shift moves them off their ticks. Only the server records tick-exact poses.
+        public bool renderSkew;
         public bool authoritative;
         public double liveX;
         public double rollbackTick;
@@ -105,6 +108,13 @@ public class LagCompShooter : PredictedIdentity<LagCompShooter.FireInput, LagCom
         public double sampleAt;
         public double sampleAfter;
     }
+
+    private static bool Frozen(double earlier, double later)
+        => !double.IsNaN(earlier) && !double.IsNaN(later) && Math.Abs(later - earlier) < 0.01;
+
+    private static bool OneTickApart(double earlier, double later, double tolerance)
+        => !double.IsNaN(earlier) && !double.IsNaN(later) &&
+           Math.Abs(Math.Abs(later - earlier) - LagCompTarget.UnitsPerTick) <= tolerance;
 
     private static double SampleX(PredictionManager pm, Collider collider, double predictionTick)
     {
@@ -148,6 +158,17 @@ public class LagCompShooter : PredictedIdentity<LagCompShooter.FireInput, LagCom
         var collider = target ? target.GetComponent<Collider>() : null;
         double floor = Math.Floor(viewTick);
         pm.TryGetColliderRollbackTick(viewTick, out var rollbackTick);
+        double sampleBefore = SampleX(pm, collider, floor - 1);
+        double sampleAt = SampleX(pm, collider, floor);
+        double sampleAfter = SampleX(pm, collider, floor + 1);
+        // The sample at the rewind tick is consistent with the recorded view offset by construction,
+        // so an integer rewind is exact unless the pose was frozen (no re-render between ticks). A
+        // fractional rewind interpolates between two samples, which only has a single time when
+        // they are one tick of motion apart; a render phase shift between them breaks that.
+        double fraction = viewTick - floor;
+        bool renderSkew = !authoritative &&
+                          (Frozen(sampleBefore, sampleAt) ||
+                           fraction > 1e-6 && !OneTickApart(sampleAt, sampleAfter, 0.15 * LagCompTarget.UnitsPerTick));
         shots.Add(new Shot
         {
             tick = tick,
@@ -158,12 +179,13 @@ public class LagCompShooter : PredictedIdentity<LagCompShooter.FireInput, LagCom
             errorTicks = hit ? (measured - expected) / LagCompTarget.UnitsPerTick : double.NaN,
             naiveErrorTicks = hit ? (measured - LagCompTarget.PositionX(tick)) / LagCompTarget.UnitsPerTick : double.NaN,
             nearTurn = LagCompTarget.TicksToNearestTurn(viewTick) < 1.5,
+            renderSkew = renderSkew,
             authoritative = authoritative,
             liveX = target ? target.transform.position.x - LagCompTarget.ArenaX : double.NaN,
             rollbackTick = rollbackTick,
-            sampleBefore = SampleX(pm, collider, floor - 1),
-            sampleAt = SampleX(pm, collider, floor),
-            sampleAfter = SampleX(pm, collider, floor + 1)
+            sampleBefore = sampleBefore,
+            sampleAt = sampleAt,
+            sampleAfter = sampleAfter
         });
     }
 
@@ -341,7 +363,7 @@ public class LagCompensationScenario : Scenario
         failure = null;
 
         int total = shots.Count;
-        int hits = 0, misses = 0, skipped = 0, measured = 0;
+        int hits = 0, misses = 0, skipped = 0, skewed = 0, measured = 0;
         double maxError = 0d, sumError = 0d, sumRewind = 0d, sumNaive = 0d;
         string worst = null;
 
@@ -352,6 +374,11 @@ public class LagCompensationScenario : Scenario
             if (shot.nearTurn)
             {
                 skipped++;
+                continue;
+            }
+            if (shot.renderSkew)
+            {
+                skewed++;
                 continue;
             }
 
@@ -376,7 +403,7 @@ public class LagCompensationScenario : Scenario
         }
 
         var report = new StringBuilder();
-        report.Append($"role={ctx.role} shots={total} hits={hits} misses={misses} nearTurnSkipped={skipped}");
+        report.Append($"role={ctx.role} shots={total} hits={hits} misses={misses} nearTurnSkipped={skipped} renderSkewSkipped={skewed}");
         if (measured > 0)
         {
             report.Append($" maxErrorTicks={maxError:F4} meanErrorTicks={sumError / measured:F4}");
@@ -389,6 +416,8 @@ public class LagCompensationScenario : Scenario
             report.Append($" | worst: {worst}");
         if (shots.Count > 0)
             report.Append($" | first: {Describe(shots[0])}");
+        if (skewed > 0)
+            report.Insert(0, $"NOTE: {skewed} client shot(s) skipped because the rendered collider history around the rewind was frozen or phase-shifted | ");
 
         bool measures = ctx.isServer || ctx.isClient;
         if (!measures)

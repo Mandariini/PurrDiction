@@ -717,6 +717,7 @@ namespace PurrNet.Prediction
 
         protected virtual void OnDestroy()
         {
+            DisposeUploadedInputBits();
             TriggerDestroyedEvent();
             TearDownAllModules();
 
@@ -860,6 +861,45 @@ namespace PurrNet.Prediction
         }
 
         internal abstract void QueueInput(BitPacker packer, PlayerID sender);
+
+        // Bits of the owner's upload that the server consumed for a tick, kept so the
+        // transcript can tell that owner to restore them instead of echoing them.
+        private BitPacker _uploadedInputBits;
+        private ulong _uploadedInputTick;
+        private bool _uploadedInputPending;
+        private bool _hasUploadedInputBits;
+
+        internal void RecordUploadedInputBits(BitPacker packer, int origin)
+        {
+            _uploadedInputBits ??= BitPackerPool.Get();
+            _uploadedInputBits.ResetPositionAndMode(false);
+            _uploadedInputBits.WriteBitDataWithoutConsumingIt(new BitData(packer, origin, packer.positionInBits - origin));
+            _uploadedInputPending = true;
+        }
+
+        internal void ConsumeUploadedInputBits(ulong tick, bool used)
+        {
+            _hasUploadedInputBits = used && _uploadedInputPending;
+            _uploadedInputTick = tick;
+            _uploadedInputPending = false;
+        }
+
+        internal bool TryGetUploadedInputBits(ulong tick, out BitData bits)
+        {
+            bits = default;
+            if (!_hasUploadedInputBits || _uploadedInputTick != tick)
+                return false;
+            bits = new BitData(_uploadedInputBits, 0, _uploadedInputBits.positionInBits);
+            return true;
+        }
+
+        private void DisposeUploadedInputBits()
+        {
+            _uploadedInputBits?.Dispose();
+            _uploadedInputBits = null;
+            _uploadedInputPending = false;
+            _hasUploadedInputBits = false;
+        }
 
         public GameObject GetRoot()
         {

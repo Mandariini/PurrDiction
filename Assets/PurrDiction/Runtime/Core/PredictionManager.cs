@@ -47,6 +47,8 @@ namespace PurrNet.Prediction
         [SerializeField] private bool _extrapolateMissingInputs = true;
         [Tooltip("Ordinary server updates per second. 0 follows the simulation tick rate; higher values are capped at it. Simulation, client input uploads and reliable checkpoints are unaffected.")]
         [SerializeField, Min(0)] private int _serverUpdateRate;
+        [Tooltip("How much recent input history every ordinary server update repeats, in milliseconds. This is the longest burst of lost updates a client absorbs without waiting: lower values cut bandwidth, and a client that loses more than this in a row waits about one round trip for a wider update.")]
+        [SerializeField, Min(0)] private int _serverInputRedundancyMs = 150;
 
         [Header("Lag Compensation")]
         [Tooltip("Longest rewind a client may request when hit tests are resolved against collider rollback history, in seconds. Requests beyond this are clamped on the server. The view interpolation buffer never holds more than 0.1 s, so 0.15 s covers legitimate clients with headroom.")]
@@ -1277,6 +1279,7 @@ namespace PurrNet.Prediction
                 ulong baselineTick = 0;
                 if (_clientTicks.TryGetValue(player, out var ackQueue))
                     baselineTick = ackQueue.ackedServerTick;
+                clientFrame.ObserveAck(baselineTick, localTick);
 
                 ulong ackLag = localTick > baselineTick ? localTick - baselineTick : 0;
                 if (ackLag > maxAckLag)
@@ -1357,6 +1360,13 @@ namespace PurrNet.Prediction
                 }
                 else
                 {
+                    ulong inputBaselineTick = baselineTick;
+                    ulong redundancy = serverInputRedundancyTicks;
+                    if (redundancy > 0 && !checkpointPending && localTick - baselineTick > redundancy &&
+                        !clientFrame.AckStalledFor(localTick, redundancy))
+                        inputBaselineTick = localTick - redundancy;
+                    Packer<PackedUInt>.Write(frame, checked((uint)(localTick - inputBaselineTick)));
+
                     long sectionStart = frame.positionInBits;
                     WritePendingVisibilityDeleteSection(player, frame, localTick);
                     deltaSectionDeleteBitsTotal += (ulong)(frame.positionInBits - sectionStart);
@@ -1373,7 +1383,7 @@ namespace PurrNet.Prediction
 
                     sectionStart = frame.positionInBits;
                     using (WriteInputHistoryMarker.Auto())
-                        WriteVisibilityInputHistory(player, frame, baselineTick, timeline);
+                        WriteVisibilityInputHistory(player, frame, inputBaselineTick, timeline);
                     deltaSectionInputBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
                     sectionStart = frame.positionInBits;
@@ -1405,6 +1415,12 @@ namespace PurrNet.Prediction
         /// last acked frame at the time the previous server frame was written. Diagnostic only.
         /// </summary>
         public ulong lastMaxAckLagTicks { get; private set; }
+
+        /// <summary>
+        /// Ordinary frames this client could not use because their bounded input window started
+        /// after its verified tick. The server widens the window once the ack stalls. Diagnostic only.
+        /// </summary>
+        public ulong inputWindowSkippedFramesTotal { get; private set; }
 
         /// <summary>
         /// Count of per-client full checkpoints sent reliably since the session
@@ -1850,6 +1866,13 @@ namespace PurrNet.Prediction
             int frameEndBit = frame.positionInBits;
             frame.ResetPositionAndMode(true);
 
+            // Decide before anything is staged whether this frame's input window reaches this peer.
+            uint inputHistoryTicks = Packer<PackedUInt>.Read(frame);
+            if (frame.positionInBits > frameEndBit || inputHistoryTicks > serverTick - baselineTick)
+                throw new MissingPredictionBaselineException("Invalid authoritative input history window.");
+            if (serverTick - inputHistoryTicks > _verifiedServerTick)
+                throw new InputHistoryWindowException(serverTick, serverTick - inputHistoryTicks + 1, _verifiedServerTick);
+
             bool crossedGap = _verifiedServerTick > 0 &&
                               serverTick > _verifiedServerTick + 1;
 
@@ -1864,6 +1887,8 @@ namespace PurrNet.Prediction
                 false,
                 crossedGap);
             ReadInputHistory(frame, serverTick, baselineTick, frameEndBit);
+            if (_verifiedInputFrom != serverTick - inputHistoryTicks + 1)
+                throw new MissingPredictionBaselineException("Authoritative input history does not match its window.");
             using var lifecycleHistory = ReadLifecycleHistory(frame, baselineTick, serverTick, frameEndBit);
             int stateRecordsStart = frame.positionInBits;
 
@@ -2377,6 +2402,12 @@ namespace PurrNet.Prediction
                             RollbackToFrame(frame.packer, frame.serverTick, frame.baselineTick, frame.serverTick);
                             SimulateFrame(frame.serverTick, HistorySaveMode.VerifiedFrame);
                             SaveEnteringState(frame.serverTick + 1);
+                        }
+                        catch (InputHistoryWindowException)
+                        {
+                            // Nothing was staged. Later frames widen once the server sees the stalled ack.
+                            inputWindowSkippedFramesTotal++;
+                            continue;
                         }
                         catch (Exception error)
                         {

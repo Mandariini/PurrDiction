@@ -112,6 +112,17 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(manager.serverUpdateRate, Is.EqualTo(30));
                 Assert.Throws<ArgumentOutOfRangeException>(() => manager.serverUpdateRate = -1);
                 Assert.That(manager.serverUpdateRate, Is.EqualTo(30));
+                Assert.That(manager.serverInputRedundancyMs, Is.EqualTo(150), "covers a typical loss burst by default");
+                typeof(PredictionManager).GetField("<tickRate>k__BackingField",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(manager, 60);
+                Assert.That(manager.serverInputRedundancyTicks, Is.EqualTo(9), "150 ms rounds up to nine 60 Hz ticks");
+                manager.serverInputRedundancyMs = 133;
+                Assert.That(manager.serverInputRedundancyTicks, Is.EqualTo(8));
+                manager.serverInputRedundancyMs = 1;
+                Assert.That(manager.serverInputRedundancyTicks, Is.EqualTo(1), "any positive setting keeps at least one tick");
+                manager.serverInputRedundancyMs = 0;
+                Assert.That(manager.serverInputRedundancyTicks, Is.Zero, "zero means everything since the acked update");
+                Assert.Throws<ArgumentOutOfRangeException>(() => manager.serverInputRedundancyMs = -1);
             }
             finally { Object.DestroyImmediate(go); }
         }

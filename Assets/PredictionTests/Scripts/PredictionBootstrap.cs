@@ -479,6 +479,17 @@ public class PredictionBootstrap : Scenario
             _predictionManager.serverUpdateRate = parsedServerUpdateRate;
         }
 
+        if (CommandLineUtils.TryGetArgument("-serverInputRedundancyMs", out var inputRedundancy))
+        {
+            if (!int.TryParse(inputRedundancy, out var parsedInputRedundancy) || parsedInputRedundancy < 0)
+            {
+                Debug.LogError($"Could not parse nonnegative -serverInputRedundancyMs value '{inputRedundancy}'");
+                Application.Quit(-1);
+                return;
+            }
+            _predictionManager.serverInputRedundancyMs = parsedInputRedundancy;
+        }
+
         // Headless players otherwise spin at thousands of frames per second; several of them on a
         // small CI runner starve each other and turn timing assertions into a test of the host.
         if (CommandLineUtils.TryGetArgument("-targetFrameRate", out var targetFrameRate) &&

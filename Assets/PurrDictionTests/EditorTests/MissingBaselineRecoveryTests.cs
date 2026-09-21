@@ -745,6 +745,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     Packer<float>.Read(packer);
                     Packer<uint>.Read(packer);
                 }
+                uint windowTicks = frame.fullFrame ? 0 : Packer<PackedUInt>.Read(packer).value;
                 Assert.That(Packer<PackedUInt>.Read(packer).value, Is.Zero);
                 Assert.That(Packer<bool>.Read(packer), Is.False);
                 LastInputTranscriptTicks = 0;
@@ -754,6 +755,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     LastInputTranscriptTicks = Packer<PackedUInt>.Read(packer).value;
                     Assert.That(LastInputTranscriptTicks,
                         Is.EqualTo(frame.preparedFrameTick - frame.preparedBaselineTick));
+                    Assert.That(windowTicks, Is.EqualTo(LastInputTranscriptTicks), "the frame head advertises the transcript window");
                     // Inspect with server-side staging so the receiver's missing baseline remains
                     // untouched. The counter does not apply inputs or retain a verified transcript.
                     packer.SetBitPosition(transcriptStart);

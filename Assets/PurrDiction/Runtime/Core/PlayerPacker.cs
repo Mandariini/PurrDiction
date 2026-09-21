@@ -10,6 +10,8 @@ namespace PurrNet.Prediction
         public bool requiresFullCheckpoint;
         public ulong preparedFrameTick;
         public ServerFrameSendSchedule frameSendSchedule;
+        public ulong lastAckedTick;
+        public ulong lastAckAdvanceTick;
         public ulong preparedBaselineTick;
         public ulong preparedVisibilityTick;
         public ulong sentVisibilityTick;
@@ -34,12 +36,25 @@ namespace PurrNet.Prediction
             reliableSentAtLocalTick = 0;
         }
 
+        public void ObserveAck(ulong ackedTick, ulong localTick)
+        {
+            if (lastAckAdvanceTick == 0 || ackedTick > lastAckedTick)
+            {
+                lastAckedTick = ackedTick;
+                lastAckAdvanceTick = localTick;
+            }
+        }
+
+        public bool AckStalledFor(ulong localTick, ulong ticks) => localTick - lastAckAdvanceTick > ticks;
+
         public void Dispose()
         {
             packer?.Dispose();
             packer = null;
             preparedFrameTick = 0;
             frameSendSchedule = default;
+            lastAckedTick = 0;
+            lastAckAdvanceTick = 0;
             preparedBaselineTick = 0;
             preparedVisibilityTick = 0;
             sentVisibilityTick = 0;

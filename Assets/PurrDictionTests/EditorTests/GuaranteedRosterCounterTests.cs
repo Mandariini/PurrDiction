@@ -190,13 +190,22 @@ namespace PurrNet.Prediction.Tests.Editor
                         {
                             Assert.That(Packer<bool>.Read(frame), Is.False, "changing inputs are never encoded as repeats");
                             deltas[record] = Packer<bool>.Read(frame);
+                            if (!deltas[record])
+                                Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");
                         }
                     }
                     frame.SkipBits((8 - frame.positionInBits % 8) % 8);
                     var values = new Dictionary<PredictedComponentID, int>();
                     for (var record = 0; record < 2; record++)
                     {
-                        var id = tick > 16 ? previous[record].id : Packer<PredictedComponentID>.Read(frame);
+                        PredictedComponentID id;
+                        if (tick > 16)
+                            id = previous[record].id;
+                        else
+                        {
+                            id = Packer<PredictedComponentID>.Read(frame);
+                            Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");
+                        }
                         int value;
                         if (deltas[record])
                         {

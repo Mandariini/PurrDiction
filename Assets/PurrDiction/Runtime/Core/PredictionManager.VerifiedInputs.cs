@@ -17,6 +17,7 @@ namespace PurrNet.Prediction
         private readonly HashSet<PredictedComponentID> _verifiedInputIds = new();
         private readonly List<bool> _verifiedInputRepeatScratch = new();
         private readonly List<bool> _verifiedInputDeltaScratch = new();
+        private readonly List<bool> _verifiedInputRestoredScratch = new();
         private readonly List<VerifiedInputTick> _verifiedViewOffsetTicks = new();
         private readonly List<PlayerViewOffset> _verifiedViewOffsets = new();
         private BitPacker _verifiedInputPayload;
@@ -33,6 +34,7 @@ namespace PurrNet.Prediction
             _verifiedInputIds.Clear();
             _verifiedInputRepeatScratch.Clear();
             _verifiedInputDeltaScratch.Clear();
+            _verifiedInputRestoredScratch.Clear();
             _verifiedViewOffsetTicks.Clear();
             _verifiedViewOffsets.Clear();
         }
@@ -104,6 +106,20 @@ namespace PurrNet.Prediction
         private void StageRepeatedVerifiedInput(ulong tick, in InputHistorySpan previous)
             => StageVerifiedInputSpan(tick, previous.id, previous.bitOrigin, previous.bitLength);
 
+        // The server used exactly the bits this peer uploaded for the tick, so they were not sent back.
+        private void StageRestoredVerifiedInput(ulong tick, PredictedComponentID id)
+        {
+            if (!_instanceMap.TryGetValue(id, out var system) || !system || !system.hasInput || !system.HasInputAt(tick))
+                throw new MissingPredictionBaselineException(
+                    $"Authoritative input for {id} at tick {tick} refers to an uploaded input this peer no longer holds.");
+            int origin = _verifiedInputPayload.positionInBits;
+            system.WriteFirstInput(tick, _verifiedInputPayload);
+            int length = _verifiedInputPayload.positionInBits - origin;
+            if (length == 0)
+                throw new MissingPredictionBaselineException($"Empty uploaded input for {id} at tick {tick}.");
+            StageVerifiedInputSpan(tick, id, origin, length);
+        }
+
         private void StageVerifiedInputSpan(ulong tick, PredictedComponentID id, int origin, int length)
         {
             if (!_verifiedInputIds.Add(id))
@@ -127,15 +143,17 @@ namespace PurrNet.Prediction
                 frame.positionInBits >= frameEndBit)
                 throw new MissingPredictionBaselineException("Invalid authoritative input history window.");
 
+            // A bounded redundancy window may start after the state baseline; RollbackToFrame checks coverage.
             uint count = Packer<PackedUInt>.Read(frame);
-            if (frame.positionInBits > frameEndBit || count != serverTick - baselineTick)
+            if (frame.positionInBits > frameEndBit || count > serverTick - baselineTick)
                 throw new MissingPredictionBaselineException(
-                    $"Authoritative inputs must cover every tick after {baselineTick} through {serverTick}.");
+                    $"Authoritative inputs must cover ticks after {baselineTick} through {serverTick}.");
+            ulong firstTick = serverTick - count + 1;
 
-            BeginVerifiedInputTranscript(baselineTick + 1, serverTick);
+            BeginVerifiedInputTranscript(firstTick, serverTick);
             for (uint k = 0; k < count; k++)
             {
-                ulong tick = baselineTick + 1 + k;
+                ulong tick = firstTick + k;
                 if (frame.positionInBits >= frameEndBit)
                     throw new MissingPredictionBaselineException($"Missing authoritative input block at tick {tick}.");
                 uint entries = Packer<PackedUInt>.Read(frame);
@@ -153,6 +171,7 @@ namespace PurrNet.Prediction
                 ReadTranscriptViewOffsets(frame, frameEndBit, tick, k > 0 && previousBatch.count > 0);
                 _verifiedInputRepeatScratch.Clear();
                 _verifiedInputDeltaScratch.Clear();
+                _verifiedInputRestoredScratch.Clear();
                 if (sameRoster)
                 {
                     if ((uint)previousBatch.count != entries || entries > (uint)(frameEndBit - frame.positionInBits))
@@ -160,13 +179,12 @@ namespace PurrNet.Prediction
                             $"Authoritative input roster at tick {tick} does not match the previous tick it repeats.");
                     for (uint e = 0; e < entries; e++)
                     {
-                        if (frame.positionInBits >= frameEndBit)
-                            throw new MissingPredictionBaselineException($"Truncated input mode at tick {tick}.");
-                        bool repeats = Packer<bool>.Read(frame);
+                        bool repeats = ReadTranscriptFlag(frame, frameEndBit, tick);
+                        bool delta = !repeats && ReadTranscriptFlag(frame, frameEndBit, tick);
+                        bool restored = !repeats && !delta && ReadTranscriptFlag(frame, frameEndBit, tick);
                         _verifiedInputRepeatScratch.Add(repeats);
-                        if (!repeats && frame.positionInBits >= frameEndBit)
-                            throw new MissingPredictionBaselineException($"Truncated input mode at tick {tick}.");
-                        _verifiedInputDeltaScratch.Add(!repeats && Packer<bool>.Read(frame));
+                        _verifiedInputDeltaScratch.Add(delta);
+                        _verifiedInputRestoredScratch.Add(restored);
                     }
                 }
                 SkipTranscriptPadding(frame, frameEndBit, tick);
@@ -182,8 +200,12 @@ namespace PurrNet.Prediction
                     var id = sameRoster ? previous.id : Packer<PredictedComponentID>.Read(frame);
                     if (frame.positionInBits > frameEndBit)
                         throw new MissingPredictionBaselineException($"Truncated authoritative input for {id} at tick {tick}.");
-                    if (sameRoster && !previous.id.Equals(id))
-                        throw new MissingPredictionBaselineException($"Authoritative input roster mismatch at tick {tick}.");
+                    bool restored = sameRoster ? _verifiedInputRestoredScratch[e] : ReadTranscriptFlag(frame, frameEndBit, tick);
+                    if (restored)
+                    {
+                        StageRestoredVerifiedInput(tick, id);
+                        continue;
+                    }
                     if (sameRoster && _verifiedInputDeltaScratch[e])
                     {
                         int destinationOrigin = _verifiedInputPayload.positionInBits;
@@ -200,6 +222,13 @@ namespace PurrNet.Prediction
                     StageVerifiedInput(tick, id, frame, origin, (int)bits);
                 }
             }
+        }
+
+        private static bool ReadTranscriptFlag(BitPacker frame, int frameEndBit, ulong tick)
+        {
+            if (frame.positionInBits >= frameEndBit)
+                throw new MissingPredictionBaselineException($"Truncated input mode at tick {tick}.");
+            return Packer<bool>.Read(frame);
         }
 
         // Decode after rollback has recreated identities; predicted history does not prove receipt.

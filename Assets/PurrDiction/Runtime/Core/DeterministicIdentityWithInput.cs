@@ -145,9 +145,11 @@ namespace PurrNet.Prediction
                 _lastInput = _nextInput;
                 _inputHistory.Write(tick, Packer.Copy(_nextInput));
                 _nextInput = GetDefaultInput();
+                ConsumeUploadedInputBits(tick, false);
             }
             else if (isServer)
             {
+                ConsumeUploadedInputBits(tick, _queuedInput != null);
                 if (_queuedInput == null)
                 {
                     if (!extrapolate)
@@ -249,6 +251,7 @@ namespace PurrNet.Prediction
 
                 _queuedInput = sanitizedInput;
             }
+            RecordUploadedInputBits(packer, pos);
             TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);
         }
     }

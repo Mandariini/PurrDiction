@@ -330,13 +330,15 @@ namespace PurrNet.Prediction.Tests.Editor
                         Packer<float>.Write(frame, 1f / 20);
                         Packer<uint>.Write(frame, 123u);
                     }
+                    // The stale-frame test intentionally supplies a future baseline;
+                    // its receive guard must discard that packet before parsing it.
+                    uint inputTicks = !fullFrame && baseline < tick ? checked((uint)(tick - baseline)) : 0u;
+                    if (!fullFrame)
+                        Packer<PackedUInt>.Write(frame, inputTicks); // input window ticks
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // hierarchy record
                     if (!fullFrame)
                     {
-                        // The stale-frame test intentionally supplies a future baseline;
-                        // its receive guard must discard that packet before parsing it.
-                        uint inputTicks = baseline < tick ? checked((uint)(tick - baseline)) : 0u;
                         Packer<PackedUInt>.Write(frame, inputTicks);
                         for (uint inputTick = 0; inputTick < inputTicks; inputTick++)
                             Packer<PackedUInt>.Write(frame, 0u); // complete empty transcript

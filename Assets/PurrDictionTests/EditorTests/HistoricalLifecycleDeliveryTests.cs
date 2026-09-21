@@ -265,6 +265,65 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void BoundedInputHistoryCoveringTheVerifiedTickAppliesWithoutTheAckedBaseline()
+        {
+            using var f = new Fixture(true);
+            f.server.serverInputRedundancyMs = 100; // 2 ticks at 20 Hz
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                using var packet = f.StepServer(tick);
+                Assert.That(packet.full, Is.False);
+                f.Deliver(packet);
+                Assert.That(Get<ulong>(f.client, "_verifiedServerTick"), Is.EqualTo(tick));
+                // Acks arrive late: 11 is acked before 12 is prepared, then nothing until 14. The
+                // frame at 14 sees baseline 11 with a lag of 3, so it repeats only 13..14, which the
+                // client, verified at 13, can use. At 13 the lag of 2 still fits the window.
+                if (tick == 13)
+                    Assert.That(Get<ulong>(f.client, "_verifiedInputFrom"), Is.EqualTo(12));
+                if (tick == 14)
+                    Assert.That(Get<ulong>(f.client, "_verifiedInputFrom"), Is.EqualTo(13));
+                if (tick == 11 || tick >= 14)
+                    f.AcknowledgeClient();
+            }
+
+            Assert.That(f.client.inputWindowSkippedFramesTotal, Is.Zero);
+            f.AssertVerifiedAgreement();
+        }
+
+        [Test]
+        public void ClientBehindTheBoundedWindowSkipsFramesUntilTheStalledAckWidensIt()
+        {
+            using var f = new Fixture(true);
+            f.server.serverInputRedundancyMs = 150; // 3 ticks at 20 Hz
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                using var packet = f.StepServer(tick);
+                Assert.That(packet.full, Is.False);
+                if (tick < 14)
+                    continue;
+                f.Deliver(packet);
+                if (tick == 14)
+                {
+                    // Lag 4 exceeds the window and the ack has only stalled for 3 ticks, so the
+                    // frame repeats 12..14: useless to a client verified at 10, and not an error.
+                    Assert.That(Get<ulong>(f.client, "_verifiedServerTick"), Is.EqualTo(Baseline));
+                    Assert.That(Get<bool>(f.client, "_historyResyncPending"), Is.False);
+                    Assert.That(f.client.inputWindowSkippedFramesTotal, Is.EqualTo(1));
+                    continue;
+                }
+                // From tick 15 the ack has stalled longer than the window, so frames reach back
+                // to the acked baseline and the client catches up without a checkpoint.
+                Assert.That(Get<ulong>(f.client, "_verifiedServerTick"), Is.EqualTo(tick));
+                if (tick == 15)
+                    Assert.That(Get<ulong>(f.client, "_verifiedInputFrom"), Is.EqualTo(11));
+                f.AcknowledgeClient();
+            }
+
+            Assert.That(f.client.inputWindowSkippedFramesTotal, Is.EqualTo(1));
+            f.AssertVerifiedAgreement();
+        }
+
+        [Test]
         public void ReplacingUnsentFramesKeepsTheDesyncHealPendingUntilDelivery()
         {
             PredictedObjectID id = default;
@@ -832,6 +891,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 using var reader = Copy(packet.payload);
                 int end = reader.positionInBits;
                 reader.ResetPositionAndMode(true);
+                Packer<PackedUInt>.Read(reader); // input window ticks
                 uint deletes = Packer<PackedUInt>.Read(reader);
                 for (uint i = 0; i < deletes; i++)
                     Packer<PredictedObjectID>.Read(reader);
@@ -857,6 +917,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 using var reader = Copy(packet.payload);
                 int end = reader.positionInBits;
                 reader.ResetPositionAndMode(true);
+                Packer<PackedUInt>.Read(reader); // input window ticks
                 uint deletes = Packer<PackedUInt>.Read(reader);
                 for (uint i = 0; i < deletes; i++)
                     Packer<PredictedObjectID>.Read(reader);

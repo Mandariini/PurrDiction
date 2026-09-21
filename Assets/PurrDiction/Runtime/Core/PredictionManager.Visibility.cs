@@ -1040,7 +1040,7 @@ namespace PurrNet.Prediction
             for (ulong tick = baselineTick + 1; tick <= localTick; tick++)
             {
                 var block = GetInputBlockForTick(tick);
-                WriteTranscriptTick(timeline, tick, in block, frame, tick > baselineTick + 1);
+                WriteTranscriptTick(player, timeline, tick, in block, frame, tick > baselineTick + 1);
             }
         }
 
@@ -1060,6 +1060,7 @@ namespace PurrNet.Prediction
         }
 
         void WriteTranscriptTick(
+            PlayerID player,
             PlayerVisibilityTimeline timeline,
             ulong tick,
             in CachedInputBlock block,
@@ -1102,9 +1103,15 @@ namespace PurrNet.Prediction
             {
                 for (var i = 0; i < visible.Count; i++)
                 {
-                    Packer<bool>.Write(frame, entries[visible[i]].repeatsPrevious);
-                    if (!entries[visible[i]].repeatsPrevious)
-                        Packer<bool>.Write(frame, entries[visible[i]].deltaLength > 0);
+                    var entry = entries[visible[i]];
+                    Packer<bool>.Write(frame, entry.repeatsPrevious);
+                    if (entry.repeatsPrevious)
+                        continue;
+                    bool restored = entry.RestoredBy(player);
+                    bool delta = !restored && entry.deltaLength > 0;
+                    Packer<bool>.Write(frame, delta);
+                    if (!delta)
+                        Packer<bool>.Write(frame, restored);
                 }
             }
 
@@ -1112,9 +1119,9 @@ namespace PurrNet.Prediction
             for (var i = 0; i < visible.Count; i++)
             {
                 int index = visible[i];
-                if (sameRoster && entries[index].repeatsPrevious)
+                if (sameRoster && (entries[index].repeatsPrevious || entries[index].RestoredBy(player)))
                     continue;
-                WriteTranscriptEntry(frame, in block, index, sameRoster);
+                WriteTranscriptEntry(frame, in block, index, sameRoster, player);
             }
         }
 

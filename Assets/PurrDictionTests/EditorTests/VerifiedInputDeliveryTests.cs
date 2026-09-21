@@ -269,6 +269,8 @@ namespace PurrNet.Prediction.Tests.Editor
                     Packer<float>.Read(source);
                     Packer<uint>.Read(source);
                 }
+                else
+                    Packer<PackedUInt>.Read(source); // input window ticks
                 Assert.That(Packer<PackedUInt>.Read(source).value, Is.Zero);
                 Assert.That(Packer<bool>.Read(source), Is.False);
                 if (original.full)
@@ -319,6 +321,8 @@ namespace PurrNet.Prediction.Tests.Editor
                                 {
                                     repeats[i] = Packer<bool>.Read(source);
                                     deltas[i] = !repeats[i] && Packer<bool>.Read(source);
+                                    if (!repeats[i] && !deltas[i])
+                                        Assert.That(Packer<bool>.Read(source), Is.False, "no receiver-owned input to restore");
                                 }
                             source.SkipBits((8 - source.positionInBits % 8) % 8);
                         }
@@ -330,6 +334,8 @@ namespace PurrNet.Prediction.Tests.Editor
                                 continue;
                             }
                             var id = sameRoster ? previous[(int)i].id : Packer<PredictedComponentID>.Read(source);
+                            if (!sameRoster)
+                                Assert.That(Packer<bool>.Read(source), Is.False, "no receiver-owned input to restore");
                             var payload = BitPackerPool.Get();
                             if (deltas[i])
                                 InputHistoryDelta.Read(source, end, new BitData(previous[(int)i].payload), payload);
@@ -369,6 +375,7 @@ namespace PurrNet.Prediction.Tests.Editor
                                 foreach (var (id, payload) in current)
                                 {
                                     Packer<PredictedComponentID>.Write(altered, id);
+                                    Packer<bool>.Write(altered, false);
                                     Packer<PackedUInt>.Write(altered, (uint)payload.positionInBits);
                                     altered.WriteBitDataWithoutConsumingIt(new BitData(payload, 0, payload.positionInBits));
                                 }

@@ -181,6 +181,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 PadToByte(frame);
                 Packer<PredictedComponentID>.Write(frame,
                     new PredictedComponentID(new PredictedObjectID(635), 0));
+                Packer<bool>.Write(frame, false);
                 Packer<PackedUInt>.Write(frame, 1U);
                 Packer<bool>.Write(frame, false);
             }
@@ -499,6 +500,196 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void BoundedTranscriptMayStartAfterTheStateBaseline()
+        {
+            using var sender = new InputTranscriptFixture("bounded sender");
+            using var receiver = new InputTranscriptFixture("bounded receiver");
+            var sent = sender.AddInput(false, 670);
+            var received = receiver.AddInput(false, 670);
+            for (ulong tick = 11; tick <= 20; tick++)
+            {
+                sent.Write(tick, new TrackedInput((int)tick));
+                sender.Capture(tick);
+            }
+
+            // PrepareFrame passes the capped input baseline while the state baseline stays acked.
+            using var bounded = sender.Write(20, 16);
+            receiver.Parse(bounded, 20, 10);
+            bounded.ResetPositionAndMode(true);
+            Assert.That(ReadPackedUInt(bounded), Is.EqualTo(4), "only the newest four ticks are repeated");
+            for (ulong tick = 17; tick <= 20; tick++)
+                receiver.Apply(tick);
+            for (ulong tick = 17; tick <= 20; tick++)
+                AssertInput(received, tick, (int)tick);
+            Assert.Throws<MissingPredictionBaselineException>(() => receiver.Apply(16),
+                "ticks before the bounded window were never delivered");
+
+            using var overlong = sender.Write(20, 10);
+            Assert.Throws<MissingPredictionBaselineException>(() => receiver.Parse(overlong, 20, 16),
+                "a transcript cannot reach further back than the state baseline");
+        }
+
+        [Test]
+        public void ReceiverOwnedInputsTheServerUsedAsUploadedAreRestoredNotEchoed()
+        {
+            var owner = new PlayerID(7, false);
+            using var sender = new InputTranscriptFixture("restore sender");
+            using var receiver = new InputTranscriptFixture("restore receiver");
+            sender.AddInput(false, 680);
+            var serverIdentity = sender.lastIdentity;
+            var received = receiver.AddInput(false, 680);
+            SetOwner(serverIdentity, owner);
+            SetOwner(receiver.lastIdentity, owner);
+            for (ulong tick = 11; tick <= 13; tick++)
+            {
+                UploadAndPrepare(serverIdentity, owner, tick, (int)tick);
+                sender.Capture(tick);
+                received.Write(tick, new TrackedInput((int)tick));
+            }
+
+            using var frame = sender.Write(13, 10, player: owner);
+            int writtenBits = frame.positionInBits;
+            frame.ResetPositionAndMode(true);
+            Assert.That(ReadPackedUInt(frame), Is.EqualTo(3));
+            for (ulong tick = 11; tick <= 13; tick++)
+            {
+                Assert.That(ReadPackedUInt(frame), Is.EqualTo(1), $"tick {tick}");
+                if (tick > 11)
+                    Assert.That(Packer<bool>.Read(frame), Is.True, "same roster");
+                Assert.That(ReadPackedUInt(frame), Is.Zero, "view offsets");
+                if (tick > 11)
+                {
+                    Assert.That(Packer<bool>.Read(frame), Is.False, "changing values never repeat");
+                    Assert.That(Packer<bool>.Read(frame), Is.False, "uploaded inputs are restored, never patched");
+                    Assert.That(Packer<bool>.Read(frame), Is.True, "restore flag");
+                }
+                frame.SkipBits((8 - frame.positionInBits % 8) % 8);
+                if (tick == 11)
+                {
+                    Assert.That(Packer<PredictedComponentID>.Read(frame),
+                        Is.EqualTo(new PredictedComponentID(new PredictedObjectID(680), 0)));
+                    Assert.That(Packer<bool>.Read(frame), Is.True, "restore flag");
+                }
+            }
+            Assert.That(frame.positionInBits, Is.EqualTo(writtenBits), "no input payload is echoed to its owner");
+
+            receiver.Read(frame, 13, 10);
+            for (ulong tick = 11; tick <= 13; tick++)
+                AssertInput(received, tick, (int)tick);
+        }
+
+        [Test]
+        public void RestoredInputsRequireTheReceiverToStillHoldItsUpload()
+        {
+            var owner = new PlayerID(7, false);
+            using var sender = new InputTranscriptFixture("restore-miss sender");
+            using var receiver = new InputTranscriptFixture("restore-miss receiver");
+            sender.AddInput(false, 681);
+            var serverIdentity = sender.lastIdentity;
+            var received = receiver.AddInput(false, 681);
+            SetOwner(serverIdentity, owner);
+            SetOwner(receiver.lastIdentity, owner);
+            for (ulong tick = 11; tick <= 13; tick++)
+            {
+                UploadAndPrepare(serverIdentity, owner, tick, (int)tick);
+                sender.Capture(tick);
+                if (tick != 12)
+                    received.Write(tick, new TrackedInput((int)tick));
+            }
+
+            using var frame = sender.Write(13, 10, player: owner);
+            Assert.Throws<MissingPredictionBaselineException>(() => receiver.Parse(frame, 13, 10),
+                "an upload this peer no longer holds cannot be restored");
+        }
+
+        [Test]
+        public void SubstitutedAndForeignInputsAreStillEchoed()
+        {
+            var owner = new PlayerID(7, false);
+            var other = new PlayerID(9, false);
+            using var sender = new InputTranscriptFixture("echo sender");
+            using var receiver = new InputTranscriptFixture("echo receiver");
+            sender.AddInput(false, 682);
+            var serverIdentity = sender.lastIdentity;
+            var received = receiver.AddInput(false, 682);
+            SetOwner(serverIdentity, owner);
+            SetOwner(receiver.lastIdentity, owner);
+            for (ulong tick = 11; tick <= 13; tick++)
+            {
+                // Tick 12 never arrived at the server, which simulated it with the default input.
+                UploadAndPrepare(serverIdentity, owner, tick, tick == 12 ? null : (int)tick);
+                sender.Capture(tick);
+                received.Write(tick, new TrackedInput((int)tick));
+            }
+
+            using var frame = sender.Write(13, 10, player: owner);
+            int writtenBits = frame.positionInBits;
+            frame.ResetPositionAndMode(true);
+            Assert.That(ReadPackedUInt(frame), Is.EqualTo(3));
+            Assert.That(ReadPackedUInt(frame), Is.EqualTo(1));
+            Assert.That(ReadPackedUInt(frame), Is.Zero);
+            frame.SkipBits((8 - frame.positionInBits % 8) % 8);
+            Assert.That(Packer<PredictedComponentID>.Read(frame),
+                Is.EqualTo(new PredictedComponentID(new PredictedObjectID(682), 0)));
+            Assert.That(Packer<bool>.Read(frame), Is.True, "tick 11 was uploaded");
+            Assert.That(ReadPackedUInt(frame), Is.EqualTo(1));
+            Assert.That(Packer<bool>.Read(frame), Is.True, "same roster");
+            Assert.That(ReadPackedUInt(frame), Is.Zero);
+            Assert.That(Packer<bool>.Read(frame), Is.False, "the substitute differs from tick 11");
+            Assert.That(Packer<bool>.Read(frame), Is.True, "the substitute is patched against tick 11");
+            frame.SkipBits((8 - frame.positionInBits % 8) % 8);
+            AssertRecord(frame, 682, 0, true, true, 11);
+            Assert.That(ReadPackedUInt(frame), Is.EqualTo(1));
+            Assert.That(Packer<bool>.Read(frame), Is.True, "same roster");
+            Assert.That(ReadPackedUInt(frame), Is.Zero);
+            Assert.That(Packer<bool>.Read(frame), Is.False);
+            Assert.That(Packer<bool>.Read(frame), Is.False);
+            Assert.That(Packer<bool>.Read(frame), Is.True, "tick 13 was uploaded again");
+            frame.SkipBits((8 - frame.positionInBits % 8) % 8);
+            Assert.That(frame.positionInBits, Is.EqualTo(writtenBits));
+
+            receiver.Read(frame, 13, 10);
+            AssertInput(received, 11, 11);
+            AssertInput(received, 12, 0);
+            AssertInput(received, 13, 13);
+
+            // Another receiver gets every record in full; nothing of it is restorable.
+            using var foreign = sender.Write(13, 10, player: other);
+            int foreignBits = foreign.positionInBits;
+            foreign.ResetPositionAndMode(true);
+            Assert.That(ReadPackedUInt(foreign), Is.EqualTo(3));
+            Assert.That(ReadPackedUInt(foreign), Is.EqualTo(1));
+            ReadTickHeader(foreign, false, 1, false, out _);
+            AssertRecord(foreign, 682, 11);
+            Assert.That(ReadPackedUInt(foreign), Is.EqualTo(1));
+            var deltas = ReadTickHeader(foreign, true, 1, true, out var patched);
+            Assert.That(deltas[0], Is.False);
+            AssertRecord(foreign, 682, 0, true, patched[0], 11);
+            Assert.That(ReadPackedUInt(foreign), Is.EqualTo(1));
+            deltas = ReadTickHeader(foreign, true, 1, true, out patched);
+            Assert.That(deltas[0], Is.False);
+            AssertRecord(foreign, 682, 13, true, patched[0], 0);
+            Assert.That(foreign.positionInBits, Is.EqualTo(foreignBits));
+        }
+
+        private static void SetOwner(PredictedIdentity identity, PlayerID owner)
+            => SetField(typeof(PredictedIdentity), identity, "_owner", owner);
+
+        // The server's real upload path: the queued packet bits are consumed by PrepareInput.
+        private static void UploadAndPrepare(PredictedIdentity identity, PlayerID sender, ulong tick, int? value)
+        {
+            if (value.HasValue)
+            {
+                using var packet = BitPackerPool.Get();
+                Packer<bool>.Write(packet, true);
+                Packer<TrackedInput>.Write(packet, new TrackedInput(value.Value));
+                packet.ResetPositionAndMode(true);
+                identity.QueueInput(packet, sender);
+            }
+            identity.PrepareInput(true, false, tick, false);
+        }
+
+        [Test]
         public void RepeatsRequireTheReceiverToHaveReceivedThePreviousTick()
         {
             using var sender = new InputTranscriptFixture("sender");
@@ -531,6 +722,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     continue;
                 Assert.That(Packer<PredictedComponentID>.Read(frame),
                     Is.EqualTo(new PredictedComponentID(new PredictedObjectID(670), 0)));
+                Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");
                 frame.SkipBits((int)ReadPackedUInt(frame));
             }
             Assert.That(frame.positionInBits, Is.EqualTo(end));
@@ -584,6 +776,8 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     repeats[i] = Packer<bool>.Read(frame);
                     deltas[i] = !repeats[i] && Packer<bool>.Read(frame);
+                    if (!repeats[i] && !deltas[i])
+                        Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");
                 }
             frame.SkipBits((8 - frame.positionInBits % 8) % 8);
             return repeats;
@@ -596,8 +790,11 @@ namespace PurrNet.Prediction.Tests.Editor
             bool sameRoster = false, bool delta = false, int previousValue = 0)
         {
             if (!sameRoster)
+            {
                 Assert.That(Packer<PredictedComponentID>.Read(frame),
                     Is.EqualTo(new PredictedComponentID(new PredictedObjectID(objectId), 0)));
+                Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");
+            }
             if (delta)
             {
                 using var baseline = BitPackerPool.Get();
@@ -804,13 +1001,16 @@ namespace PurrNet.Prediction.Tests.Editor
             Invoke("CaptureInputHistory", tick);
         }
 
-        internal BitPacker Write(ulong tick, ulong baseline, PlayerVisibilityTimeline timeline = null)
+        internal PredictedIdentity lastIdentity => _identities[_identities.Count - 1];
+
+        internal BitPacker Write(ulong tick, ulong baseline, PlayerVisibilityTimeline timeline = null,
+            PlayerID player = default)
         {
             Set(typeof(PredictionManager), manager, "<localTick>k__BackingField", tick);
             var frame = BitPackerPool.Get();
             try
             {
-                Invoke("WriteVisibilityInputHistory", default(PlayerID), frame, baseline,
+                Invoke("WriteVisibilityInputHistory", player, frame, baseline,
                     timeline ?? new PlayerVisibilityTimeline());
                 return frame;
             }

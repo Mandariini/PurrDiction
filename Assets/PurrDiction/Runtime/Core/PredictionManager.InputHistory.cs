@@ -16,6 +16,9 @@ namespace PurrNet.Prediction
             public readonly bool repeatsPrevious;
             public readonly int deltaOrigin;
             public readonly int deltaLength;
+            // The owner uploaded exactly these bits for this tick, so it can restore them itself.
+            public readonly PlayerID? owner;
+            public readonly bool asUploaded;
 
             public CachedInputEntry(
                 PredictedComponentID id,
@@ -24,7 +27,9 @@ namespace PurrNet.Prediction
                 int bitLength,
                 bool repeatsPrevious,
                 int deltaOrigin,
-                int deltaLength)
+                int deltaLength,
+                PlayerID? owner,
+                bool asUploaded)
             {
                 this.id = id;
                 this.rootId = rootId;
@@ -33,7 +38,11 @@ namespace PurrNet.Prediction
                 this.repeatsPrevious = repeatsPrevious;
                 this.deltaOrigin = deltaOrigin;
                 this.deltaLength = deltaLength;
+                this.owner = owner;
+                this.asUploaded = asUploaded;
             }
+
+            public bool RestoredBy(PlayerID player) => asUploaded && owner.HasValue && owner.Value == player;
         }
 
         private struct CachedInputBlock
@@ -117,7 +126,10 @@ namespace PurrNet.Prediction
                     }
                 }
 
-                scratch.entries.Add(new CachedInputEntry(id, rootId, origin, length, repeats, deltaOrigin, deltaLength));
+                bool asUploaded = system.TryGetUploadedInputBits(tick, out var uploaded) &&
+                                  new BitData(scratch.packer, origin, length).Equals(uploaded);
+                scratch.entries.Add(new CachedInputEntry(id, rootId, origin, length, repeats, deltaOrigin, deltaLength,
+                    system.owner, asUploaded));
             }
 
             bool sameRoster = hasPrevious && previous.entries.Count == scratch.entries.Count;
@@ -169,11 +181,18 @@ namespace PurrNet.Prediction
                 frame.WriteBits(offsets[i].quantized, (byte)ViewOffsetBits);
         }
 
-        private static void WriteTranscriptEntry(BitPacker frame, in CachedInputBlock block, int index, bool sameRoster)
+        private static void WriteTranscriptEntry(BitPacker frame, in CachedInputBlock block, int index, bool sameRoster,
+            PlayerID player)
         {
             var entry = block.entries[index];
             if (!sameRoster)
+            {
                 Packer<PredictedComponentID>.Write(frame, entry.id);
+                bool restored = entry.RestoredBy(player);
+                Packer<bool>.Write(frame, restored);
+                if (restored)
+                    return;
+            }
             else if (entry.deltaLength > 0)
             {
                 frame.WriteBitDataWithoutConsumingIt(new BitData(block.deltas, entry.deltaOrigin, entry.deltaLength));
