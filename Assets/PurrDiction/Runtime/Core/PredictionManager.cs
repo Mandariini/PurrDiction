@@ -450,6 +450,7 @@ namespace PurrNet.Prediction
             }
 
             DisposeCachedInputPayload();
+            ClearUploadedInputs();
         }
 
         private void CleanupAllSystems()
@@ -481,6 +482,7 @@ namespace PurrNet.Prediction
             DisposeLifecycleHistory();
             ClearVerifiedInputTranscript();
             DisposeCachedInputPayload();
+            ClearUploadedInputs();
             ResetLagCompensation();
             _nextSystemId = 0;
             foreach (var queue in _clientTicks.Values)
@@ -1197,6 +1199,7 @@ namespace PurrNet.Prediction
                         });
                     }
                 }
+                RecordUploadedInputs(tick, curBlock, curSpans);
 
                 wireBlock.ResetPositionAndMode(false);
                 for (var s = 0; s < curSpans.Count; s++)
@@ -1464,7 +1467,7 @@ namespace PurrNet.Prediction
         public int maxDeltaFrameBytes { get; private set; }
         public ulong fullFrameBytesTotal { get; private set; }
 
-        private struct InputHistorySpan
+        internal struct InputHistorySpan
         {
             public PredictedComponentID id;
             public int bitOrigin;

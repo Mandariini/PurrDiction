@@ -109,15 +109,70 @@ namespace PurrNet.Prediction
         // The server used exactly the bits this peer uploaded for the tick, so they were not sent back.
         private void StageRestoredVerifiedInput(ulong tick, PredictedComponentID id)
         {
-            if (!_instanceMap.TryGetValue(id, out var system) || !system || !system.hasInput || !system.HasInputAt(tick))
+            if (!TryGetUploadedInput(tick, id, out var uploaded))
                 throw new MissingPredictionBaselineException(
-                    $"Authoritative input for {id} at tick {tick} refers to an uploaded input this peer no longer holds.");
+                    $"Authoritative input for {id} at tick {tick} refers to an upload this peer no longer holds.");
             int origin = _verifiedInputPayload.positionInBits;
-            system.WriteFirstInput(tick, _verifiedInputPayload);
-            int length = _verifiedInputPayload.positionInBits - origin;
-            if (length == 0)
-                throw new MissingPredictionBaselineException($"Empty uploaded input for {id} at tick {tick}.");
-            StageVerifiedInputSpan(tick, id, origin, length);
+            _verifiedInputPayload.WriteBitDataWithoutConsumingIt(uploaded);
+            StageVerifiedInputSpan(tick, id, origin, (int)uploaded.bitLength.value);
+        }
+
+        private struct UploadedInputTick
+        {
+            public BitPacker bits;
+            public List<InputHistorySpan> spans;
+        }
+
+        private readonly Dictionary<ulong, UploadedInputTick> _uploadedInputs = new();
+        private readonly List<ulong> _uploadedInputPruneScratch = new();
+
+        internal void RecordUploadedInputs(ulong tick, BitPacker block, List<InputHistorySpan> spans)
+        {
+            // Only the first upload of a tick can be the one the server consumed.
+            if (_uploadedInputs.ContainsKey(tick))
+                return;
+            var entry = new UploadedInputTick { bits = BitPackerPool.Get(), spans = new List<InputHistorySpan>(spans) };
+            entry.bits.ResetPositionAndMode(false);
+            entry.bits.WriteBitDataWithoutConsumingIt(new BitData(block, 0, block.positionInBits));
+            _uploadedInputs[tick] = entry;
+
+            ulong retained = verifiedHistoryWindowTicks + 1;
+            if (tick <= retained)
+                return;
+            _uploadedInputPruneScratch.Clear();
+            foreach (var recorded in _uploadedInputs.Keys)
+            {
+                if (recorded < tick - retained)
+                    _uploadedInputPruneScratch.Add(recorded);
+            }
+            for (int i = 0; i < _uploadedInputPruneScratch.Count; i++)
+            {
+                _uploadedInputs[_uploadedInputPruneScratch[i]].bits.Dispose();
+                _uploadedInputs.Remove(_uploadedInputPruneScratch[i]);
+            }
+        }
+
+        private bool TryGetUploadedInput(ulong tick, PredictedComponentID id, out BitData bits)
+        {
+            bits = default;
+            if (!_uploadedInputs.TryGetValue(tick, out var entry))
+                return false;
+            for (int i = 0; i < entry.spans.Count; i++)
+            {
+                var span = entry.spans[i];
+                if (!span.id.Equals(id))
+                    continue;
+                bits = new BitData(entry.bits, span.bitOrigin, span.bitLength);
+                return true;
+            }
+            return false;
+        }
+
+        private void ClearUploadedInputs()
+        {
+            foreach (var entry in _uploadedInputs.Values)
+                entry.bits.Dispose();
+            _uploadedInputs.Clear();
         }
 
         private void StageVerifiedInputSpan(ulong tick, PredictedComponentID id, int origin, int length)

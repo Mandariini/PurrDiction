@@ -544,7 +544,7 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 UploadAndPrepare(serverIdentity, owner, tick, (int)tick);
                 sender.Capture(tick);
-                received.Write(tick, new TrackedInput((int)tick));
+                receiver.RecordUpload(tick, 680, (int)tick);
             }
 
             using var frame = sender.Write(13, 10, player: owner);
@@ -594,12 +594,41 @@ namespace PurrNet.Prediction.Tests.Editor
                 UploadAndPrepare(serverIdentity, owner, tick, (int)tick);
                 sender.Capture(tick);
                 if (tick != 12)
-                    received.Write(tick, new TrackedInput((int)tick));
+                    receiver.RecordUpload(tick, 681, (int)tick);
+                received.Write(tick, new TrackedInput((int)tick));
             }
 
             using var frame = sender.Write(13, 10, player: owner);
             Assert.Throws<MissingPredictionBaselineException>(() => receiver.Parse(frame, 13, 10),
-                "an upload this peer no longer holds cannot be restored");
+                "an upload this peer no longer holds cannot be restored, even while the identity still has it");
+        }
+
+        [Test]
+        public void RestoredInputsSurviveTheOwnerBeingDespawnedBeforeTheFrameArrives()
+        {
+            var owner = new PlayerID(7, false);
+            using var sender = new InputTranscriptFixture("despawn sender");
+            using var receiver = new InputTranscriptFixture("despawn receiver");
+            sender.AddInput(false, 683);
+            var serverIdentity = sender.lastIdentity;
+            receiver.AddInput(false, 683);
+            var clientIdentity = receiver.lastIdentity;
+            SetOwner(serverIdentity, owner);
+            SetOwner(clientIdentity, owner);
+            for (ulong tick = 11; tick <= 13; tick++)
+            {
+                UploadAndPrepare(serverIdentity, owner, tick, (int)tick);
+                sender.Capture(tick);
+                receiver.RecordUpload(tick, 683, (int)tick);
+            }
+
+            // A non-predicted despawn (round end) destroys the owner's identity on the client
+            // before the frame covering its last uploads is applied.
+            receiver.Despawn(clientIdentity);
+
+            using var frame = sender.Write(13, 10, player: owner);
+            Assert.DoesNotThrow(() => receiver.Parse(frame, 13, 10),
+                "restored inputs must not depend on the owning identity still existing");
         }
 
         [Test]
@@ -619,6 +648,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 // Tick 12 never arrived at the server, which simulated it with the default input.
                 UploadAndPrepare(serverIdentity, owner, tick, tick == 12 ? null : (int)tick);
                 sender.Capture(tick);
+                receiver.RecordUpload(tick, 682, (int)tick);
                 received.Write(tick, new TrackedInput((int)tick));
             }
 
@@ -1002,6 +1032,32 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         internal PredictedIdentity lastIdentity => _identities[_identities.Count - 1];
+
+        // What this peer's upload path would have recorded for the tick.
+        internal void RecordUpload(ulong tick, uint objectId, int value)
+        {
+            using var block = BitPackerPool.Get();
+            block.ResetPositionAndMode(false);
+            Packer<bool>.Write(block, true);
+            Packer<TrackedInput>.Write(block, new TrackedInput(value));
+            var spans = new List<PredictionManager.InputHistorySpan>
+            {
+                new() { id = new PredictedComponentID(new PredictedObjectID(objectId), 0), bitOrigin = 0, bitLength = block.positionInBits }
+            };
+            manager.RecordUploadedInputs(tick, block, spans);
+        }
+
+        internal void Despawn(PredictedIdentity identity)
+        {
+            var map = (Dictionary<PredictedComponentID, PredictedIdentity>)typeof(PredictionManager)
+                .GetField("_instanceMap", Fields).GetValue(manager);
+            map.Remove(identity.id);
+            var systems = (List<PredictedIdentity>)typeof(PredictionManager).GetField("_systems", Fields).GetValue(manager);
+            systems.Remove(identity);
+            Set(typeof(PredictionManager), manager, "_systemsCount", systems.Count);
+            _identities.Remove(identity);
+            Object.DestroyImmediate(identity.gameObject);
+        }
 
         internal BitPacker Write(ulong tick, ulong baseline, PlayerVisibilityTimeline timeline = null,
             PlayerID player = default)
