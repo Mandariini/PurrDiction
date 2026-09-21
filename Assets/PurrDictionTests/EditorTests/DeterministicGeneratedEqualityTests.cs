@@ -90,6 +90,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 decoded.Dispose();
                 decodedMetadata.Dispose();
 
+                // Entering states travel as deltas against the identity's initial state.
+                payload.ResetPositionAndMode(false);
+                DeltaPacker<PredictedIdentityState>.Write(payload, default, metadata);
+                DeltaPacker<DeterministicGeneratedEqualityState>.Write(payload, default, incoming);
                 payload.ResetPositionAndMode(true);
                 // This is the production full-record ordering in ApplyAddressedState.
                 identity.RunClearFuture(20);

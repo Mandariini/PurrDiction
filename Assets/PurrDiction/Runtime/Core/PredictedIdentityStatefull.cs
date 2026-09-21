@@ -270,6 +270,15 @@ namespace PurrNet.Prediction
 
         protected virtual STATE GetInitialState() => default;
 
+        /// <summary>
+        /// Baseline that entering (first) states are delta-compressed against. It must be the same on
+        /// every peer and must never change, so never derive it from scene or runtime data; the
+        /// default is <c>default(STATE)</c>. Override with a constant the spawned state usually resembles
+        /// to shrink spawns. A returned instance is disposed after writing; when reading, unchanged
+        /// fields may be shared into the decoded state, so that copy is not disposed.
+        /// </summary>
+        protected virtual STATE GetFirstStateBaseline() => default;
+
         protected virtual void Simulate(ref STATE state, float delta) {}
 
         protected virtual void LateSimulate(ref STATE state, float delta) {}
@@ -297,8 +306,10 @@ namespace PurrNet.Prediction
         {
             RefreshVerifiedFromLive(tick);
 
-            Packer<PredictedIdentityState>.Write(packer, fullPredictedState.prediction);
-            Packer<STATE>.Write(packer, fullPredictedState.state);
+            var baseline = GetFirstStateBaseline();
+            DeltaPacker<PredictedIdentityState>.Write(packer, default, fullPredictedState.prediction);
+            DeltaPacker<STATE>.Write(packer, baseline, fullPredictedState.state);
+            baseline.Dispose();
         }
 
         // All receivers read the same pre-simulation value, so compare and store it once per tick.
@@ -363,8 +374,10 @@ namespace PurrNet.Prediction
         internal void WriteFirstProjectedState(ulong tick, BitPacker packer, in STATE projectedState)
         {
             RefreshVerifiedFromLive(tick);
-            Packer<PredictedIdentityState>.Write(packer, fullPredictedState.prediction);
-            Packer<STATE>.Write(packer, projectedState);
+            var baseline = GetFirstStateBaseline();
+            DeltaPacker<PredictedIdentityState>.Write(packer, default, fullPredictedState.prediction);
+            DeltaPacker<STATE>.Write(packer, baseline, projectedState);
+            baseline.Dispose();
         }
 
         internal bool WriteProjectedState(
@@ -426,8 +439,9 @@ namespace PurrNet.Prediction
             PredictedIdentityState prediction = default;
             STATE state = default;
 
-            Packer<PredictedIdentityState>.Read(packer, ref prediction);
-            Packer<STATE>.Read(packer, ref state);
+            var baseline = GetFirstStateBaseline();
+            DeltaPacker<PredictedIdentityState>.Read(packer, default, ref prediction);
+            DeltaPacker<STATE>.Read(packer, baseline, ref state);
 
             FULL_STATE<STATE> newState = new FULL_STATE<STATE>
             {

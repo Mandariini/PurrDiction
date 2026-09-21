@@ -268,6 +268,10 @@ namespace PurrNet.Prediction.Tests.Editor
             AssertValue(decoded, incoming); // Prove the bytes preserve this small correction.
             decoded.Dispose();
             decodedMetadata.Dispose();
+            // Entering states travel as deltas against the identity's initial state.
+            payload.ResetPositionAndMode(false);
+            DeltaPacker<PredictedIdentityState>.Write(payload, default, Metadata);
+            DeltaPacker<DeterministicGeneratedEqualityState>.Write(payload, default, incoming);
             payload.ResetPositionAndMode(true);
             identity.ReadFirstState(tick, payload, tick);
         }
@@ -401,8 +405,9 @@ namespace PurrNet.Prediction.Tests.Editor
             public void ReadFull(ulong tick, int value)
             {
                 using var payload = BitPackerPool.Get();
-                Packer<PredictedIdentityState>.Write(payload, Metadata);
-                Packer<int>.Write(payload, value);
+                // Entering states travel as deltas against the identity's initial state.
+                DeltaPacker<PredictedIdentityState>.Write(payload, default, Metadata);
+                DeltaPacker<OrdinaryOwnedAuthorityState>.Write(payload, default, new OrdinaryOwnedAuthorityState { value = value });
                 payload.ResetPositionAndMode(true);
                 identity.RunClearFuture(tick);
                 identity.ReadFirstState(tick, payload, tick);

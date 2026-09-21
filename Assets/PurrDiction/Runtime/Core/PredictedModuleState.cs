@@ -235,6 +235,15 @@ namespace PurrNet.Prediction
 
         protected virtual TState GetInitialState() => default;
 
+        /// <summary>
+        /// Baseline that entering (first) states are delta-compressed against. It must be the same on
+        /// every peer and must never change, so never derive it from scene or runtime data; the
+        /// default is <c>default(TState)</c>. Override with a constant the spawned state usually resembles
+        /// to shrink spawns. A returned instance is disposed after writing; when reading, unchanged
+        /// fields may be shared into the decoded state, so that copy is not disposed.
+        /// </summary>
+        protected virtual TState GetFirstStateBaseline() => default;
+
         protected virtual void Simulate(ref TState state, float delta) { }
 
         protected override void Rollback(ulong tick)
@@ -379,15 +388,18 @@ namespace PurrNet.Prediction
             if (store.Count == 0 || store.MostRecentTick < tick)
                 StoreVerified(tick, ref savedState);
 
-            Packer<ModulePredictedState>.Write(packer, savedState.prediction);
-            Packer<TState>.Write(packer, savedState.state);
+            var baseline = GetFirstStateBaseline();
+            DeltaPacker<ModulePredictedState>.Write(packer, default, savedState.prediction);
+            DeltaPacker<TState>.Write(packer, baseline, savedState.state);
+            baseline.Dispose();
         }
 
         protected override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
         {
             MODULE_STATE<TState> newState = default;
-            Packer<ModulePredictedState>.Read(packer, ref newState.prediction);
-            Packer<TState>.Read(packer, ref newState.state);
+            var baseline = GetFirstStateBaseline();
+            DeltaPacker<ModulePredictedState>.Read(packer, default, ref newState.prediction);
+            DeltaPacker<TState>.Read(packer, baseline, ref newState.state);
             StoreReceivedVerified(serverTick, ref newState);
             fullPredictedState.Dispose();
             fullPredictedState = newState;

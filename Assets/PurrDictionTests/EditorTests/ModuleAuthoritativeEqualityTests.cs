@@ -257,8 +257,9 @@ namespace PurrNet.Prediction.Tests.Editor
             where T : struct, IPredictedData<T>
         {
             using var payload = BitPackerPool.Get();
-            Packer<ModulePredictedState>.Write(payload, Metadata);
-            Packer<T>.Write(payload, state);
+            // Entering states travel as deltas against the module's initial state.
+            DeltaPacker<ModulePredictedState>.Write(payload, default, Metadata);
+            DeltaPacker<T>.Write(payload, default, state);
             payload.ResetPositionAndMode(true);
             module.ClearFutureInternal(tick);
             module.ReadFirstStateInternal(tick, payload, tick);
