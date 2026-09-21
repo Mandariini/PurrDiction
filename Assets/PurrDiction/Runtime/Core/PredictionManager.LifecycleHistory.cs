@@ -222,7 +222,21 @@ namespace PurrNet.Prediction
                 _lifecycleReplayPool.Pop().Dispose();
         }
 
-        private void WriteLifecycleHistory(BitPacker frame, ulong baselineTick, PlayerVisibilityTimeline timeline)
+        private bool IsLifecycleEntrant(ulong tick, PredictedComponentID id)
+        {
+            var entry = GetLifecycleTick(tick);
+            if (entry == null)
+                return false;
+            for (int i = 0; i < entry.entrants.Count; i++)
+            {
+                if (entry.entrants[i].id.Equals(id) && entry.entrants[i].lifecycleChanged)
+                    return true;
+            }
+            return false;
+        }
+
+        private void WriteLifecycleHistory(BitPacker frame, ulong baselineTick, PlayerVisibilityTimeline timeline,
+            ulong entrantsFromTick)
         {
             Packer<bool>.Write(frame, hierarchy);
             if (!hierarchy)
@@ -279,6 +293,12 @@ namespace PurrNet.Prediction
                     }
                     finally { projection.Dispose(); }
 
+                    if (tick < entrantsFromTick)
+                    {
+                        lifecycleEntrantsOmittedTotal += (ulong)entry.entrants.Count;
+                        AddressedPredictionRecords.WriteSectionCount(0, frame);
+                        continue;
+                    }
                     records.ResetPositionAndMode(false);
                     int entries = 0;
                     foreach (var state in entry.entrants)

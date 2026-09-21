@@ -351,6 +351,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     }
                     else
                     {
+                        Packer<bool>.Write(payload, false); // no entering baseline override
                         bool changed = _sender.RunWriteCurrentState(default, payload, baseline);
                         if (omitUnchanged)
                             Assert.That(changed, Is.False, "the omitted payload must actually be unchanged");

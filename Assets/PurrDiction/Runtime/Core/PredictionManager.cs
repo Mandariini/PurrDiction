@@ -225,6 +225,10 @@ namespace PurrNet.Prediction
         const int VerifiedHistoryEntriesPrunedPerFrame = 64;
         static readonly ProfilerMarker VerifiedHistoryMaintenanceMarker = new("PredictionManager.VerifiedHistoryMaintenance");
         static readonly ProfilerMarker VerifiedHistoryRebindMarker = new("PredictionManager.VerifiedHistoryRebind");
+
+        public ulong spawnBaselineRecordsTotal { get; private set; }
+        public ulong lifecycleEntrantsOmittedTotal { get; private set; }
+
         internal long verifiedHistoryMaintenanceInspectionsTotal;
         internal long verifiedHistoryMaintainedStoresTotal;
         internal long verifiedHistoryPrunedEntriesTotal;
@@ -1390,7 +1394,7 @@ namespace PurrNet.Prediction
                     deltaSectionInputBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
                     sectionStart = frame.positionInBits;
-                    WriteLifecycleHistory(frame, baselineTick, timeline);
+                    WriteLifecycleHistory(frame, baselineTick, timeline, inputBaselineTick + 1);
                     deltaSectionHierarchyBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
                     sectionStart = frame.positionInBits;

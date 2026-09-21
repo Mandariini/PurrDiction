@@ -237,6 +237,7 @@ namespace PurrNet.Prediction.Tests.Editor
                         Packer<PackedUInt>.Write(frame, 0u); // explicit empty input tick
                     Packer<bool>.Write(frame, false); // no historical lifecycle hierarchy
                     using var payload = BitPackerPool.Get();
+                    Packer<bool>.Write(payload, false); // no entering baseline override
                     Assert.That(_sender.RunWriteCurrentState(default, payload, 10), Is.True);
                     AddressedPredictionRecords.WriteSectionCount(1, frame);
                     AddressedPredictionRecords.WriteRecord(frame, probe.id, false, payload);

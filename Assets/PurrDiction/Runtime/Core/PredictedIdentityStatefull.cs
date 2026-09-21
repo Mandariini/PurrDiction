@@ -552,6 +552,17 @@ namespace PurrNet.Prediction
             => _verifiedHistory != null &&
                _verifiedHistory.ReadOrPrevious(baselineTick, out _);
 
+        internal override bool TryGetFirstVerifiedTick(out ulong tick)
+        {
+            if (_verifiedHistory != null && _verifiedHistory.Count > 0)
+            {
+                tick = _verifiedHistory.OldestTick;
+                return true;
+            }
+            tick = 0;
+            return false;
+        }
+
         internal override void ReadUnchangedState(
             ulong tick,
             ulong baselineTick,

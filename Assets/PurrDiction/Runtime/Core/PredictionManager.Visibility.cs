@@ -715,6 +715,24 @@ namespace PurrNet.Prediction
             return timeline.WasVisibleAt(rootId, tick);
         }
 
+        bool TryGetEnteringBaseline(
+            PredictedIdentity system,
+            PlayerVisibilityTimeline timeline,
+            ulong baselineTick,
+            ulong tick,
+            out ulong enteringTick)
+        {
+            enteringTick = baselineTick;
+            if (!hierarchy || !system.TryGetFirstVerifiedTick(out var firstTick) ||
+                firstTick <= baselineTick || firstTick >= tick || !IsLifecycleEntrant(firstTick, system.id))
+                return false;
+            if (!timeline.isPassThrough &&
+                !timeline.HasContinuousVisibilityFrom(ResolveVisibilityRoot(system.id.objectId), firstTick))
+                return false;
+            enteringTick = firstTick;
+            return true;
+        }
+
         bool RequiresFullEntryState(
             PlayerVisibilityTimeline timeline,
             PredictedIdentity system,
@@ -931,6 +949,7 @@ namespace PurrNet.Prediction
 
             using var records = allowOmission ? BitPackerPool.Get() : null;
             using var payload = BitPackerPool.Get();
+            using var body = BitPackerPool.Get();
             int writtenCount = 0;
 
             for (var i = 0; i < _addressedSystemScratch.Count; i++)
@@ -948,40 +967,65 @@ namespace PurrNet.Prediction
                                      baselineScratch.roots,
                                      baselineScratch.pieces);
                 // A prepared continuation may be discarded for size; consume the request only when sent.
-                if (PrepareDesyncHeal(player, system.id))
+                bool heal = PrepareDesyncHeal(player, system.id);
+                if (heal)
                     writeFull = true;
+
+                ulong recordBaseline = baselineTick;
+                bool ownBaseline = false;
+                if (writeFull && !fullFrame && !heal && baselineTick > 0 &&
+                    TryGetEnteringBaseline(system, timeline, baselineTick, tick, out var enteringTick))
+                {
+                    writeFull = false;
+                    ownBaseline = true;
+                    recordBaseline = enteringTick;
+                }
                 bool changed;
 
+                body.ResetPositionAndMode(false);
                 if (!TryWriteAggregateVisibilityState(
                         system,
                         player,
                         timeline,
-                        payload,
+                        body,
                         tick,
-                        baselineTick,
+                        recordBaseline,
                         ref writeFull,
                         out changed))
                 {
                     if (writeFull)
                     {
-                        system.RunWriteFirstState(tick, payload);
+                        system.RunWriteFirstState(tick, body);
                         changed = true;
                     }
                     else
                     {
                         changed = system.RunWriteCurrentState(
                             player,
-                            payload,
-                            baselineTick);
+                            body,
+                            recordBaseline);
                     }
                 }
+                ownBaseline &= !writeFull;
+                if (ownBaseline)
+                    spawnBaselineRecordsTotal++;
 
                 bool canOmit = allowOmission &&
                                !writeFull &&
+                               !ownBaseline &&
                                !changed &&
                                system.RunCanOmitUnchangedState(baselineTick);
                 if (canOmit)
                     continue;
+
+                payload.ResetPositionAndMode(false);
+                if (!writeFull)
+                {
+                    Packer<bool>.Write(payload, ownBaseline);
+                    if (ownBaseline)
+                        Packer<PackedUInt>.Write(payload, checked((uint)(tick - recordBaseline)));
+                }
+                payload.WriteBitsWithoutConsumingIt(body, body.positionInBits);
 
                 AddressedPredictionRecords.WriteRecord(
                     allowOmission ? records : destination,
@@ -1256,12 +1300,26 @@ namespace PurrNet.Prediction
                             $"Duplicate addressed state record {id}.");
                     }
 
+                    bool full = fullFrame || isFullState;
+                    ulong recordBaseline = baselineTick;
+                    if (!full)
+                    {
+                        if (Packer<bool>.Read(payload))
+                        {
+                            uint offset = Packer<PackedUInt>.Read(payload);
+                            if (offset == 0 || offset >= stateTick - baselineTick)
+                                throw new MissingPredictionBaselineException(
+                                    $"Invalid entering baseline for record {id} at tick {stateTick}.");
+                            recordBaseline = stateTick - offset;
+                        }
+                    }
+
                     ApplyAddressedState(
                         system,
                         payload,
-                        fullFrame || isFullState,
+                        full,
                         stateTick,
-                        baselineTick,
+                        recordBaseline,
                         serverTick,
                         eventHandlers);
                 },

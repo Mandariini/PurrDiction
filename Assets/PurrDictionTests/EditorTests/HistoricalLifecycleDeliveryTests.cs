@@ -324,6 +324,49 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void SpawnedAfterTheBaselineIsDeliveredAsADeltaAgainstItsEnteringState()
+        {
+            using var f = new Fixture(true);
+            PredictedObjectID born = default;
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                if (tick == 13)
+                    born = f.CreateServerIdentity(700);
+                using var packet = f.StepServer(tick);
+                Assert.That(packet.full, Is.False);
+                if (tick == FinalTick)
+                    f.Deliver(packet);
+            }
+
+            // Tick 13 writes the newborn in full; frames 14..17 delta it against its entering state.
+            Assert.That(f.server.spawnBaselineRecordsTotal, Is.EqualTo(4));
+            f.AssertVerifiedAgreement();
+            Assert.That(f.client.hierarchy.TryGetGameObject(born, out _), Is.True);
+        }
+
+        [Test]
+        public void EntrantsBeforeTheInputWindowAreNotRepeated()
+        {
+            using var f = new Fixture(true);
+            f.server.serverInputRedundancyMs = 100; // 2 ticks at 20 Hz
+            for (ulong tick = 11; tick <= FinalTick; tick++)
+            {
+                if (tick == 12)
+                    f.CreateServerIdentity(700);
+                using var packet = f.StepServer(tick);
+                f.Deliver(packet);
+                if (tick == 11 || tick >= 14)
+                    f.AcknowledgeClient();
+            }
+
+            // The frame at 14 saw baseline 11 with a lag of 3, so its window began at 12 and the
+            // entrant at 12, which this client applied two frames earlier, was not repeated.
+            Assert.That(f.server.lifecycleEntrantsOmittedTotal, Is.GreaterThan(0));
+            Assert.That(f.client.inputWindowSkippedFramesTotal, Is.Zero);
+            f.AssertVerifiedAgreement();
+        }
+
+        [Test]
         public void ReplacingUnsentFramesKeepsTheDesyncHealPendingUntilDelivery()
         {
             PredictedObjectID id = default;
@@ -841,7 +884,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var timeline = Get<Dictionary<PlayerID, PlayerVisibilityTimeline>>(server, "_playerVisibility")[_recipient];
                 Assert.That(timeline.isPassThrough, Is.EqualTo(!filtered));
                 using var transcript = BitPackerPool.Get();
-                WithoutFullTopologyWriter(() => Invoke(server, "WriteLifecycleHistory", transcript, Baseline, timeline));
+                WithoutFullTopologyWriter(() => Invoke(server, "WriteLifecycleHistory", transcript, Baseline, timeline, Baseline + 1));
                 int end = transcript.positionInBits;
                 transcript.ResetPositionAndMode(true);
                 Assert.That(Packer<bool>.Read(transcript), Is.True);

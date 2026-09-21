@@ -851,6 +851,17 @@ namespace PurrNet.Prediction
 
         internal virtual bool HasUnchangedStateBaseline(ulong baselineTick) => false;
 
+        internal virtual bool TryGetFirstVerifiedTick(out ulong tick)
+        {
+            if (_metadataVerified != null && _metadataVerified.Count > 0)
+            {
+                tick = _metadataVerified.OldestTick;
+                return true;
+            }
+            tick = 0;
+            return false;
+        }
+
         internal virtual void ReadUnchangedState(
             ulong tick,
             ulong baselineTick,

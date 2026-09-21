@@ -925,7 +925,10 @@ public class PredictionBootstrap : Scenario
 
         Debug.Log(
             $"[PredictionTests] {_role} finished scenario {i}: {scenario.GetType().Name} " +
-            $"{(result.success ? "PASS" : "FAIL")} ({elapsedMs:F0} ms)");
+            $"{(result.success ? "PASS" : "FAIL")} ({elapsedMs:F0} ms)" +
+            (_predictionManager && _predictionManager.isServer
+                ? $" spawnBaselineRecords={_predictionManager.spawnBaselineRecordsTotal} entrantsOmitted={_predictionManager.lifecycleEntrantsOmittedTotal}"
+                : ""));
         if (!result.success)
             Debug.LogWarning($"[PredictionTests] {scenario.GetType().Name} failed: {result.message}");
 
