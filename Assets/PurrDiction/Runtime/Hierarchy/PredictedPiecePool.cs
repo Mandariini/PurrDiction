@@ -19,6 +19,25 @@ namespace PurrNet.Prediction
         }
     }
 
+    internal readonly struct SpawnKey
+    {
+        public readonly ulong tick;
+        public readonly PredictedComponentID creator;
+        public readonly int ordinal;
+        public readonly bool isValid;
+
+        public SpawnKey(ulong tick, PredictedComponentID creator, int ordinal)
+        {
+            this.tick = tick;
+            this.creator = creator;
+            this.ordinal = ordinal;
+            isValid = true;
+        }
+
+        public bool Matches(in SpawnKey other) =>
+            isValid && other.isValid && tick == other.tick && ordinal == other.ordinal && creator.Equals(other.creator);
+    }
+
     internal sealed class PredictedPiecePool
     {
         sealed class Entry
@@ -29,7 +48,10 @@ namespace PurrNet.Prediction
             public ulong addedTick;
             public Vector3 rootSpawnPosition;
             public bool isComplete;
+            public SpawnKey spawnKey;
             public readonly List<PooledPiece> pieces = new ();
+
+            public bool IsReservedAt(ulong tick) => spawnKey.isValid && spawnKey.tick >= tick;
         }
 
         sealed class PieceIndexComparer : IComparer<PooledPiece>
@@ -44,7 +66,7 @@ namespace PurrNet.Prediction
         readonly HashSet<GameObject> _entryPieceScratch = new ();
 
         public void PutTree(PackedInt prefabId, PredictedObjectID rootPieceId, Vector3 rootSpawnPosition,
-            GameObject rootGo, List<PooledPiece> pieces, ulong tick, bool isComplete)
+            GameObject rootGo, List<PooledPiece> pieces, ulong tick, bool isComplete, in SpawnKey spawnKey = default)
         {
             var entry = new Entry
             {
@@ -53,7 +75,8 @@ namespace PurrNet.Prediction
                 prefabId = prefabId,
                 addedTick = tick,
                 rootSpawnPosition = rootSpawnPosition,
-                isComplete = isComplete
+                isComplete = isComplete,
+                spawnKey = spawnKey
             };
 
             for (var i = 0; i < pieces.Count; i++)
@@ -121,13 +144,45 @@ namespace PurrNet.Prediction
             return _byPieceId.ContainsKey(pieceId);
         }
 
+        /// <summary>
+        /// Takes the complete tree that showed the same spawn, whatever id it had then. Prefers the one
+        /// that also kept its id.
+        /// </summary>
+        public bool TryTakeSameSpawn(PackedInt prefabId, in SpawnKey spawnKey, PredictedObjectID rootPieceId,
+            List<PooledPiece> resultPieces, out GameObject rootGo)
+        {
+            rootGo = null;
+            if (!spawnKey.isValid)
+                return false;
+
+            Entry match = null;
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                var entry = _entries[i];
+                if (!entry.isComplete || entry.prefabId != prefabId || !entry.spawnKey.Matches(spawnKey))
+                    continue;
+
+                match = entry;
+                if (entry.rootPieceId.Equals(rootPieceId))
+                    break;
+            }
+
+            if (match == null)
+                return false;
+
+            RemoveEntry(match);
+            resultPieces.AddRange(match.pieces);
+            rootGo = match.rootGo;
+            return true;
+        }
+
         public bool TryTakeTree(PredictedObjectID rootPieceId, PackedInt prefabId, Vector3 expectedSpawnPosition, bool checkDrift,
-            List<PooledPiece> resultPieces, out GameObject rootGo, out bool foundButDrifted)
+            List<PooledPiece> resultPieces, out GameObject rootGo, out bool foundButDrifted, ulong currentTick = ulong.MaxValue)
         {
             foundButDrifted = false;
 
             if (!_byPieceId.TryGetValue(rootPieceId, out var entry) || entry.rootPieceId.Equals(rootPieceId) == false ||
-                entry.prefabId != prefabId)
+                entry.prefabId != prefabId || entry.IsReservedAt(currentTick))
             {
                 rootGo = null;
                 return false;
@@ -147,10 +202,11 @@ namespace PurrNet.Prediction
         }
 
         public bool TryTakeExactCompleteTree(PredictedObjectID rootPieceId, PackedInt prefabId,
-            List<PooledPiece> resultPieces, out GameObject rootGo)
+            List<PooledPiece> resultPieces, out GameObject rootGo, ulong currentTick = ulong.MaxValue)
         {
             if (!_byPieceId.TryGetValue(rootPieceId, out var entry) ||
-                !entry.rootPieceId.Equals(rootPieceId) || entry.prefabId != prefabId || !entry.isComplete)
+                !entry.rootPieceId.Equals(rootPieceId) || entry.prefabId != prefabId || !entry.isComplete ||
+                entry.IsReservedAt(currentTick))
             {
                 rootGo = null;
                 return false;
@@ -163,7 +219,7 @@ namespace PurrNet.Prediction
         }
 
         public bool TryTakeNearestCompleteTree(PackedInt prefabId, Vector3 spawnPosition,
-            List<PooledPiece> resultPieces, out GameObject rootGo)
+            List<PooledPiece> resultPieces, out GameObject rootGo, ulong currentTick = ulong.MaxValue)
         {
             Entry closest = null;
             float closestError = float.MaxValue;
@@ -172,7 +228,7 @@ namespace PurrNet.Prediction
             {
                 var entry = _entries[i];
 
-                if (!entry.isComplete || entry.prefabId != prefabId)
+                if (!entry.isComplete || entry.prefabId != prefabId || entry.IsReservedAt(currentTick))
                     continue;
 
                 float posError = Vector3.Distance(entry.rootSpawnPosition, spawnPosition);

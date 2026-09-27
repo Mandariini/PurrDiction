@@ -554,6 +554,10 @@ namespace PurrNet.Prediction
         }
 
         public void RegisterInstance(GameObject go, PredictedObjectID objectID, PlayerID? owner, bool reset, bool triggedOnRemovedFromPool)
+            => RegisterInstance(go, objectID, owner, reset, triggedOnRemovedFromPool, false);
+
+        internal void RegisterInstance(GameObject go, PredictedObjectID objectID, PlayerID? owner, bool reset,
+            bool triggedOnRemovedFromPool, bool sameSpawn)
         {
             var components = ListPool<PredictedIdentity>.Instantiate();
             go.GetComponents(components);
@@ -566,10 +570,11 @@ namespace PurrNet.Prediction
                 if (!_systems.Contains(component))
                 {
                     var componentId = new PredictedComponentID(objectID, i);
+                    bool sameId = component.id.Equals(componentId);
                     bool sameLogicalObject = !component.isFreshSpawn &&
-                                             component.id.Equals(componentId) &&
+                                             (sameId || sameSpawn) &&
                                              component.owner == owner;
-                    bool preserveState = !reset && sameLogicalObject;
+                    bool preserveState = !reset && sameLogicalObject && sameId;
                     bool recycledForNewId = !reset && !component.isFreshSpawn && !sameLogicalObject;
                     var incomingPolicy = component.ResolveEffectivePredictionPolicyForSetup(owner, this);
                     bool preserveSoftState = preserveState &&
@@ -582,12 +587,33 @@ namespace PurrNet.Prediction
                          component.ResetState();
                     if (triggedOnRemovedFromPool)
                         component.TriggerOnRemovedFromPool();
-                    RegisterInstance(component, objectID, i, owner, preserveSoftState);
+                    component.SetContinuesSpawnOnSetup(!reset && sameLogicalObject);
+                    try
+                    {
+                        RegisterInstance(component, objectID, i, owner, preserveSoftState);
+                    }
+                    finally
+                    {
+                        component.SetContinuesSpawnOnSetup(false);
+                    }
                 }
             }
 
             ListPool<PredictedIdentity>.Destroy(components);
         }
+
+        internal PredictedComponentID? spawnCreator { get; private set; }
+
+        internal uint spawnPass { get; private set; }
+
+        internal PredictedComponentID? EnterSpawnCreator(PredictedComponentID creator)
+        {
+            var previous = spawnCreator;
+            spawnCreator = creator;
+            return previous;
+        }
+
+        internal void ExitSpawnCreator(PredictedComponentID? previous) => spawnCreator = previous;
 
         public void UnregisterInstance(GameObject go, bool reset, bool destroyEvent)
         {
@@ -912,6 +938,7 @@ namespace PurrNet.Prediction
             if (time)
                 delta *= time.timeScale;
 
+            spawnPass++;
             long prepareStarted = performance.Timestamp();
             using (SimulateInputsMarker.Auto())
             {
@@ -2571,6 +2598,7 @@ namespace PurrNet.Prediction
 
             isSimulating = true;
             localTickInContext = verifiedTick;
+            spawnPass++;
 
             try
             {

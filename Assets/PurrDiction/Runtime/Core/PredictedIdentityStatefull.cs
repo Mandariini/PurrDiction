@@ -57,6 +57,7 @@ namespace PurrNet.Prediction
         {
             _viewState?.Dispose();
             _viewState = null;
+            _viewAwaitsReplaySample = false;
 
             _interpolatedState?.Teleport(viewTeleportTick, default);
             _stateHistory?.Clear();
@@ -103,7 +104,8 @@ namespace PurrNet.Prediction
 
         internal override void Setup(NetworkManager manager, PredictionManager world, PredictedComponentID id, PlayerID? owner)
         {
-            bool preserveInterpolation = world.isReplaying && !isFreshSpawn && this.id.Equals(id) &&
+            bool sameSpawn = this.id.Equals(id) || continuesSpawnOnSetup;
+            bool preserveInterpolation = world.isReplaying && !isFreshSpawn && sameSpawn &&
                                          _viewSpawnTick == world.localTickInContext;
 
             myType = GetType();
@@ -138,18 +140,13 @@ namespace PurrNet.Prediction
             {
                 _interpolatedState = new PredictedViewBuffer<FULL_STATE<STATE>>(
                     FULLInterpolate, world.localTickInContext, fullPredictedState.DeepCopy(), interpolationBuffer + 2);
-                _viewSpawnTick = world.localTickInContext;
-                OnViewInterpolationReset();
+                RestartedView(world);
             }
             else if (!preserveInterpolation)
             {
                 _interpolatedState.Teleport(world.localTickInContext, fullPredictedState.DeepCopy());
-                _viewSpawnTick = world.localTickInContext;
-                OnViewInterpolationReset();
+                RestartedView(world);
             }
-
-            _viewState?.Dispose();
-            _viewState = null;
 
             if (_stateHistory == null)
                  _stateHistory = new History<FULL_STATE<STATE>>(world.tickRate * 10);
@@ -159,6 +156,17 @@ namespace PurrNet.Prediction
 
             _verifiedHistory = world.GetVerifiedHistory<FULL_STATE<STATE>>(id, out _);
         }
+
+        private void RestartedView(PredictionManager world)
+        {
+            _viewSpawnTick = world.localTickInContext;
+            OnViewInterpolationReset();
+            _viewState?.Dispose();
+            _viewState = null;
+            _viewAwaitsReplaySample = world.isReplaying;
+        }
+
+        private bool _viewAwaitsReplaySample;
 
         protected virtual void GetUnityState(ref STATE state) {}
 
@@ -224,7 +232,7 @@ namespace PurrNet.Prediction
             ModifyRollbackViewState(ref copy.state, delta, accumulateError);
 
             bool refreshOnly = predictionManager && predictionManager.refreshViewLatchOnly;
-            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _viewState.HasValue))
+            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _viewState.HasValue || _viewAwaitsReplaySample))
             {
                 copy.Dispose();
                 return;
@@ -233,6 +241,7 @@ namespace PurrNet.Prediction
             _viewState?.Dispose();
             _viewState = copy;
             _viewStateTick = predictionManager ? predictionManager.localTick : 0;
+            _viewAwaitsReplaySample = false;
         }
 
         protected virtual void ModifyRollbackViewState(ref STATE state, float delta, bool accumulateError) { }

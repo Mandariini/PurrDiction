@@ -520,6 +520,7 @@ namespace PurrNet.Prediction
             isServer = false;
             isFreshSpawn = true;
             preservesStateOnSetup = false;
+            continuesSpawnOnSetup = false;
             _simulateSoftCorrectionDuringReplay = false;
             _skipReplaySpawnInitialization = false;
             _hasLastEffectivePredictionPolicy = false;
@@ -534,6 +535,13 @@ namespace PurrNet.Prediction
         internal void SetPreserveStateOnSetup(bool preserve)
         {
             preservesStateOnSetup = preserve;
+        }
+
+        internal bool continuesSpawnOnSetup { get; private set; }
+
+        internal void SetContinuesSpawnOnSetup(bool continues)
+        {
+            continuesSpawnOnSetup = continues;
         }
 
         internal void SetSoftCorrectionReplaySimulation(bool simulate)

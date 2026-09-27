@@ -189,6 +189,27 @@ namespace PurrNet.Prediction
         readonly HashSet<PredictedObjectID> _verifiedApplyEntrants = new ();
         readonly HashSet<PredictedObjectID> _replacedEntrantsScratch = new ();
 
+        readonly Dictionary<PredictedObjectID, SpawnKey> _spawnKeys = new ();
+        readonly Dictionary<PredictedComponentID, int> _spawnOrdinals = new ();
+        uint _spawnOrdinalPass = uint.MaxValue;
+
+        private SpawnKey NextSpawnKey()
+        {
+            var creator = predictionManager.spawnCreator;
+            if (!creator.HasValue)
+                return default;
+
+            if (_spawnOrdinalPass != predictionManager.spawnPass)
+            {
+                _spawnOrdinals.Clear();
+                _spawnOrdinalPass = predictionManager.spawnPass;
+            }
+
+            _spawnOrdinals.TryGetValue(creator.Value, out var ordinal);
+            _spawnOrdinals[creator.Value] = ordinal + 1;
+            return new SpawnKey(predictionManager.localTickInContext, creator.Value, ordinal);
+        }
+
         internal bool WasMaterializedByVerifiedApply(PredictedObjectID id)
             => _verifiedApplyEntrants.Contains(id);
 
@@ -661,7 +682,7 @@ namespace PurrNet.Prediction
             for (var k = 1; k < proto.pieceCount; k++)
                 _recordBuildScratch.Add(new InstanceDetails(prefabId, (uint)k, new PredictedObjectID(baseId + (uint)k), Vector3.zero, Quaternion.identity, null, null, PieceNetworkId(networkBlock, proto, k)));
 
-            var rootGo = CreateWholeInstance(prefabId, proto, _recordBuildScratch);
+            var rootGo = CreateWholeInstance(prefabId, proto, _recordBuildScratch, NextSpawnKey());
 
             if (!rootGo)
                 return default;
@@ -684,7 +705,8 @@ namespace PurrNet.Prediction
             return rootId;
         }
 
-        private GameObject CreateWholeInstance(int prefabId, PiecePrototype proto, List<InstanceDetails> records)
+        private GameObject CreateWholeInstance(int prefabId, PiecePrototype proto, List<InstanceDetails> records,
+            in SpawnKey spawnKey = default)
         {
             _pieceGoScratch.Clear();
             _takenPiecesScratch.Clear();
@@ -697,6 +719,7 @@ namespace PurrNet.Prediction
 
             bool reset = false;
             bool removedFromPoolEvent = false;
+            bool sameSpawn = false;
             GameObject rootGo = null;
 
             Transform parentTrs = null;
@@ -711,13 +734,24 @@ namespace PurrNet.Prediction
 
             if (hasRoot)
             {
-                if (!_pool.TryTakeTree(rootRecord.instanceId, prefabId, rootRecord.spawnPosition, prefabId >= 0, _takenPiecesScratch, out rootGo, out var drifted))
+                ulong tick = predictionManager.localTickInContext;
+                if (_pool.TryTakeSameSpawn(prefabId, spawnKey, rootRecord.instanceId, _takenPiecesScratch, out rootGo))
+                {
+                    sameSpawn = true;
+                }
+                else if (!_pool.TryTakeTree(rootRecord.instanceId, prefabId, rootRecord.spawnPosition, prefabId >= 0,
+                             _takenPiecesScratch, out rootGo, out var drifted, tick))
                 {
                     bool reusedExactTree = drifted && _pool.TryTakeExactCompleteTree(
-                        rootRecord.instanceId, prefabId, _takenPiecesScratch, out rootGo);
+                        rootRecord.instanceId, prefabId, _takenPiecesScratch, out rootGo, tick);
                     if (!reusedExactTree && (drifted || prefabId < 0))
-                        _pool.TryTakeNearestCompleteTree(prefabId, rootRecord.spawnPosition, _takenPiecesScratch, out rootGo);
+                        _pool.TryTakeNearestCompleteTree(prefabId, rootRecord.spawnPosition, _takenPiecesScratch, out rootGo, tick);
                 }
+
+                if (spawnKey.isValid)
+                    _spawnKeys[rootRecord.instanceId] = spawnKey;
+                else
+                    _spawnKeys.Remove(rootRecord.instanceId);
 
                 if (rootGo)
                 {
@@ -870,7 +904,8 @@ namespace PurrNet.Prediction
                 _goToId[pieceGo] = record.instanceId;
 
                 bool recordReset = reset || _replacedEntrantsScratch.Contains(record.instanceId);
-                predictionManager.RegisterInstance(pieceGo, record.instanceId, instanceOwner, recordReset, removedFromPoolEvent);
+                predictionManager.RegisterInstance(pieceGo, record.instanceId, instanceOwner, recordReset, removedFromPoolEvent,
+                    sameSpawn && !_individuallyTakenScratch.Contains(record.pieceIndex.value));
                 networkMirror.OnPieceMaterialized(record, pieceGo, proto, instanceOwner);
             }
 
@@ -1759,6 +1794,7 @@ namespace PurrNet.Prediction
 
             var proto = GetPrototype(topRecord.prefabId);
             bool isComplete = topRecord.isRootRecord && proto != null && _memberPiecesScratch.Count == proto.pieceCount;
+            _spawnKeys.Remove(topRecord.instanceId, out var spawnKey);
 
             if (canPool)
             {
@@ -1768,7 +1804,7 @@ namespace PurrNet.Prediction
                     topGo.transform.SetParent(null, true);
 
                 _pool.PutTree(topRecord.prefabId, topRecord.instanceId, topRecord.spawnPosition, topGo,
-                    _memberPiecesScratch, predictionManager.localTick, isComplete);
+                    _memberPiecesScratch, predictionManager.localTick, isComplete, isComplete ? spawnKey : default);
 
                 topGo.SetActive(false);
             }
@@ -2124,6 +2160,8 @@ namespace PurrNet.Prediction
             _policyRefreshStamp.Clear();
             _parentingWarned.Clear();
             _verifiedApplyEntrants.Clear();
+            _spawnKeys.Clear();
+            _spawnOrdinals.Clear();
             _pendingDecorationRestores.Clear();
             _visibilityParentsByRoot.Clear();
             _visibilityChildrenByRoot.Clear();
