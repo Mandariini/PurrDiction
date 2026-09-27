@@ -277,7 +277,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(typeof(NetworkIdentity), manager, "<networkManager>k__BackingField", _network);
                 Set(typeof(NetworkIdentity), manager, "_isSpawnedClient", true);
                 Set(typeof(PredictionManager), manager, "_verifiedServerTick", 10UL);
-                Set(typeof(PredictionManager), manager, "_appliedCheckpointTick", 8UL);
+                Set(typeof(PredictionManager), manager, "_awaitingFullFrame", false);
                 Set(typeof(PredictionManager), manager, "_latestFrameServerTick", 10UL);
                 var id = new PredictedComponentID(new PredictedObjectID(1701), 0);
                 probe = _probeObject.AddComponent<BaselineFloorProbeIdentity>();
@@ -333,8 +333,6 @@ namespace PurrNet.Prediction.Tests.Editor
                     // The stale-frame test intentionally supplies a future baseline;
                     // its receive guard must discard that packet before parsing it.
                     uint inputTicks = !fullFrame && baseline < tick ? checked((uint)(tick - baseline)) : 0u;
-                    if (!fullFrame)
-                        Packer<PackedUInt>.Write(frame, inputTicks); // input window ticks
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // hierarchy record
                     if (!fullFrame)
@@ -365,7 +363,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     AddressedPredictionRecords.WriteSectionCount(0, frame); // event handlers
                     int length = frame.positionInBytes;
                     frame.ResetPositionAndMode(true);
-                    Invoke(manager, "HandleFrameFromServer", tick, baseline, fullFrame ? tick : 8UL, tick, fullFrame,
+                    Invoke(manager, "HandleFrameFromServer", tick, baseline, tick, fullFrame,
                         false, default(PackedInt), false, default(PackedInt),
                         new BitPackerWithLength(length, frame));
                 }

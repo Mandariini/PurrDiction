@@ -65,23 +65,19 @@ public sealed class BaselineRecoveryScenario : Scenario
         public string player;
         public ulong ack;
         public ulong verified;
-        public ulong latch;
-        public ulong lastReliableSent;
+        public ulong lastSent;
         public ulong lastFullSent;
         public ulong sentVisibility;
         public bool pending;
         public ulong requiredAfter;
         public ulong fullFrames;
         public ulong deltaFrames;
-        public ulong appliedCheckpoint;
-        public int stagedFrames;
-        public int stagedBytes;
     }
 
     [Serializable]
     public sealed class ReportData
     {
-        public string fixtureVersion = "baseline-recovery-checkpoint-v1";
+        public string fixtureVersion = "baseline-recovery-ordered-v1";
         public string role;
         public string player;
         public string fault;
@@ -98,7 +94,6 @@ public sealed class BaselineRecoveryScenario : Scenario
         public int expectedBaselineErrors;
         public int requestTraceCount;
         public int serveTraceCount;
-        public int coalescedTraceCount;
         public int coveredTraceCount;
         public ulong probeCreatedTick;
         public ulong injectedFrameTick;
@@ -115,7 +110,6 @@ public sealed class BaselineRecoveryScenario : Scenario
         public ulong fullFramesAfter;
         public ulong recoveredAck;
         public ulong recoveredVerified;
-        public ulong recoveredCheckpoint;
         public double faultAtSeconds;
         public string faultAtUtc;
         public double firstRequestAtSeconds = -1;
@@ -251,11 +245,10 @@ public sealed class BaselineRecoveryScenario : Scenario
                 AddSample(ServerSnapshots().Find(s => s.player == pair.Key.ToString()) ??
                     throw new InvalidOperationException($"Server snapshot missing for {pair.Key}."));
             }
-            int repairTraces = _report.serveTraceCount + (_report.fault == "blackout" ?
-                _report.coalescedTraceCount + _report.coveredTraceCount : 0);
+            int repairTraces = _report.serveTraceCount + (_report.fault == "blackout" ? _report.coveredTraceCount : 0);
             if (repairTraces < ctx.externalClientCount)
                 return ScenarioResult.Fail($"Only {repairTraces}/{ctx.externalClientCount} server repair-decision traces observed.");
-            // Prove new per-player sends after acknowledged checkpoint recovery.
+            // Prove new per-player sends after acknowledged full-frame recovery.
             var previous = ServerSnapshots();
             ulong deltasBefore = world.deltaFramesWrittenTotal;
             await UniTask.WaitForSeconds(1f, cancellationToken: ctx.cancellationToken);
@@ -268,7 +261,7 @@ public sealed class BaselineRecoveryScenario : Scenario
                     return ScenarioResult.Fail($"No fresh acknowledged per-player frames after recovery for {pair.Key}.");
             }
             if (world.deltaFramesWrittenTotal <= deltasBefore)
-                return ScenarioResult.Fail("No new delta frames were written after checkpoint recovery.");
+                return ScenarioResult.Fail("No new delta frames were written after full-frame recovery.");
             _report.freshDeltasResumed = true;
         }
         else
@@ -286,9 +279,9 @@ public sealed class BaselineRecoveryScenario : Scenario
                 "missing baseline did not recover through an applied full frame");
             if (_report.expectedBaselineErrors == 0 || _report.requestTraceCount == 0 || !_report.pendingObserved)
                 return ScenarioResult.Fail("The actual missing-baseline error, request RPC or pending transition was not observed.");
-            if (_report.recoveredCheckpoint < _report.injectedFrameTick || _report.recoveredAck < _report.recoveredCheckpoint ||
-                _report.recoveredVerified < _report.recoveredCheckpoint)
-                return ScenarioResult.Fail("Recovery did not apply a covering full checkpoint before advancing its ACK.");
+            // Deltas wait for a full frame after the fault, so only a covering full can move these past it.
+            if (_report.recoveredAck < _report.injectedFrameTick || _report.recoveredVerified < _report.injectedFrameTick)
+                return ScenarioResult.Fail("Recovery did not apply a covering full frame before advancing its ACK.");
             if (_report.fault == "blackout" && (!_report.blackoutEnabled || !_report.blackoutRestored ||
                 !_report.blackoutSettingsApplied || !_report.blackoutTailHadNoFrames ||
                 _report.firstRequestAtSeconds < _report.faultAtSeconds ||
@@ -306,7 +299,7 @@ public sealed class BaselineRecoveryScenario : Scenario
             BaselineRecoverySignals.Report(ctx.scenarioIndex, JsonConvert.SerializeObject(new
             {
                 _report.fixtureVersion, _report.role, _report.player, _report.fault, _report.success,
-                _report.recoveredAck, _report.recoveredVerified, _report.recoveredCheckpoint, _report.recoveryMilliseconds,
+                _report.recoveredAck, _report.recoveredVerified, _report.recoveryMilliseconds,
                 _report.expectedBaselineErrors, _report.requestTraceCount, _report.pendingObserved,
                 _report.pendingCleared, _report.historyRestored, _report.fullReceived,
                 _report.resumedVerifiedProgress, _report.blackoutEnabled, _report.blackoutRestored
@@ -387,7 +380,6 @@ public sealed class BaselineRecoveryScenario : Scenario
                 _report.recoveryMilliseconds = 1000d * (_report.recoveryAtSeconds - _report.faultAtSeconds);
                 _report.recoveredAck = U64(world, "_ackedServerTick");
                 _report.recoveredVerified = U64(world, "_verifiedServerTick");
-                _report.recoveredCheckpoint = U64(world, "_appliedCheckpointTick");
             }
             _activeFault = null;
         }
@@ -408,7 +400,6 @@ public sealed class BaselineRecoveryScenario : Scenario
         {
             _report.serveTraceCount++;
         }
-        if (text.StartsWith("[HistoryResyncTrace] resyncCoalesced ", StringComparison.Ordinal)) _report.coalescedTraceCount++;
         if (text.StartsWith("[HistoryResyncTrace] resyncCovered ", StringComparison.Ordinal)) _report.coveredTraceCount++;
     }
 
@@ -458,16 +449,11 @@ public sealed class BaselineRecoveryScenario : Scenario
         return new Sample { elapsedSeconds = Elapsed, player = _report.player, localTick = world.localTick,
             ack = U64(world, "_ackedServerTick"), verified = U64(world, "_verifiedServerTick"),
             pending = (bool)Get(world, "_historyResyncPending"), requiredAfter = U64(world, "_historyResyncRequiredAfterTick"),
-            appliedCheckpoint = U64(world, "_appliedCheckpointTick"),
-            stagedFrames = Convert.ToInt32(Get(world, "stagedCheckpointFrames")),
-            stagedBytes = Convert.ToInt32(Get(world, "stagedCheckpointBytes")),
             fullFrames = world.fullFramesReceivedTotal, deltaFrames = world.framesReceivedTotal - world.fullFramesReceivedTotal };
     }
 
     private void AddSample(Sample sample)
     {
-        if (sample.stagedFrames < 0 || sample.stagedFrames > 1 || sample.stagedBytes < 0 || sample.stagedBytes > 1024 * 1024)
-            throw new InvalidOperationException("Checkpoint staging exceeded its one-packet / 1MiB bound.");
         if (_report.samples.Count < 1024) _report.samples.Add(sample); else _report.samplesOmitted++;
     }
 
@@ -479,8 +465,7 @@ public sealed class BaselineRecoveryScenario : Scenario
         {
             var player = (PlayerID)Get(frame, "player");
             result.Add(new Sample { elapsedSeconds = Elapsed, player = player.ToString(), localTick = world.localTick,
-                ack = ReadServerAck(player), latch = U64(Get(frame, "reliableFrame"), "pendingTick"),
-                lastReliableSent = U64(frame, "reliableSentAtLocalTick"),
+                ack = ReadServerAck(player), lastSent = U64(frame, "lastSentFrameTick"),
                 lastFullSent = U64(frame, "lastFullFrameSentTick"),
                 sentVisibility = U64(frame, "sentVisibilityTick"), fullFrames = world.fullFramesSentTotal, deltaFrames = world.deltaFramesWrittenTotal });
         }

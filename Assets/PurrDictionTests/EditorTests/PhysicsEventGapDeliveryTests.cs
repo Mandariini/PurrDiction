@@ -449,66 +449,6 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(fixture.RecordFailure, Is.False);
         }
 
-        [TestCase(20, 10UL, 42UL, false)]
-        [TestCase(20, 10UL, 43UL, true)]
-        [TestCase(60, 10UL, 106UL, false)]
-        [TestCase(60, 10UL, 107UL, true)]
-        [TestCase(60, 0UL, 107UL, false)]
-        [TestCase(60, 107UL, 107UL, false)]
-        [TestCase(60, 107UL, 106UL, false)]
-        public void VerifiedGapCatchupIsBoundedByTheRetainedHistoryWindow(
-            int tickRate, ulong verifiedTick, ulong serverTick, bool requiresFullFrame)
-        {
-            // The receiver catches up exactly as far as the sender can still write a delta.
-            // A smaller receiver cap discards valid deltas and, once a checkpoint's own
-            // delivery exceeds it, makes every replacement arrive too late to be followed.
-            ulong window = PredictionManager.VerifiedHistoryWindowTicks(tickRate);
-            Assert.That(PredictionManager.RequiresFullFrameForGap(verifiedTick, serverTick, window),
-                Is.EqualTo(requiresFullFrame));
-        }
-
-        [TestCase(false)]
-#if UNITY_PHYSICS_2D
-        [TestCase(true)]
-#endif
-        public void QueuedGapBeyondReplayBudgetWaitsForFullWithoutApplyingOrAcknowledgingEvents(bool use2D)
-        {
-            using var fixture = new EventFixture(use2D);
-            const ulong current = BaselineTick + 33;
-            fixture.SetTickRate(60);
-            // A receiver that has not yet learned the session rate retains the minimum
-            // window; a delta the sender can still write may exceed what it can replay.
-            fixture.SetReceiverTickRate(20);
-            for (ulong tick = BaselineTick; tick <= current; tick++)
-                fixture.SetEvents(tick, tick == 11 || tick >= 42
-                    ? new[] { SeedEvent.Collision((float)tick) } : Array.Empty<SeedEvent>());
-            fixture.SetReceiverPredictionHead(current + 4);
-            fixture.SetReceiverPendingHistoryResync(BaselineTick);
-            Assert.That(fixture.PrepareOutboundFullFrame(current, BaselineTick), Is.False,
-                "the sender can retain this ACK history while the stalled receiver exceeds its own window");
-            using var delta = fixture.WriteEventSection(current);
-            Assert.That(delta.HistoricalTicks, Is.EqualTo(new ulong[] { 11, 42 }));
-            fixture.QueueFrame(current, delta);
-            fixture.Reconcile();
-
-            Assert.That(fixture.VerifiedTick, Is.EqualTo(BaselineTick));
-            Assert.That(fixture.AcknowledgedTick, Is.EqualTo(BaselineTick));
-            Assert.That(fixture.callbackTicks, Is.Empty);
-            Assert.That(fixture.IsReplayingOrSimulating, Is.False);
-            Assert.That(fixture.RecordFailure, Is.False);
-
-            using var reset = fixture.WriteEventSection(current, fullFrame: true);
-            fixture.QueueFrame(current, reset);
-            fixture.Reconcile();
-            Assert.That(fixture.VerifiedTick, Is.EqualTo(current));
-            Assert.That(fixture.AcknowledgedTick, Is.EqualTo(current));
-            Assert.That(fixture.callbackTicks, Is.EqualTo(new[] { current }),
-                "the replacement full state must recover immediately and dispatch only its current event");
-            Assert.That(fixture.callbackSpeeds, Is.EqualTo(new[] { (float)current }));
-            Assert.That(fixture.callbackWasVerifiedReplay, Is.EqualTo(new[] { true }));
-            Assert.That(fixture.RecordFailure, Is.False);
-        }
-
         [TestCase(false)]
 #if UNITY_PHYSICS_2D
         [TestCase(true)]
@@ -517,7 +457,7 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             using var fixture = new EventFixture(use2D);
             fixture.SetTickRate(60);
-            // The receiver's window (32 ticks at the minimum rate) makes tick 100 a gap it refuses.
+            // The receiver's window (32 ticks at the minimum rate) cannot read tick 100's input transcript.
             fixture.SetReceiverTickRate(20);
             for (ulong tick = BaselineTick; tick <= 100; tick++)
                 fixture.SetEvents(tick, tick == 11 || tick == 20 || tick >= 99
@@ -529,6 +469,7 @@ namespace PurrNet.Prediction.Tests.Editor
             using var rejected = fixture.WriteEventSection(100);
             fixture.QueueFrame(20, accepted);
             fixture.QueueFrame(100, rejected, inputAck: 0, inputMargin: -100, inputSlackMs: -1000);
+            LogAssert.Expect(LogType.Error, new Regex("Cannot apply prediction frame 100: Invalid authoritative input history window"));
             fixture.Reconcile();
 
             Assert.That(fixture.VerifiedTick, Is.EqualTo(20));
@@ -540,7 +481,9 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(fixture.InputSlackFeedbackTick, Is.Zero,
                 "neither pacing channel may consume feedback carried only by a rejected frame");
             Assert.That(fixture.callbackTicks, Is.EqualTo(new ulong[] { 11, 20 }));
-            Assert.That(fixture.RecordFailure, Is.False);
+            Assert.That(fixture.RecordFailure, Is.True);
+            Assert.That(fixture.RequiresCheckpoint, Is.True,
+                "a delta the receiver cannot read breaks the stream until the next full frame");
             Assert.That(fixture.IsReplayingOrSimulating, Is.False);
         }
 
@@ -607,60 +550,6 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(fixture.RecordFailure, Is.False);
         }
 
-        [TestCase(false)]
-#if UNITY_PHYSICS_2D
-        [TestCase(true)]
-#endif
-        public void PendingFullAllowsFreshDeltaAndStagedPhysicsEventsWaitForItsCheckpoint(bool use2D)
-        {
-            using var fixture = new EventFixture(use2D);
-            const ulong baseline = 90;
-            const ulong current = 110;
-            for (ulong tick = baseline; tick <= current; tick++)
-                fixture.SetEvents(tick, tick == 91 || tick == current
-                    ? new[] { SeedEvent.Collision((float)tick) } : Array.Empty<SeedEvent>());
-
-            var pending = new PlayerPacker();
-            pending.BeginFullFrame(baseline);
-            var outbound = fixture.PrepareOutboundFrame(current, 80, pending);
-            Assert.That(outbound.preparedTick, Is.EqualTo(current));
-            Assert.That(outbound.fullFrame, Is.False,
-                "waiting for a full ACK must not suppress fresh usable deltas");
-            Assert.That(outbound.baselineTick, Is.EqualTo(baseline));
-            Assert.That(outbound.reliableSentTick, Is.EqualTo(baseline));
-
-            fixture.SetReceiverPredictionHead(current + 4);
-            using var frame = fixture.WriteEventSection(current, baseline);
-            fixture.QueueFrame(current, frame, checkpointTick: baseline);
-            fixture.Reconcile();
-            Assert.That(fixture.callbackTicks, Is.Empty, "the dependent event transcript must remain opaque");
-            using var checkpoint = fixture.WriteEventSection(baseline, fullFrame: true);
-            fixture.QueueFrame(baseline, checkpoint);
-            fixture.Reconcile();
-            Assert.That(fixture.VerifiedTick, Is.EqualTo(current));
-            Assert.That(fixture.callbackTicks, Is.EqualTo(new ulong[] { 91, 110 }));
-            Assert.That(fixture.RecordFailure, Is.False);
-        }
-
-        [TestCase(116UL)]
-        [TestCase(196UL)]
-        public void PendingFullCreditDoesNotSuppressUsableContinuationsAsItAges(ulong current)
-        {
-            using var fixture = new EventFixture();
-            const ulong baseline = 90;
-            const ulong sentTick = 100;
-            // No event/input history in this selection-only world; this isolates the
-            // full credit from separate history-coverage reasons to need another full.
-            var pending = new PlayerPacker();
-            pending.BeginFullFrame(sentTick);
-            var outbound = fixture.PrepareOutboundFrame(current, baseline, pending, includePhysics: false);
-            Assert.That(outbound.fullFrame, Is.False);
-            Assert.That(outbound.preparedTick, Is.EqualTo(current));
-            Assert.That(outbound.baselineTick, Is.EqualTo(sentTick));
-            Assert.That(outbound.latched, Is.True);
-            Assert.That(outbound.reliableSentTick, Is.EqualTo(sentTick));
-        }
-
         [TestCase(false, false)]
         [TestCase(false, true)]
 #if UNITY_PHYSICS_2D
@@ -715,18 +604,13 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             public readonly bool fullFrame;
             public readonly ulong baselineTick;
-            public readonly bool latched;
             public readonly ulong preparedTick;
-            public readonly ulong reliableSentTick;
 
             public OutboundSelection(PlayerPacker frame, ulong baselineTick)
             {
                 fullFrame = frame.fullFrame;
                 this.baselineTick = frame.preparedBaselineTick;
-                // Inspect a value copy so the test does not release the actual latch.
-                latched = frame.reliableFrame.IsPending(baselineTick);
                 preparedTick = frame.preparedFrameTick;
-                reliableSentTick = frame.reliableSentAtLocalTick;
             }
         }
 
@@ -840,7 +724,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(typeof(NetworkIdentity), _receiver, "<networkManager>k__BackingField", _network);
                 Set(typeof(NetworkIdentity), _receiver, "_isSpawnedClient", true);
                 Set(typeof(PredictionManager), _receiver, "_verifiedServerTick", BaselineTick);
-                Set(typeof(PredictionManager), _receiver, "_appliedCheckpointTick", 8UL);
+                Set(typeof(PredictionManager), _receiver, "_awaitingFullFrame", false);
                 Set(typeof(PredictionManager), _receiver, "_latestFrameServerTick", BaselineTick);
 
                 // Builtin system ID 1 is always visible. A real hierarchy object selects the
@@ -953,7 +837,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 typeof(PredictionManager), _receiver, "_frameApplyHadRecordFailure");
 
             public bool RequiresCheckpoint => Get<bool>(
-                typeof(PredictionManager), _receiver, "_requiresVerifiedInputCheckpoint");
+                typeof(PredictionManager), _receiver, "_awaitingFullFrame");
 
             public bool HistoryResyncPending => Get<bool>(
                 typeof(PredictionManager), _receiver, "_historyResyncPending");
@@ -1111,12 +995,11 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(frames, Is.Empty);
                 queues.Add(player, new PredictionManager.InputQueue { ackedServerTick = baselineTick });
                 using var packer = BitPackerPool.Get();
-                // A nonempty retained payload with zero unreliable allowance cannot enter
-                // the optional network hedge path in this transport-free writer fixture.
                 Packer<uint>.Write(packer, 0xD00DFEEDu);
                 initialFrame.player = player;
                 initialFrame.packer = packer;
-                initialFrame.maxUnreliableFrameBytes = 0;
+                // Frames are ordered and reliable: the last frame sent is the next frame's baseline.
+                initialFrame.lastSentFrameTick = Math.Max(initialFrame.lastSentFrameTick, baselineTick);
                 frames.Add(initialFrame);
                 var physics3D = Get<Predicted3DPhysics>(typeof(PredictionManager), _sender, "<physics3d>k__BackingField");
                 var physics2D = Get<Predicted2DPhysics>(typeof(PredictionManager), _sender, "<physics2d>k__BackingField");
@@ -1228,8 +1111,7 @@ namespace PurrNet.Prediction.Tests.Editor
             }
 
             public void QueueFrame(ulong tick, EventSection events,
-                ulong? inputAck = null, int? inputMargin = null, int? inputSlackMs = null,
-                ulong? checkpointTick = null)
+                ulong? inputAck = null, int? inputMargin = null, int? inputSlackMs = null)
             {
                 var frame = BitPackerPool.Get();
                 try
@@ -1240,8 +1122,6 @@ namespace PurrNet.Prediction.Tests.Editor
                         Packer<float>.Write(frame, 1f / 60);
                         Packer<uint>.Write(frame, 123u);
                     }
-                    if (!events.fullFrame)
-                        Packer<PackedUInt>.Write(frame, checked((uint)(tick - events.baselineTick))); // input window ticks
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // unchanged topology: no hierarchy record
                     if (!events.fullFrame)
@@ -1259,7 +1139,6 @@ namespace PurrNet.Prediction.Tests.Editor
                     int bytes = frame.positionInBytes;
                     frame.ResetPositionAndMode(true);
                     Invoke(_receiver, "HandleFrameFromServer", tick, events.baselineTick,
-                        checkpointTick ?? (events.fullFrame ? tick : Get<ulong>(typeof(PredictionManager), _receiver, "_appliedCheckpointTick")),
                         inputAck ?? tick, events.fullFrame,
                         inputMargin.HasValue, (PackedInt)(inputMargin ?? 0),
                         inputSlackMs.HasValue, (PackedInt)(inputSlackMs ?? 0),

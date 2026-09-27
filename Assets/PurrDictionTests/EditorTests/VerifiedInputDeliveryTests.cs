@@ -41,7 +41,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 "the real input history already contains a speculative value for this tick");
             using var complete = f.Prepare(11, full);
             using var incomplete = f.WithoutInput(complete);
-            LogAssert.Expect(LogType.Error, new Regex("Cannot apply prediction (frame|checkpoint) 11:"));
+            LogAssert.Expect(LogType.Error, new Regex("Cannot apply (full )?prediction frame 11:"));
             f.Receive(incomplete);
             f.Drain();
             Assert.That(f.VerifiedTick, Is.EqualTo(10));
@@ -52,21 +52,19 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void LostOrdinaryInputFramesReplayEveryOriginalTickWithItsAuthoritativeInput()
+        public void FrameCoveringSeveralTicksReplaysEachWithItsAuthoritativeInput()
         {
             using var f = new Fixture();
             for (ulong tick = 11; tick <= 14; tick++)
                 f.clientInputs.Write(tick, new VerifiedInputProbeInput { value = 999 });
-            using var dropped11 = f.Prepare(11);
-            using var dropped12 = f.Prepare(12);
-            using var dropped13 = f.Prepare(13);
-            using var recovered = f.Prepare(14);
-            f.Receive(recovered);
+            // A server update rate below the tick rate sends one frame for ticks 11-14.
+            using var coalesced = f.Prepare(14);
+            f.Receive(coalesced);
             f.Drain();
             Assert.That(f.VerifiedTick, Is.EqualTo(14));
             Assert.That(f.AcknowledgedTick, Is.EqualTo(14));
             Assert.That(f.probe.verifiedInputs, Is.EqualTo(new[] { "11:110", "12:120", "13:130", "14:140" }),
-                "ordinary predicted identities must consume all skipped authoritative inputs on their original ticks");
+                "ordinary predicted identities must consume every covered authoritative input on its original tick");
             Assert.That(Get<bool>(f.client, "_historyResyncPending"), Is.False);
         }
 
@@ -138,7 +136,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.VerifiedTick, Is.EqualTo(10));
             Assert.That(f.AcknowledgedTick, Is.EqualTo(10));
             Assert.That(Get<bool>(f.client, "_historyResyncPending"), Is.True);
-            Assert.That(Get<bool>(f.client, "_requiresVerifiedInputCheckpoint"), Is.True);
+            Assert.That(Get<bool>(f.client, "_awaitingFullFrame"), Is.True);
             if (!sameBatch)
             {
                 f.Receive(following);
@@ -156,7 +154,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.probe.verifiedInputs, Is.EqualTo(expected));
             Assert.That(f.AcknowledgedTick, Is.EqualTo(16));
             Assert.That(Get<bool>(f.client, "_historyResyncPending"), Is.False);
-            Assert.That(Get<bool>(f.client, "_requiresVerifiedInputCheckpoint"), Is.False);
+            Assert.That(Get<bool>(f.client, "_awaitingFullFrame"), Is.False);
 
             using var resumed = f.Prepare(17);
             f.Receive(resumed);
@@ -168,12 +166,12 @@ namespace PurrNet.Prediction.Tests.Editor
 
         private sealed class Packet : IDisposable
         {
-            public readonly ulong tick, baseline, checkpoint;
+            public readonly ulong tick, baseline;
             public readonly bool full;
             public readonly BitPacker payload;
-            public Packet(ulong tick, ulong baseline, ulong checkpoint, bool full, BitPacker source)
+            public Packet(ulong tick, ulong baseline, bool full, BitPacker source)
             {
-                this.tick = tick; this.baseline = baseline; this.checkpoint = checkpoint; this.full = full;
+                this.tick = tick; this.baseline = baseline; this.full = full;
                 payload = Copy(source);
             }
             public void Dispose() => payload.Dispose();
@@ -206,7 +204,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(client, "_verifiedServerTick", 10UL);
                 Set(client, "_latestFrameServerTick", 10UL);
                 Set(client, "_ackedServerTick", 10UL);
-                Set(client, "_appliedCheckpointTick", 8UL);
+                Set(client, "_awaitingFullFrame", false);
                 Set(_server, "<cachedIsServer>k__BackingField", true);
                 var id = new PredictedComponentID(new PredictedObjectID(2933), 0);
                 probe = Create<VerifiedInputProbeIdentity>("Verified input receiver identity");
@@ -214,8 +212,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 _sender = Create<VerifiedInputProbeIdentity>("Verified input sender identity");
                 _serverInputs = Attach(_sender, _server, id);
                 _frames = Get<List<PlayerPacker>>(_server, "_clientFrames");
-                _frames.Add(new PlayerPacker { player = default, packer = BitPackerPool.Get(),
-                    maxUnreliableFrameBytes = 256000, lastFullFrameSentTick = 8 });
+                _frames.Add(new PlayerPacker { player = default, packer = BitPackerPool.Get(), lastFullFrameSentTick = 8, lastSentFrameTick = 8 });
                 Get<Dictionary<PlayerID, PredictionManager.InputQueue>>(_server, "_clientTicks")
                     .Add(default, new PredictionManager.InputQueue { ackedServerTick = 8 });
             }
@@ -245,9 +242,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(_frames[0].preparedFrameTick, Is.EqualTo(tick));
                 Invoke(_server, "WriteEventHandles");
                 frame = _frames[0];
-                var packet = new Packet(tick, frame.preparedBaselineTick,
-                    frame.fullFrame ? tick : frame.lastFullFrameSentTick, frame.fullFrame, frame.packer);
+                var packet = new Packet(tick, frame.preparedBaselineTick, frame.fullFrame, frame.packer);
                 if (frame.fullFrame) frame.BeginFullFrame(tick);
+                frame.lastSentFrameTick = tick;
                 frame.fullFrame = false;
                 frame.preparedFrameTick = 0;
                 _frames[0] = frame;
@@ -269,8 +266,6 @@ namespace PurrNet.Prediction.Tests.Editor
                     Packer<float>.Read(source);
                     Packer<uint>.Read(source);
                 }
-                else
-                    Packer<PackedUInt>.Read(source); // input window ticks
                 Assert.That(Packer<PackedUInt>.Read(source).value, Is.Zero);
                 Assert.That(Packer<bool>.Read(source), Is.False);
                 if (original.full)
@@ -392,7 +387,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 altered.WriteBitDataWithoutConsumingIt(
                     new BitData(source, source.positionInBits, end - source.positionInBits));
                 source.SetBitPosition(end);
-                return new Packet(original.tick, original.baseline, original.checkpoint, original.full, altered);
+                return new Packet(original.tick, original.baseline, original.full, altered);
             }
 
             public void Receive(Packet packet)
@@ -402,7 +397,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     int bytes = received.ToByteData().length;
                     received.ResetPositionAndMode(true);
-                    Invoke(client, "HandleFrameFromServer", packet.tick, packet.baseline, packet.checkpoint,
+                    Invoke(client, "HandleFrameFromServer", packet.tick, packet.baseline,
                         packet.tick, packet.full, false, default(PackedInt), false, default(PackedInt),
                         new BitPackerWithLength(bytes, received));
                 }

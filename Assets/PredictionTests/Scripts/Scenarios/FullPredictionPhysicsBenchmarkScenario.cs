@@ -25,7 +25,7 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
     private double _reconcileMs;
     private int _eventMask;
     private PredictionPolicy _policy = PredictionPolicy.FullPrediction;
-    private ulong _startReliable, _startFull, _startReceived, _startFullReceived;
+    private ulong _startFull, _startReceived, _startFullReceived;
     private ulong _startDeltaFrames, _startDeltaBytes, _startFullBytes;
     private string _metricsPath;
     private string _configurationError;
@@ -249,7 +249,6 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
         {
             _started = true;
             _report.actualStartTick = _world.localTick;
-            _startReliable = _world.reliableFramesSentTotal;
             _startFull = _world.fullFramesSentTotal;
             _startReceived = _world.framesReceivedTotal;
             _startFullReceived = _world.fullFramesReceivedTotal;
@@ -274,7 +273,6 @@ public sealed class FullPredictionPhysicsBenchmarkScenario : Scenario
         _report.contactPoints = FullPredictionBenchmarkBody.contactPoints;
         _report.bodyContacts = FullPredictionBenchmarkBody.bodyContactCallbacks;
         _report.groundingQueries = FullPredictionBenchmarkBody.groundingQueries;
-        _report.reliableFramesSent = _world.reliableFramesSentTotal - _startReliable;
         _report.fullFramesSent = _world.fullFramesSentTotal - _startFull;
         _report.framesReceived = _world.framesReceivedTotal - _startReceived;
         _report.fullFramesReceived = _world.fullFramesReceivedTotal - _startFullReceived;
@@ -459,7 +457,7 @@ public sealed class FullPredictionBenchmarkReport
     public ulong scheduledStartTick, scheduledEndTick, actualStartTick, actualEndTick, requestedValidationTick, validationTick;
     public ulong[] validationCandidates;
     public long contacts, contactPoints, bodyContacts, groundingQueries;
-    public ulong reliableFramesSent, fullFramesSent, framesReceived, fullFramesReceived;
+    public ulong fullFramesSent, framesReceived, fullFramesReceived;
     public ulong deltaFramesWritten, deltaFrameBytes, fullFrameBytes, maxAckLagTicks;
     public PredictionPerformanceSnapshot telemetry;
 }

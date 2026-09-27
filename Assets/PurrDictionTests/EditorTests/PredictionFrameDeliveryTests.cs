@@ -5,42 +5,6 @@ namespace PurrNet.Prediction.Tests.Editor
     public sealed class PredictionFrameDeliveryTests
     {
         [Test]
-        public void FullCheckpointRemainsPendingUntilItsTickIsAcknowledged()
-        {
-            var state = new ReliableFrameDeliveryState();
-
-            Assert.That(state.IsPending(0), Is.False);
-
-            state.MarkSent(42);
-
-            Assert.That(state.IsPending(0), Is.True);
-            Assert.That(state.IsPending(41), Is.True);
-            Assert.That(state.IsPending(42), Is.False);
-            Assert.That(state.IsPending(0), Is.False);
-        }
-
-        [Test]
-        public void ClearReleasesFullCheckpointCredit()
-        {
-            var state = new ReliableFrameDeliveryState();
-            state.MarkSent(42);
-
-            state.Clear();
-
-            Assert.That(state.IsPending(0), Is.False);
-        }
-
-        [Test]
-        public void UnreliableFragmentCeilingReservesFrameProtocolOverhead()
-        {
-            const int mtu = 1023;
-            const int expectedMaxFrameBytes = 256181;
-
-            Assert.That(PredictionManager.GetMaxUnreliableFrameBytes(mtu),
-                Is.EqualTo(expectedMaxFrameBytes));
-        }
-
-        [Test]
         public void InputRedundancyTracksTheInputMarginHighBand()
         {
             Assert.That(PredictionManager.InputRedundancyTicks(20), Is.EqualTo(5));

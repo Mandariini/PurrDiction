@@ -12,7 +12,7 @@ namespace PurrNet.Prediction.Tests.Editor
     public sealed class FullCheckpointDeliveryTests
     {
         [Test]
-        public void DuplicateObserverSyncPreservesPendingFullAckQueueAndSentVisibility()
+        public void DuplicateObserverSyncPreservesTheAckQueueAndSentVisibility()
         {
             const BindingFlags fields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
             var networkObject = new GameObject("Duplicate observer network");
@@ -35,8 +35,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     player = player, packer = BitPackerPool.Get(),
                     preparedFrameTick = 111, preparedBaselineTick = 100,
-                    preparedVisibilityTick = 111, sentVisibilityTick = 110,
-                    maxUnreliableFrameBytes = 1
+                    preparedVisibilityTick = 111, sentVisibilityTick = 110
                 };
                 frame.BeginFullFrame(100);
                 var frames = (List<PlayerPacker>)typeof(PredictionManager).GetField("_clientFrames", fields).GetValue(manager);
@@ -61,16 +60,12 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(input.lastConsumedTick, Is.EqualTo(85));
                 Assert.That(cooldowns[player], Is.EqualTo(7d));
                 var retained = frames[0];
-                Assert.That(retained.reliableFrame.pendingTick, Is.EqualTo(100));
-                Assert.That(retained.reliableSentAtLocalTick, Is.EqualTo(100));
                 Assert.That(retained.lastFullFrameSentTick, Is.EqualTo(100));
                 Assert.That(retained.sentVisibilityTick, Is.EqualTo(110));
                 Assert.That(retained.requiresFullCheckpoint, Is.True);
                 Assert.That(retained.preparedFrameTick, Is.Zero);
                 Assert.That(retained.preparedBaselineTick, Is.Zero);
                 Assert.That(retained.preparedVisibilityTick, Is.Zero);
-                Assert.That(retained.maxUnreliableFrameBytes,
-                    Is.EqualTo(PredictionManager.GetMaxUnreliableFrameBytes(500)));
                 Assert.That(retained.packer, Is.SameAs(frame.packer));
 
             }
@@ -90,99 +85,21 @@ namespace PurrNet.Prediction.Tests.Editor
             }
         }
 
-        [TestCase(100UL)]
-        [TestCase(125UL)]
-        public void CheckpointOrFencedContinuationAckReleasesOneFullSlot(ulong ack)
-        {
-            var frame = new PlayerPacker();
-            frame.BeginFullFrame(100);
-
-            Assert.That(frame.reliableFrame.IsPending(ack), Is.False);
-            frame.ClearRecoveryFrame();
-
-            Assert.That(frame.lastFullFrameSentTick, Is.EqualTo(100),
-                "releasing the full slot must preserve the epoch of subsequent deltas");
-            frame.BeginFullFrame(126);
-            Assert.That(frame.reliableFrame.pendingTick, Is.EqualTo(126));
-            Assert.That(frame.lastFullFrameSentTick, Is.EqualTo(126));
-        }
-
         [Test]
-        public void PendingFullCannotBeOverwrittenByAnotherFull()
+        public void BeginningAFullRecordsItAndSatisfiesTheRequest()
         {
-            var frame = new PlayerPacker();
+            var frame = new PlayerPacker { requiresFullCheckpoint = true };
             frame.BeginFullFrame(100);
 
-            Assert.Throws<InvalidOperationException>(() => frame.BeginFullFrame(120));
-
-            Assert.That(frame.reliableFrame.pendingTick, Is.EqualTo(100));
             Assert.That(frame.lastFullFrameSentTick, Is.EqualTo(100));
-            Assert.That(frame.reliableSentAtLocalTick, Is.EqualTo(100));
-        }
-
-        [Test]
-        public void DuplicateOldAckCannotReleaseTheNextFullCheckpoint()
-        {
-            var frame = new PlayerPacker();
-            frame.BeginFullFrame(100);
-            Assert.That(frame.reliableFrame.IsPending(100), Is.False);
-            frame.ClearRecoveryFrame();
-            frame.BeginFullFrame(120);
-
-            Assert.That(frame.reliableFrame.IsPending(100), Is.True);
-            Assert.That(frame.reliableFrame.IsPending(119), Is.True);
-            Assert.That(frame.reliableFrame.pendingTick, Is.EqualTo(120));
-            Assert.That(frame.reliableFrame.IsPending(120), Is.False);
-            Assert.That(frame.reliableFrame.IsPending(120), Is.False);
-        }
-
-        [Test]
-        public void UnchangedAckNeverExpiresThePendingFull()
-        {
-            var frame = new PlayerPacker();
-            frame.BeginFullFrame(100);
-
-            for (var i = 0; i < 10000; i++)
-                Assert.That(frame.reliableFrame.IsPending(99), Is.True);
-
-            Assert.That(frame.reliableFrame.pendingTick, Is.EqualTo(100),
-                "elapsed polling cannot enqueue additional full snapshots behind one reliable RPC");
-        }
-
-        [Test]
-        public void ClearingDeliveredFullReleasesPendingTickAndRetainsItsEpoch()
-        {
-            var frame = new PlayerPacker();
-            frame.BeginFullFrame(100);
-            Assert.That(frame.reliableFrame.IsPending(100), Is.False);
-
-            frame.ClearRecoveryFrame();
-
-            Assert.That(frame.reliableFrame.pendingTick, Is.Zero);
-            Assert.That(frame.reliableSentAtLocalTick, Is.Zero);
-            Assert.That(frame.lastFullFrameSentTick, Is.EqualTo(100));
-        }
-
-        [Test]
-        public void AcknowledgingPreviousFullPreservesCoalescedRequestUntilItsReplacementIsSent()
-        {
-            var frame = new PlayerPacker();
-            frame.BeginFullFrame(100);
-            frame.requiresFullCheckpoint = true;
-            frame.preparedBaselineTick = 100;
-            Assert.That(frame.reliableFrame.IsPending(100), Is.False);
-
-            frame.ClearRecoveryFrame();
-
-            Assert.That(frame.requiresFullCheckpoint, Is.True);
-            Assert.That(frame.preparedBaselineTick, Is.EqualTo(100));
-            frame.BeginFullFrame(120);
             Assert.That(frame.requiresFullCheckpoint, Is.False);
-            Assert.That(frame.lastFullFrameSentTick, Is.EqualTo(120));
+            frame.BeginFullFrame(120);
+            Assert.That(frame.lastFullFrameSentTick, Is.EqualTo(120),
+                "an ordered stream can carry any number of fulls; none waits for another's delivery");
         }
 
         [Test]
-        public void PreparingContinuationReusesWorkingPackerWithoutChangingCheckpointMetadata()
+        public void PreparingTheNextFrameReusesTheWorkingPacker()
         {
             var frame = new PlayerPacker { packer = BitPackerPool.Get() };
             try
@@ -191,16 +108,13 @@ namespace PurrNet.Prediction.Tests.Editor
                 frame.BeginFullFrame(100);
                 var originalPacker = frame.packer;
 
-                // The RPC has serialized the full. Its working buffer is immediately
-                // available for a fresh continuation while the checkpoint stays pending.
+                // The RPC has serialized the full; its working buffer is immediately free for the next frame.
                 frame.packer.ResetPositionAndMode(false);
                 var continuation = new byte[] { 0xC1, 0x02 };
                 frame.packer.WriteBytes(continuation);
 
                 Assert.That(frame.packer, Is.SameAs(originalPacker));
                 Assert.That(frame.packer.ToByteData().span.ToArray(), Is.EqualTo(continuation));
-                Assert.That(frame.reliableFrame.IsPending(99), Is.True);
-                Assert.That(frame.reliableSentAtLocalTick, Is.EqualTo(100));
                 Assert.That(frame.lastFullFrameSentTick, Is.EqualTo(100));
             }
             finally
@@ -210,31 +124,22 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void DisposeReleasesPackerCreditAndEpoch()
+        public void DisposeReleasesPackerAndStreamPosition()
         {
             var frame = new PlayerPacker { packer = BitPackerPool.Get() };
             frame.BeginFullFrame(100);
+            frame.lastSentFrameTick = 104;
             frame.requiresFullCheckpoint = true;
             frame.preparedBaselineTick = 100;
 
             frame.Dispose();
 
             Assert.That(frame.packer, Is.Null);
-            Assert.That(frame.reliableFrame.pendingTick, Is.Zero);
             Assert.That(frame.lastFullFrameSentTick, Is.Zero);
+            Assert.That(frame.lastSentFrameTick, Is.Zero);
             Assert.That(frame.requiresFullCheckpoint, Is.False);
             Assert.That(frame.preparedBaselineTick, Is.Zero);
             Assert.DoesNotThrow(() => frame.Dispose());
-        }
-
-        [Test]
-        public void ZeroTickCannotBeginAFullCheckpoint()
-        {
-            var frame = new PlayerPacker();
-
-            Assert.Throws<ArgumentOutOfRangeException>(() => frame.BeginFullFrame(0));
-            Assert.That(frame.reliableFrame.pendingTick, Is.Zero);
-            Assert.That(frame.lastFullFrameSentTick, Is.Zero);
         }
     }
 }

@@ -52,13 +52,8 @@ public sealed class ReliablePipelineScenario : Scenario
         public ulong sent;
         public ulong preparedFrame;
         public ulong preparedBaseline;
-        public ulong pendingTick;
-        public ulong appliedCheckpoint;
-        public int stagedFrames;
-        public int stagedBytes;
-        public ulong waitingCheckpoint;
-        public ulong repairAfterTick;
-        public ulong rejectedCheckpoint;
+        public ulong lastSent;
+        public bool awaitingFull;
         public ulong lastFull;
         public ulong received;
         public ulong fullReceived;
@@ -71,14 +66,13 @@ public sealed class ReliablePipelineScenario : Scenario
         public ulong tick;
         public ulong baseline;
         public ulong previousVerified;
-        public ulong checkpoint;
         public bool full;
     }
 
     [Serializable]
     public sealed class ReportData
     {
-        public string fixtureVersion = "full-checkpoint-pipeline-v1";
+        public string fixtureVersion = "ordered-frame-pipeline-v1";
         public string role;
         public string player;
         public string fault;
@@ -219,18 +213,13 @@ public sealed class ReliablePipelineScenario : Scenario
                         ack = ReadAck(player), sent = U64(frame, "sentVisibilityTick"),
                         preparedFrame = U64(frame, "preparedFrameTick"),
                         preparedBaseline = U64(frame, "preparedBaselineTick"),
-                        pendingTick = U64(Get(frame, "reliableFrame"), "pendingTick"),
+                        lastSent = U64(frame, "lastSentFrameTick"),
                         lastFull = U64(frame, "lastFullFrameSentTick") });
                 }
             }
             else Add(new Sample { elapsed = Elapsed, tick = world.localTick, phase = _phase, player = _report.player,
                 ack = U64(world, "_ackedServerTick"), verified = U64(world, "_verifiedServerTick"),
-                appliedCheckpoint = U64(world, "_appliedCheckpointTick"),
-                stagedFrames = Convert.ToInt32(Get(world, "stagedCheckpointFrames")),
-                stagedBytes = Convert.ToInt32(Get(world, "stagedCheckpointBytes")),
-                waitingCheckpoint = U64(world, "_waitingCheckpointTick"),
-                repairAfterTick = U64(world, "_checkpointRepairAfterTick"),
-                rejectedCheckpoint = U64(world, "_rejectedCheckpointTick"),
+                awaitingFull = (bool)Get(world, "_awaitingFullFrame"),
                 received = world.framesReceivedTotal, fullReceived = world.fullFramesReceivedTotal });
         }
         catch (Exception exception) { _sampleError = exception.Message; }
@@ -247,7 +236,6 @@ public sealed class ReliablePipelineScenario : Scenario
                 if (_report.arrivals.Count >= 4096) { _report.arrivalsOmitted++; continue; }
                 _report.arrivals.Add(new Arrival { elapsed = Elapsed, tick = U64(frame, "serverTick"),
                     baseline = U64(frame, "baselineTick"), full = (bool)Get(frame, "fullFrame"),
-                    checkpoint = U64(frame, "checkpointTick"),
                     previousVerified = U64(world, "_verifiedServerTick") });
             }
         }
@@ -263,9 +251,6 @@ public sealed class ReliablePipelineScenario : Scenario
     {
         if (_sampleError != null) throw new InvalidOperationException("Sampling failed: " + _sampleError);
         if (_report.samplesOmitted != 0 || _report.arrivalsOmitted != 0) throw new InvalidOperationException("Evidence cap reached.");
-        foreach (var sample in _report.samples)
-            if (sample.stagedFrames < 0 || sample.stagedFrames > 1 || sample.stagedBytes < 0 || sample.stagedBytes > 1024 * 1024)
-                throw new InvalidOperationException("Checkpoint staging exceeded its one-packet / 1MiB bound.");
         var players = new HashSet<string>();
         foreach (var sample in _report.samples) if (sample.phase == "tail") players.Add(sample.player);
         if (players.Count != (_ctx.isServer ? _ctx.externalClientCount : 1)) throw new InvalidOperationException("Tail peer sample inventory differs.");
@@ -282,8 +267,7 @@ public sealed class ReliablePipelineScenario : Scenario
                 var current = samples[i];
                 if (current.tick != previous.tick + 1) throw new InvalidOperationException($"Tick sample gap for {player}.");
                 if (current.ack < previous.ack || current.verified < previous.verified) throw new InvalidOperationException($"ACK/verified regression for {player}.");
-                if (_ctx.isServer && current.pendingTick > 0 && current.lastFull != current.pendingTick)
-                    throw new InvalidOperationException($"Pending checkpoint does not match the advertised full epoch for {player}.");
+                if (_ctx.isServer && current.lastSent < previous.lastSent) throw new InvalidOperationException($"Sent frame regression for {player}.");
                 if (current.sent > previous.sent) fresh++;
             }
             if (last.ack - first.ack < 0.85 * (last.tick - first.tick)) throw new InvalidOperationException($"ACK cadence did not recover for {player}.");
@@ -294,10 +278,15 @@ public sealed class ReliablePipelineScenario : Scenario
                 double expectedShare = updateRate > 0 && updateRate < _report.tickRate ? (double)updateRate / _report.tickRate : 1.0;
                 if (fresh < 0.9 * expectedShare * (samples.Count - 1)) throw new InvalidOperationException($"Fresh snapshot cadence {fresh}/{samples.Count - 1} for {player} (update rate {updateRate}, tick rate {_report.tickRate}).");
                 if (last.lastFull != first.lastFull) throw new InvalidOperationException($"Full snapshot fallback during healthy tail for {player}.");
-                if (_report.fault == "recovery" && !_report.samples.Exists(s => s.player == player && s.pendingTick > s.ack &&
-                    s.lastFull == s.pendingTick && s.sent > s.pendingTick)) throw new InvalidOperationException($"No fresh delta sent past an outstanding reliable full checkpoint for {player}.");
+                // Deltas follow a full on the ordered stream without waiting for its acknowledgement.
+                if (_report.fault == "recovery" && !_report.samples.Exists(s => s.player == player && s.lastFull > s.ack &&
+                    s.lastSent > s.lastFull)) throw new InvalidOperationException($"No delta sent past an unacknowledged full frame for {player}.");
             }
-            else if (last.fullReceived != first.fullReceived) throw new InvalidOperationException("Full snapshot received during healthy tail.");
+            else
+            {
+                if (last.fullReceived != first.fullReceived) throw new InvalidOperationException("Full snapshot received during healthy tail.");
+                if (samples.Exists(s => s.awaitingFull)) throw new InvalidOperationException("Client waited for a full frame during the healthy tail.");
+            }
         }
     }
 

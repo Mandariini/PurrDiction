@@ -180,7 +180,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(typeof(NetworkIdentity), manager, "<networkManager>k__BackingField", _network);
                 Set(typeof(NetworkIdentity), manager, "_isSpawnedClient", true);
                 Set(typeof(PredictionManager), manager, "_verifiedServerTick", 10UL);
-                Set(typeof(PredictionManager), manager, "_appliedCheckpointTick", 8UL);
+                Set(typeof(PredictionManager), manager, "_awaitingFullFrame", false);
                 Set(typeof(PredictionManager), manager, "_latestFrameServerTick", 10UL);
 
                 var id = new PredictedComponentID(new PredictedObjectID(701), 0);
@@ -229,7 +229,6 @@ namespace PurrNet.Prediction.Tests.Editor
                 var frame = BitPackerPool.Get();
                 try
                 {
-                    Packer<PackedUInt>.Write(frame, checked((uint)(tick - 10))); // input window ticks
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // hierarchy record
                     Packer<PackedUInt>.Write(frame, checked((uint)(tick - 10)));
@@ -245,7 +244,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     AddressedPredictionRecords.WriteSectionCount(0, frame); // event handlers
                     int length = frame.positionInBytes;
                     frame.ResetPositionAndMode(true);
-                    Invoke(manager, "HandleFrameFromServer", tick, 10UL, 8UL, tick, false,
+                    Invoke(manager, "HandleFrameFromServer", tick, 10UL, tick, false,
                         false, default(PackedInt), false, default(PackedInt),
                         new BitPackerWithLength(length, frame));
                 }

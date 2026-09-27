@@ -500,29 +500,21 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void BoundedTranscriptMayStartAfterTheStateBaseline()
+        public void TranscriptMustCoverEveryTickAfterTheStateBaseline()
         {
-            using var sender = new InputTranscriptFixture("bounded sender");
-            using var receiver = new InputTranscriptFixture("bounded receiver");
+            using var sender = new InputTranscriptFixture("coverage sender");
+            using var receiver = new InputTranscriptFixture("coverage receiver");
             var sent = sender.AddInput(false, 670);
-            var received = receiver.AddInput(false, 670);
+            receiver.AddInput(false, 670);
             for (ulong tick = 11; tick <= 20; tick++)
             {
                 sent.Write(tick, new TrackedInput((int)tick));
                 sender.Capture(tick);
             }
 
-            // PrepareFrame passes the capped input baseline while the state baseline stays acked.
-            using var bounded = sender.Write(20, 16);
-            receiver.Parse(bounded, 20, 10);
-            bounded.ResetPositionAndMode(true);
-            Assert.That(ReadPackedUInt(bounded), Is.EqualTo(4), "only the newest four ticks are repeated");
-            for (ulong tick = 17; tick <= 20; tick++)
-                receiver.Apply(tick);
-            for (ulong tick = 17; tick <= 20; tick++)
-                AssertInput(received, tick, (int)tick);
-            Assert.Throws<MissingPredictionBaselineException>(() => receiver.Apply(16),
-                "ticks before the bounded window were never delivered");
+            using var shortened = sender.Write(20, 16);
+            Assert.Throws<MissingPredictionBaselineException>(() => receiver.Parse(shortened, 20, 10),
+                "gap replay needs an authoritative input for every tick after the state baseline");
 
             using var overlong = sender.Write(20, 10);
             Assert.Throws<MissingPredictionBaselineException>(() => receiver.Parse(overlong, 20, 16),
@@ -629,6 +621,52 @@ namespace PurrNet.Prediction.Tests.Editor
             using var frame = sender.Write(13, 10, player: owner);
             Assert.DoesNotThrow(() => receiver.Parse(frame, 13, 10),
                 "restored inputs must not depend on the owning identity still existing");
+        }
+
+        [Test]
+        public void RestoredInputsSurviveUploadsRunningAheadByThePredictionLead()
+        {
+            var owner = new PlayerID(7, false);
+            using var sender = new InputTranscriptFixture("lead sender");
+            using var receiver = new InputTranscriptFixture("lead receiver");
+            sender.AddInput(false, 684);
+            var serverIdentity = sender.lastIdentity;
+            receiver.AddInput(false, 684);
+            SetOwner(serverIdentity, owner);
+            SetOwner(receiver.lastIdentity, owner);
+            for (ulong tick = 11; tick <= 13; tick++)
+            {
+                UploadAndPrepare(serverIdentity, owner, tick, (int)tick);
+                sender.Capture(tick);
+            }
+
+            // The client predicts up to the maximum lead past its verified tick, so it has
+            // uploaded well beyond the ticks the next frame repeats.
+            receiver.SetVerifiedTick(10);
+            ulong window = receiver.manager.verifiedHistoryWindowTicks;
+            for (ulong tick = 11; tick <= 13 + window + 30; tick++)
+                receiver.RecordUpload(tick, 684, (int)tick);
+
+            using var frame = sender.Write(13, 10, player: owner);
+            Assert.DoesNotThrow(() => receiver.Parse(frame, 13, 10),
+                "an upload the next applicable frame can still repeat must not be pruned by the prediction lead");
+        }
+
+        [Test]
+        public void UploadsBehindTheVerifiedHistoryWindowAreReleased()
+        {
+            using var receiver = new InputTranscriptFixture("prune receiver");
+            receiver.AddInput(false, 685);
+            ulong window = receiver.manager.verifiedHistoryWindowTicks;
+            for (ulong tick = 11; tick <= 20; tick++)
+                receiver.RecordUpload(tick, 685, (int)tick);
+
+            receiver.SetVerifiedTick(15 + window);
+            receiver.RecordUpload(21, 685, 21);
+
+            var held = receiver.UploadedTicks();
+            Assert.That(held, Is.EquivalentTo(new ulong[] { 16, 17, 18, 19, 20, 21 }),
+                "no applicable frame can repeat a tick at or before the verified tick minus the window");
         }
 
         [Test]
@@ -1045,6 +1083,18 @@ namespace PurrNet.Prediction.Tests.Editor
                 new() { id = new PredictedComponentID(new PredictedObjectID(objectId), 0), bitOrigin = 0, bitLength = block.positionInBits }
             };
             manager.RecordUploadedInputs(tick, block, spans);
+        }
+
+        internal void SetVerifiedTick(ulong tick) => Set(typeof(PredictionManager), manager, "_verifiedServerTick", tick);
+
+        internal List<ulong> UploadedTicks()
+        {
+            var ledger = (System.Collections.IDictionary)typeof(PredictionManager)
+                .GetField("_uploadedInputs", Fields).GetValue(manager);
+            var ticks = new List<ulong>();
+            foreach (var key in ledger.Keys)
+                ticks.Add((ulong)key);
+            return ticks;
         }
 
         internal void Despawn(PredictedIdentity identity)

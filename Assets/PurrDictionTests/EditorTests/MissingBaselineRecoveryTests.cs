@@ -29,7 +29,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void MissingBaselineRetriesLostRequestThenFullRecoverySurvivesLostAck()
+        public void MissingBaselineRetriesLostRequestThenAFullRecoversAndCoversLateRequests()
         {
             using var f = new Fixture();
             f.RemoveClientBaseline();
@@ -52,17 +52,8 @@ namespace PurrNet.Prediction.Tests.Editor
             f.DeliverRequest();
             Assert.That(f.ServerFrame.requiresFullCheckpoint, Is.True,
                 "the first explicit baseline fault must not be blocked by optional desync-healing cooldown");
-            Assert.That(f.ServerFrame.reliableFrame.IsPending(f.ServerAck), Is.False);
             Assert.That(f.PrepareAndQueue(12, 120), Is.True,
-                "the missing baseline must request a full checkpoint on the next server tick");
-
-            // Retry while that full snapshot is in flight. Let the request cooldown expire
-            // explicitly so retained payload identity, rather than the timer, proves coalescing.
-            f.ExpireServerRequestCooldown();
-            f.DeliverRequest();
-            Assert.That(f.ServerFrame.reliableSentAtLocalTick, Is.EqualTo(12));
-            Assert.That(f.ServerFrame.fullFrame, Is.False,
-                "the already-sent full payload is retained instead of preparing another replacement");
+                "the missing baseline must request a full frame on the next server tick");
 
             f.Drain();
             Assert.That(f.Pending, Is.False);
@@ -71,27 +62,15 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.VerifiedValue(12), Is.EqualTo(120));
             Assert.That(f.TakeRequest(200), Is.False);
 
-            // Drop ACK 12. A duplicate reliable full remains harmless; meanwhile fresh
-            // unreliable deltas continue against its checkpoint instead of waiting for ACK.
-            Assert.That(f.ServerAck, Is.EqualTo(8));
-            f.QueueRetainedCheckpoint();
-            f.Drain();
-            Assert.That(f.ClientAck, Is.EqualTo(12));
-            Assert.That(f.Pending, Is.False);
+            // A request that was still in flight when the full was sent is already covered by it.
+            f.ExpireServerRequestCooldown();
+            f.DeliverRequest(11);
+            Assert.That(f.ServerFrame.requiresFullCheckpoint, Is.False,
+                "the full at 12 follows the failed tick on the ordered stream");
             Assert.That(f.PrepareAndQueue(13, 130), Is.False);
             f.Drain();
             Assert.That(f.VerifiedValue(13), Is.EqualTo(130));
             Assert.That(f.ClientAck, Is.EqualTo(13));
-            Assert.That(f.ServerFrame.reliableFrame.pendingTick, Is.EqualTo(12));
-            f.DeliverAck();
-            Assert.That(f.ServerAck, Is.EqualTo(13));
-            f.DeliverRequest(11); // delayed request after the covering full was ACKed
-            Assert.That(f.ServerFrame.fullFrame, Is.False,
-                "a stale request must not replace a successfully acknowledged covering full snapshot");
-            Assert.That(f.PrepareAndQueue(14, 140), Is.False);
-            f.Drain();
-            Assert.That(f.VerifiedValue(14), Is.EqualTo(140));
-            Assert.That(f.ClientAck, Is.EqualTo(14));
             Assert.That(f.Pending, Is.False);
         }
 
@@ -247,15 +226,20 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             using var f = new Fixture();
             ulong failedTick = full ? 12UL : 11UL;
-            if (full) f.PrepareAndQueue(11, 110, holdDelta: true);
+            if (full)
+            {
+                f.PrepareAndQueue(11, 110);
+                f.Drain();
+            }
+            ulong verifiedBefore = f.ClientVerifiedTick;
             f.EnableCallbackFailure(phase, failedTick);
             f.PrepareAndQueue(failedTick, (int)failedTick * 10, forceFull: full);
             f.Drain();
 
             f.AssertInjectedCallbackLog();
             Assert.That(f.clientProbe.callbackFailures, Is.EqualTo(1), "the intended callback must actually throw");
-            Assert.That(f.ClientVerifiedTick, Is.EqualTo(10), "a partially simulated frame is not verified");
-            Assert.That(f.ClientAck, Is.EqualTo(10), "a partially simulated frame must not be ACKed");
+            Assert.That(f.ClientVerifiedTick, Is.EqualTo(verifiedBefore), "a partially simulated frame is not verified");
+            Assert.That(f.ClientAck, Is.EqualTo(verifiedBefore), "a partially simulated frame must not be ACKed");
             Assert.That(f.Pending, Is.True);
             Assert.That(f.RequiredTick, Is.EqualTo(failedTick));
             f.AssertCallbackPassStoppedAt(failedTick, phase);
@@ -263,21 +247,12 @@ namespace PurrNet.Prediction.Tests.Editor
 
             f.clientProbe.callbackFailurePhase = null;
             int delivered = f.clientProbe.callbackObservations.Count;
-            if (full)
-            {
-                // Both a retransmitted failed checkpoint and a delayed delta from the
-                // previous accepted epoch must remain fenced after partial callbacks.
-                f.QueueRetainedCheckpoint();
-                f.Drain();
-                f.QueueDelayedDelta();
-                f.Drain();
-            }
             f.PrepareAndQueue(failedTick + 1, ((int)failedTick + 1) * 10);
             f.Drain();
             Assert.That(f.clientProbe.callbackObservations.Count, Is.EqualTo(delivered),
-                "rejected/old-epoch continuations must not repeat already delivered callbacks");
-            Assert.That(f.ClientVerifiedTick, Is.EqualTo(10));
-            Assert.That(f.ClientAck, Is.EqualTo(10));
+                "a delta continuing the failed frame must not repeat already delivered callbacks");
+            Assert.That(f.ClientVerifiedTick, Is.EqualTo(verifiedBefore));
+            Assert.That(f.ClientAck, Is.EqualTo(verifiedBefore));
 
             f.DeliverRequest();
             ulong recoveryTick = failedTick + 2;
@@ -437,10 +412,6 @@ namespace PurrNet.Prediction.Tests.Editor
             private readonly PredictionManager.InputQueue _input;
             private readonly double _previousCadence;
             private ulong _lastPreparedTick = 8;
-            private BitPacker _retainedCheckpointPayload;
-            private ulong _retainedCheckpointTick, _retainedCheckpointBaseline;
-            private BitPacker _delayedDeltaPayload;
-            private ulong _delayedDeltaTick, _delayedDeltaBaseline, _delayedDeltaCheckpoint;
             private readonly PlayerID _player = default;
             public readonly PredictionManager client;
             public readonly RecoveryProbeIdentity clientProbe;
@@ -467,7 +438,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(client, "_verifiedServerTick", 10UL);
                 Set(client, "_latestFrameServerTick", 10UL);
                 Set(client, "_ackedServerTick", 10UL);
-                Set(client, "_appliedCheckpointTick", 8UL);
+                Set(client, "_awaitingFullFrame", false);
                 Set(_server, "<cachedIsServer>k__BackingField", true);
                 var id = new PredictedComponentID(new PredictedObjectID(2711), 0);
                 clientProbe = _clientProbeObject.AddComponent<RecoveryProbeIdentity>();
@@ -476,7 +447,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 _serverVerified = Attach(_serverProbe, _server, id);
                 _frames = Get<List<PlayerPacker>>(_server, "_clientFrames");
                 _frames.Add(new PlayerPacker { player = _player, packer = BitPackerPool.Get(),
-                    lastFullFrameSentTick = 8, maxUnreliableFrameBytes = 256000 });
+                    lastFullFrameSentTick = 8, lastSentFrameTick = 8 });
                 _input = new PredictionManager.InputQueue { ackedServerTick = 8 };
                 Get<Dictionary<PlayerID, PredictionManager.InputQueue>>(_server, "_clientTicks").Add(_player, _input);
             }
@@ -490,8 +461,7 @@ namespace PurrNet.Prediction.Tests.Editor
             public void MarkPending(ulong tick) => Invoke(client, "MarkHistoryResyncNeeded", tick);
             public bool TakeRequest(double now) => (bool)Invoke(client, "TryTakeHistoryResyncRequest", now);
             public void DeliverRequest(ulong? failedTick = null) =>
-                Invoke(_server, "HandleHistoryResyncRequest", _player, failedTick ?? RequiredTick,
-                    Get<ulong>(client, "_appliedCheckpointTick"), Get<ulong>(client, "_rejectedCheckpointTick"));
+                Invoke(_server, "HandleHistoryResyncRequest", _player, failedTick ?? RequiredTick);
             public void Drain() => Invoke(client, "ProcessQueuedFrames", true);
             public void RemoveClientBaseline() => _clientVerified.ClearPast(10);
             public void RemoveServerBaseline() => _serverVerified.ClearPast(10);
@@ -621,57 +591,24 @@ namespace PurrNet.Prediction.Tests.Editor
                 return true;
             }
 
-            public bool PrepareAndQueue(ulong tick, int value, bool forceFull = false, bool holdDelta = false)
+            public bool PrepareAndQueue(ulong tick, int value, bool forceFull = false)
             {
-                Assert.That(TryPrepare(tick, value, forceFull), Is.True, "server unexpectedly suppressed a fresh frame");
+                Assert.That(TryPrepare(tick, value, forceFull), Is.True, "server unexpectedly withheld a fresh frame");
                 var frame = _frames[0];
                 bool full = frame.fullFrame;
                 ulong baseline = frame.preparedBaselineTick;
-                if (full)
-                {
-                    // The transport owns serialized checkpoint bytes independently of the
-                    // sender's working packer, which is reused for subsequent deltas.
-                    _retainedCheckpointPayload?.Dispose();
-                    _retainedCheckpointPayload = BitPackerPool.Get();
-                    _retainedCheckpointPayload.WriteBitDataWithoutConsumingIt(
-                        new BitData(frame.packer, 0, frame.packer.positionInBits));
-                    _retainedCheckpointTick = tick;
-                    _retainedCheckpointBaseline = baseline;
-                }
-                if (holdDelta)
-                {
-                    Assert.That(full, Is.False, "only an actual previous-epoch delta is delayed by this fixture");
-                    _delayedDeltaPayload?.Dispose();
-                    _delayedDeltaPayload = BitPackerPool.Get();
-                    _delayedDeltaPayload.WriteBitDataWithoutConsumingIt(new BitData(frame.packer, 0, frame.packer.positionInBits));
-                    _delayedDeltaTick = tick;
-                    _delayedDeltaBaseline = baseline;
-                    _delayedDeltaCheckpoint = frame.lastFullFrameSentTick;
-                }
-                else QueuePacket(tick, baseline, full ? tick : frame.lastFullFrameSentTick, full, frame.packer);
+                QueuePacket(tick, baseline, full, frame.packer);
                 // Mirror only the transport-success bookkeeping from SendPreparedServerFrame;
                 // no hand-built state records or direct receiver state writes are used.
                 if (full) frame.BeginFullFrame(tick);
+                frame.lastSentFrameTick = tick;
                 frame.fullFrame = false;
                 frame.preparedFrameTick = 0;
                 _frames[0] = frame;
                 return full;
             }
 
-            public void QueueRetainedCheckpoint()
-            {
-                Assert.That(_retainedCheckpointPayload, Is.Not.Null);
-                QueuePacket(_retainedCheckpointTick, _retainedCheckpointBaseline,
-                    _retainedCheckpointTick, true, _retainedCheckpointPayload);
-            }
-
-            public void QueueDelayedDelta()
-            {
-                Assert.That(_delayedDeltaPayload, Is.Not.Null);
-                QueuePacket(_delayedDeltaTick, _delayedDeltaBaseline, _delayedDeltaCheckpoint, false, _delayedDeltaPayload);
-            }
-
-            private void QueuePacket(ulong tick, ulong baseline, ulong checkpoint, bool full, BitPacker source)
+            private void QueuePacket(ulong tick, ulong baseline, bool full, BitPacker source)
             {
                 var received = BitPackerPool.Get();
                 try
@@ -681,7 +618,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     received.WriteBits(source, sourceBytes * 8);
                     int bytes = received.positionInBytes;
                     received.ResetPositionAndMode(true);
-                    Invoke(client, "HandleFrameFromServer", tick, baseline, checkpoint, tick, full,
+                    Invoke(client, "HandleFrameFromServer", tick, baseline, tick, full,
                         false, default(PackedInt), false, default(PackedInt), new BitPackerWithLength(bytes, received));
                 }
                 catch { received.Dispose(); throw; }
@@ -711,8 +648,6 @@ namespace PurrNet.Prediction.Tests.Editor
                     Application.logMessageReceived -= CaptureCallbackLog;
                     LogAssert.ignoreFailingMessages = _previousIgnoreFailingMessages;
                 }
-                _retainedCheckpointPayload?.Dispose();
-                _delayedDeltaPayload?.Dispose();
                 PredictionPerformanceTelemetry.reconcileIntervalSeconds = _previousCadence;
                 var queue = Get<object>(client, "_deltas");
                 foreach (IDisposable frame in (IEnumerable)queue) frame.Dispose();
@@ -745,7 +680,6 @@ namespace PurrNet.Prediction.Tests.Editor
                     Packer<float>.Read(packer);
                     Packer<uint>.Read(packer);
                 }
-                uint windowTicks = frame.fullFrame ? 0 : Packer<PackedUInt>.Read(packer).value;
                 Assert.That(Packer<PackedUInt>.Read(packer).value, Is.Zero);
                 Assert.That(Packer<bool>.Read(packer), Is.False);
                 LastInputTranscriptTicks = 0;
@@ -755,7 +689,6 @@ namespace PurrNet.Prediction.Tests.Editor
                     LastInputTranscriptTicks = Packer<PackedUInt>.Read(packer).value;
                     Assert.That(LastInputTranscriptTicks,
                         Is.EqualTo(frame.preparedFrameTick - frame.preparedBaselineTick));
-                    Assert.That(windowTicks, Is.EqualTo(LastInputTranscriptTicks), "the frame head advertises the transcript window");
                     // Inspect with server-side staging so the receiver's missing baseline remains
                     // untouched. The counter does not apply inputs or retain a verified transcript.
                     packer.SetBitPosition(transcriptStart);

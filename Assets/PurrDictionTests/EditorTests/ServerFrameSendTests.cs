@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using System.Text.RegularExpressions;
 using NUnit.Framework;
 using PurrNet.Modules;
 using PurrNet.Packing;
@@ -40,12 +39,11 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.sent[0].tick, Is.EqualTo(14));
             Assert.That(f.sent[0].baseline, Is.EqualTo(8));
             Assert.That(f.sent[0].marker, Is.EqualTo(1400));
-            Assert.That(f.sent[0].channel, Is.EqualTo(Channel.Unreliable));
-            Assert.That(f.sent[0].immediate, Is.True);
+            Assert.That(f.sent[0].channel, Is.EqualTo(Channel.ReliableOrdered));
+            Assert.That(f.sent[0].immediate, Is.False);
             Assert.That(f.Frame.sentVisibilityTick, Is.EqualTo(14));
             Assert.That(f.Frame.frameSendSchedule.lastSentTick, Is.EqualTo(14));
             Assert.That(f.Frame.preparedFrameTick, Is.Zero);
-            Assert.That(f.manager.freshFramesSentTotal, Is.EqualTo(1));
 
             f.Flush();
             Assert.That(f.sent, Has.Count.EqualTo(1));
@@ -98,7 +96,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void ReliableCheckpointBypassesCadenceAndFollowingDeltaKeepsItsCheckpointEpoch()
+        public void FullFrameBypassesCadenceAndTheNextDeltaContinuesIt()
         {
             using var f = new Fixture();
             f.manager.serverUpdateRate = 30;
@@ -108,31 +106,28 @@ namespace PurrNet.Prediction.Tests.Editor
             f.Flush();
 
             f.Prepare(11, 8, 1100, full: true);
-            LogAssert.Expect(LogType.Error, new Regex("Trying to send RPC `SendFrameToRemoteReliable`.*not spawned"));
             f.Dispatch();
-            Assert.That(f.sent, Has.Count.EqualTo(2), "checkpoint submission happens in the tick itself");
+            Assert.That(f.sent, Has.Count.EqualTo(2), "full submission happens in the tick itself");
             Assert.That(f.sent[1].full, Is.True);
             Assert.That(f.sent[1].channel, Is.EqualTo(Channel.ReliableOrdered));
-            Assert.That(f.sent[1].checkpoint, Is.EqualTo(11));
-            Assert.That(f.Frame.reliableFrame.pendingTick, Is.EqualTo(11));
-            Assert.That(f.Frame.reliableSentAtLocalTick, Is.EqualTo(11));
+            Assert.That(f.Frame.lastFullFrameSentTick, Is.EqualTo(11));
+            Assert.That(f.Frame.lastSentFrameTick, Is.EqualTo(11));
             Assert.That(f.Frame.requiresFullCheckpoint, Is.False);
 
             f.Prepare(12, 11, 1200);
             f.Dispatch();
             f.AdvancePast(12);
             f.Flush();
-            Assert.That(f.sent, Has.Count.EqualTo(2), "the checkpoint rebases the ordinary cadence");
+            Assert.That(f.sent, Has.Count.EqualTo(2), "the full rebases the ordinary cadence");
             f.Prepare(13, 11, 1300);
             f.Dispatch();
             f.AdvancePast(13);
             f.Flush();
             Assert.That(f.sent, Has.Count.EqualTo(3));
             Assert.That(f.sent[2].full, Is.False);
-            Assert.That(f.sent[2].checkpoint, Is.EqualTo(11));
             Assert.That(f.sent[2].baseline, Is.EqualTo(11));
-            Assert.That(f.Frame.reliableFrame.pendingTick, Is.EqualTo(11), "ordinary sending cannot replace the reliable latch");
-            Assert.That(f.manager.reliableFramesSentTotal, Is.EqualTo(1));
+            Assert.That(f.Frame.lastSentFrameTick, Is.EqualTo(13));
+            Assert.That(f.manager.fullFramesSentTotal, Is.EqualTo(1));
         }
 
         [Test]
@@ -186,28 +181,9 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.Frame.preparedFrameTick, Is.Zero);
         }
 
-        [Test]
-        public void OversizedSelectedFrameRequestsCheckpointWithoutConsumingCadenceOrFeedback()
-        {
-            using var f = new Fixture();
-            f.input.hasPendingInputSlack = true;
-            f.Prepare(10, 8, 1000);
-            var frame = f.Frame;
-            frame.maxUnreliableFrameBytes = 1;
-            f.SetFrame(frame);
-            f.Dispatch();
-            f.AdvancePast(10);
-            f.Flush();
-            Assert.That(f.sent, Is.Empty);
-            Assert.That(f.Frame.requiresFullCheckpoint, Is.True);
-            Assert.That(f.Frame.frameSendSchedule.lastSentTick, Is.Zero);
-            Assert.That(f.input.hasPendingInputSlack, Is.True);
-            Assert.That(f.manager.oversizedFramesDeferredTotal, Is.EqualTo(1));
-        }
-
         private sealed class SubmittedFrame
         {
-            public ulong tick, baseline, checkpoint, inputAck;
+            public ulong tick, baseline, inputAck;
             public bool full, hasInputMargin, hasInputSlack, immediate;
             public int inputMargin, inputSlackMs;
             public uint marker;
@@ -235,11 +211,12 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     player = player,
                     packer = BitPackerPool.Get(),
-                    maxUnreliableFrameBytes = 256000,
                     lastFullFrameSentTick = 8
                 });
                 Get<Dictionary<PlayerID, PredictionManager.InputQueue>>(manager, "_clientTicks").Add(player, input);
                 RPCModule.onPreProcessRpc += Capture;
+                // Frames ride the batched ordered lane, which reports this unspawned manager on every send.
+                LogAssert.ignoreFailingMessages = true;
             }
 
             public PlayerPacker Frame => _frames[0];
@@ -274,7 +251,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
             private void Capture(RPCSignature signature, ref BitPacker compressed)
             {
-                if (signature.rpcName != "SendFrameToRemote" && signature.rpcName != "SendFrameToRemoteReliable")
+                if (signature.rpcName != "SendFrameToRemote")
                     return;
                 Assert.That(signature.targetPlayer, Is.EqualTo(player));
                 using var decoded = BitPackerPool.Get();
@@ -286,7 +263,6 @@ namespace PurrNet.Prediction.Tests.Editor
                     immediate = signature.immediate,
                     tick = Packer<ulong>.Read(decoded),
                     baseline = Packer<ulong>.Read(decoded),
-                    checkpoint = Packer<PackedULong>.Read(decoded).value,
                     inputAck = Packer<ulong>.Read(decoded),
                     full = Packer<bool>.Read(decoded),
                     hasInputMargin = Packer<bool>.Read(decoded),
@@ -304,6 +280,7 @@ namespace PurrNet.Prediction.Tests.Editor
             public void Dispose()
             {
                 RPCModule.onPreProcessRpc -= Capture;
+                LogAssert.ignoreFailingMessages = false;
                 Set(manager, "<cachedIsServer>k__BackingField", false);
                 Invoke(manager, "CleanupAllSystems");
                 Object.DestroyImmediate(_object);

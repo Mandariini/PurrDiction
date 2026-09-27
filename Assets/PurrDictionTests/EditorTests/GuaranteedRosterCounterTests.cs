@@ -270,12 +270,14 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     player = new PlayerID(10, false),
                     lastFullFrameSentTick = 18,
+                    lastSentFrameTick = 18,
                     packer = BitPackerPool.Get()
                 });
                 clientFrames.Add(new PlayerPacker
                 {
                     player = new PlayerID(11, false),
                     lastFullFrameSentTick = 18,
+                    lastSentFrameTick = 18,
                     packer = BitPackerPool.Get()
                 });
                 var queues = GetField<Dictionary<PlayerID, PredictionManager.InputQueue>>(

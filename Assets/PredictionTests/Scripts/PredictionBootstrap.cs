@@ -170,6 +170,17 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-packetLossPushScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<PacketLossPushScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-desyncScenarioOnly"))
         {
             _scenarios = new Scenario[]
@@ -477,17 +488,6 @@ public class PredictionBootstrap : Scenario
                 return;
             }
             _predictionManager.serverUpdateRate = parsedServerUpdateRate;
-        }
-
-        if (CommandLineUtils.TryGetArgument("-serverInputRedundancyMs", out var inputRedundancy))
-        {
-            if (!int.TryParse(inputRedundancy, out var parsedInputRedundancy) || parsedInputRedundancy < 0)
-            {
-                Debug.LogError($"Could not parse nonnegative -serverInputRedundancyMs value '{inputRedundancy}'");
-                Application.Quit(-1);
-                return;
-            }
-            _predictionManager.serverInputRedundancyMs = parsedInputRedundancy;
         }
 
         // Headless players otherwise spin at thousands of frames per second; several of them on a

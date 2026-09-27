@@ -265,65 +265,6 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void BoundedInputHistoryCoveringTheVerifiedTickAppliesWithoutTheAckedBaseline()
-        {
-            using var f = new Fixture(true);
-            f.server.serverInputRedundancyMs = 100; // 2 ticks at 20 Hz
-            for (ulong tick = 11; tick <= FinalTick; tick++)
-            {
-                using var packet = f.StepServer(tick);
-                Assert.That(packet.full, Is.False);
-                f.Deliver(packet);
-                Assert.That(Get<ulong>(f.client, "_verifiedServerTick"), Is.EqualTo(tick));
-                // Acks arrive late: 11 is acked before 12 is prepared, then nothing until 14. The
-                // frame at 14 sees baseline 11 with a lag of 3, so it repeats only 13..14, which the
-                // client, verified at 13, can use. At 13 the lag of 2 still fits the window.
-                if (tick == 13)
-                    Assert.That(Get<ulong>(f.client, "_verifiedInputFrom"), Is.EqualTo(12));
-                if (tick == 14)
-                    Assert.That(Get<ulong>(f.client, "_verifiedInputFrom"), Is.EqualTo(13));
-                if (tick == 11 || tick >= 14)
-                    f.AcknowledgeClient();
-            }
-
-            Assert.That(f.client.inputWindowSkippedFramesTotal, Is.Zero);
-            f.AssertVerifiedAgreement();
-        }
-
-        [Test]
-        public void ClientBehindTheBoundedWindowSkipsFramesUntilTheStalledAckWidensIt()
-        {
-            using var f = new Fixture(true);
-            f.server.serverInputRedundancyMs = 150; // 3 ticks at 20 Hz
-            for (ulong tick = 11; tick <= FinalTick; tick++)
-            {
-                using var packet = f.StepServer(tick);
-                Assert.That(packet.full, Is.False);
-                if (tick < 14)
-                    continue;
-                f.Deliver(packet);
-                if (tick == 14)
-                {
-                    // Lag 4 exceeds the window and the ack has only stalled for 3 ticks, so the
-                    // frame repeats 12..14: useless to a client verified at 10, and not an error.
-                    Assert.That(Get<ulong>(f.client, "_verifiedServerTick"), Is.EqualTo(Baseline));
-                    Assert.That(Get<bool>(f.client, "_historyResyncPending"), Is.False);
-                    Assert.That(f.client.inputWindowSkippedFramesTotal, Is.EqualTo(1));
-                    continue;
-                }
-                // From tick 15 the ack has stalled longer than the window, so frames reach back
-                // to the acked baseline and the client catches up without a checkpoint.
-                Assert.That(Get<ulong>(f.client, "_verifiedServerTick"), Is.EqualTo(tick));
-                if (tick == 15)
-                    Assert.That(Get<ulong>(f.client, "_verifiedInputFrom"), Is.EqualTo(11));
-                f.AcknowledgeClient();
-            }
-
-            Assert.That(f.client.inputWindowSkippedFramesTotal, Is.EqualTo(1));
-            f.AssertVerifiedAgreement();
-        }
-
-        [Test]
         public void SpawnedAfterTheBaselineIsDeliveredAsADeltaAgainstItsEnteringState()
         {
             using var f = new Fixture(true);
@@ -342,28 +283,6 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.server.spawnBaselineRecordsTotal, Is.EqualTo(4));
             f.AssertVerifiedAgreement();
             Assert.That(f.client.hierarchy.TryGetGameObject(born, out _), Is.True);
-        }
-
-        [Test]
-        public void EntrantsBeforeTheInputWindowAreNotRepeated()
-        {
-            using var f = new Fixture(true);
-            f.server.serverInputRedundancyMs = 100; // 2 ticks at 20 Hz
-            for (ulong tick = 11; tick <= FinalTick; tick++)
-            {
-                if (tick == 12)
-                    f.CreateServerIdentity(700);
-                using var packet = f.StepServer(tick);
-                f.Deliver(packet);
-                if (tick == 11 || tick >= 14)
-                    f.AcknowledgeClient();
-            }
-
-            // The frame at 14 saw baseline 11 with a lag of 3, so its window began at 12 and the
-            // entrant at 12, which this client applied two frames earlier, was not repeated.
-            Assert.That(f.server.lifecycleEntrantsOmittedTotal, Is.GreaterThan(0));
-            Assert.That(f.client.inputWindowSkippedFramesTotal, Is.Zero);
-            f.AssertVerifiedAgreement();
         }
 
         [Test]
@@ -591,7 +510,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(Get<ulong>(f.client, "_verifiedServerTick"), Is.EqualTo(Baseline));
                 Assert.That(Get<ulong>(f.client, "_ackedServerTick"), Is.EqualTo(Baseline));
                 Assert.That(Get<bool>(f.client, "_historyResyncPending"), Is.True);
-                Assert.That(Get<bool>(f.client, "_requiresVerifiedInputCheckpoint"), Is.True);
+                Assert.That(Get<bool>(f.client, "_awaitingFullFrame"), Is.True);
 
                 // A fresh intact continuation cannot replay those first-delivery callbacks
                 // again after part of the previous frame already reached gameplay code.
@@ -700,7 +619,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
         private sealed class Packet : IDisposable
         {
-            internal readonly ulong tick, baseline, checkpoint;
+            internal readonly ulong tick, baseline;
             internal readonly bool full;
             internal readonly BitPacker payload;
             internal Packet(ulong tick, PlayerPacker prepared)
@@ -708,14 +627,12 @@ namespace PurrNet.Prediction.Tests.Editor
                 this.tick = tick;
                 baseline = prepared.preparedBaselineTick;
                 full = prepared.fullFrame;
-                checkpoint = full ? tick : prepared.lastFullFrameSentTick;
                 payload = Copy(prepared.packer);
             }
             internal Packet(Packet original, BitPacker replacement)
             {
                 tick = original.tick;
                 baseline = original.baseline;
-                checkpoint = original.checkpoint;
                 full = original.full;
                 payload = replacement;
             }
@@ -755,7 +672,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 _frames.Add(new PlayerPacker
                 {
                     player = _recipient, packer = BitPackerPool.Get(),
-                    requiresFullCheckpoint = true, maxUnreliableFrameBytes = 256000
+                    requiresFullCheckpoint = true
                 });
                 _ack = new PredictionManager.InputQueue();
                 Get<Dictionary<PlayerID, PredictionManager.InputQueue>>(server, "_clientTicks").Add(_recipient, _ack);
@@ -847,14 +764,13 @@ namespace PurrNet.Prediction.Tests.Editor
                 if (deferSend)
                 {
                     Assert.That(prepared.fullFrame, Is.False,
-                        "this transport seam only defers ordinary updates; checkpoints bypass coalescing");
+                        "this transport seam only defers ordinary updates; full frames bypass coalescing");
                     Invoke(server, "DispatchPreparedServerFrames");
-                    Assert.That(_frames[0].preparedFrameTick, Is.EqualTo(tick));
-                    Assert.That(server.freshFramesSentTotal, Is.Zero,
+                    Assert.That(_frames[0].preparedFrameTick, Is.EqualTo(tick),
                         "per-tick dispatch must defer this update until the host's final flush");
                 }
-                else
-                    CompleteDeferredSend(packet);
+                // Frames share one ordered reliable stream, so a frame is sent exactly when it is delivered;
+                // a stepped tick that is never delivered was coalesced into the next frame that is.
                 Set(server, "<isVerified>k__BackingField", false);
                 return packet;
             }
@@ -874,6 +790,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     prepared.BeginFullFrame(tick);
                 prepared.fullFrame = false;
                 prepared.sentVisibilityTick = tick;
+                prepared.lastSentFrameTick = tick;
                 prepared.preparedVisibilityTick = 0;
                 prepared.preparedFrameTick = 0;
                 _frames[0] = prepared;
@@ -910,6 +827,8 @@ namespace PurrNet.Prediction.Tests.Editor
 
             internal void Deliver(Packet packet)
             {
+                if (_frames[0].preparedFrameTick == packet.tick)
+                    CompleteDeferredSend(packet);
                 // Preserve the real repair/fence behavior while keeping its outbound RPC
                 // at the same explicit transport seam as the frame packet handoff.
                 Set(client, "_nextHistoryResyncRequestAt", double.PositiveInfinity);
@@ -918,7 +837,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     int bytes = copy.ToByteData().length;
                     copy.ResetPositionAndMode(true);
-                    Invoke(client, "HandleFrameFromServer", packet.tick, packet.baseline, packet.checkpoint,
+                    Invoke(client, "HandleFrameFromServer", packet.tick, packet.baseline,
                         packet.tick, packet.full, false, default(PackedInt), false, default(PackedInt),
                         new BitPackerWithLength(bytes, copy));
                 }
@@ -934,7 +853,6 @@ namespace PurrNet.Prediction.Tests.Editor
                 using var reader = Copy(packet.payload);
                 int end = reader.positionInBits;
                 reader.ResetPositionAndMode(true);
-                Packer<PackedUInt>.Read(reader); // input window ticks
                 uint deletes = Packer<PackedUInt>.Read(reader);
                 for (uint i = 0; i < deletes; i++)
                     Packer<PredictedObjectID>.Read(reader);
@@ -960,7 +878,6 @@ namespace PurrNet.Prediction.Tests.Editor
                 using var reader = Copy(packet.payload);
                 int end = reader.positionInBits;
                 reader.ResetPositionAndMode(true);
-                Packer<PackedUInt>.Read(reader); // input window ticks
                 uint deletes = Packer<PackedUInt>.Read(reader);
                 for (uint i = 0; i < deletes; i++)
                     Packer<PredictedObjectID>.Read(reader);
@@ -999,9 +916,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(Get<ulong>(client, "_verifiedServerTick"), Is.EqualTo(FinalTick));
                 Assert.That(Get<ulong>(client, "_ackedServerTick"), Is.EqualTo(FinalTick));
                 Assert.That(Get<bool>(client, "_historyResyncPending"), Is.False);
-                Assert.That(Get<bool>(client, "_requiresVerifiedInputCheckpoint"), Is.False);
-                Assert.That(Get<ulong>(client, "_appliedCheckpointTick"), Is.EqualTo(Baseline),
-                    "the missing lifecycle must recover through the original checkpoint's unreliable continuation");
+                Assert.That(Get<bool>(client, "_awaitingFullFrame"), Is.False);
+                Assert.That(_frames[0].lastFullFrameSentTick, Is.LessThanOrEqualTo(Baseline),
+                    "the lifecycle history must carry the client across the gap without a full frame");
                 Assert.That(_frames[0].requiresFullCheckpoint, Is.False);
                 if (compareObservations)
                     Assert.That(clientLedger.observations, Is.EqualTo(serverLedger.observations),
