@@ -23,7 +23,6 @@ namespace PurrNet.Prediction
         private BitPacker _verifiedInputPayload;
         private ulong _verifiedInputFrom;
         private ulong _verifiedInputThrough;
-        private bool _requiresVerifiedInputCheckpoint;
 
         private void ClearVerifiedInputTranscript()
         {
@@ -136,13 +135,15 @@ namespace PurrNet.Prediction
             entry.bits.WriteBitDataWithoutConsumingIt(new BitData(block, 0, block.positionInBits));
             _uploadedInputs[tick] = entry;
 
-            ulong retained = verifiedHistoryWindowTicks + 1;
-            if (tick <= retained)
+            ulong window = verifiedHistoryWindowTicks;
+
+            if (_verifiedServerTick <= window)
                 return;
+
             _uploadedInputPruneScratch.Clear();
             foreach (var recorded in _uploadedInputs.Keys)
             {
-                if (recorded < tick - retained)
+                if (recorded <= _verifiedServerTick - window)
                     _uploadedInputPruneScratch.Add(recorded);
             }
             for (int i = 0; i < _uploadedInputPruneScratch.Count; i++)
@@ -198,17 +199,15 @@ namespace PurrNet.Prediction
                 frame.positionInBits >= frameEndBit)
                 throw new MissingPredictionBaselineException("Invalid authoritative input history window.");
 
-            // A bounded redundancy window may start after the state baseline; RollbackToFrame checks coverage.
             uint count = Packer<PackedUInt>.Read(frame);
-            if (frame.positionInBits > frameEndBit || count > serverTick - baselineTick)
+            if (frame.positionInBits > frameEndBit || count != serverTick - baselineTick)
                 throw new MissingPredictionBaselineException(
-                    $"Authoritative inputs must cover ticks after {baselineTick} through {serverTick}.");
-            ulong firstTick = serverTick - count + 1;
+                    $"Authoritative inputs must cover every tick after {baselineTick} through {serverTick}.");
 
-            BeginVerifiedInputTranscript(firstTick, serverTick);
+            BeginVerifiedInputTranscript(baselineTick + 1, serverTick);
             for (uint k = 0; k < count; k++)
             {
-                ulong tick = firstTick + k;
+                ulong tick = baselineTick + 1 + k;
                 if (frame.positionInBits >= frameEndBit)
                     throw new MissingPredictionBaselineException($"Missing authoritative input block at tick {tick}.");
                 uint entries = Packer<PackedUInt>.Read(frame);

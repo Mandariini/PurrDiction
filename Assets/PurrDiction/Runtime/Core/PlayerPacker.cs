@@ -10,42 +10,17 @@ namespace PurrNet.Prediction
         public bool requiresFullCheckpoint;
         public ulong preparedFrameTick;
         public ServerFrameSendSchedule frameSendSchedule;
-        public ulong lastAckedTick;
-        public ulong lastAckAdvanceTick;
         public ulong preparedBaselineTick;
         public ulong preparedVisibilityTick;
         public ulong sentVisibilityTick;
-        public int maxUnreliableFrameBytes;
-        public ulong reliableSentAtLocalTick;
         public ulong lastFullFrameSentTick;
-        public ReliableFrameDeliveryState reliableFrame;
+        public ulong lastSentFrameTick;
 
         public void BeginFullFrame(ulong tick)
         {
-            reliableFrame.MarkSent(tick);
-            reliableSentAtLocalTick = tick;
             lastFullFrameSentTick = tick;
             requiresFullCheckpoint = false;
         }
-
-        // Clear only after ACK or delivery proof, never for a queued snapshot request.
-        // The checkpoint epoch remains valid for subsequent unreliable deltas.
-        public void ClearRecoveryFrame()
-        {
-            reliableFrame.Clear();
-            reliableSentAtLocalTick = 0;
-        }
-
-        public void ObserveAck(ulong ackedTick, ulong localTick)
-        {
-            if (lastAckAdvanceTick == 0 || ackedTick > lastAckedTick)
-            {
-                lastAckedTick = ackedTick;
-                lastAckAdvanceTick = localTick;
-            }
-        }
-
-        public bool AckStalledFor(ulong localTick, ulong ticks) => localTick - lastAckAdvanceTick > ticks;
 
         public void Dispose()
         {
@@ -53,49 +28,12 @@ namespace PurrNet.Prediction
             packer = null;
             preparedFrameTick = 0;
             frameSendSchedule = default;
-            lastAckedTick = 0;
-            lastAckAdvanceTick = 0;
             preparedBaselineTick = 0;
             preparedVisibilityTick = 0;
             sentVisibilityTick = 0;
             requiresFullCheckpoint = false;
-            ClearRecoveryFrame();
             lastFullFrameSentTick = 0;
-        }
-    }
-
-    // Only one full checkpoint can be in flight. Its continuation deltas cannot be ACKed
-    // before it is applied, so their ACK also proves delivery of the full RPC.
-    internal struct ReliableFrameDeliveryState
-    {
-        private ulong _sentTick;
-        public ulong pendingTick => _sentTick;
-
-        public bool IsPending(ulong ackedTick)
-        {
-            if (_sentTick == 0)
-                return false;
-
-            if (ackedTick < _sentTick)
-                return true;
-
-            _sentTick = 0;
-            return false;
-        }
-
-        public void MarkSent(ulong tick)
-        {
-            if (tick == 0)
-                throw new System.ArgumentOutOfRangeException(nameof(tick));
-            if (_sentTick != 0)
-                throw new System.InvalidOperationException("A full checkpoint is already awaiting acknowledgement.");
-
-            _sentTick = tick;
-        }
-
-        public void Clear()
-        {
-            _sentTick = 0;
+            lastSentFrameTick = 0;
         }
     }
 }

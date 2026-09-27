@@ -87,8 +87,7 @@ namespace PurrNet.Prediction
             for (int i = 0; i < _clientFrames.Count; i++)
             {
                 var peer = _clientFrames[i];
-                ulong ack = _clientTicks.TryGetValue(peer.player, out var queue) ? queue.ackedServerTick : 0;
-                PreparePlayerVisibility(peer.player, tick, Math.Max(ack, peer.lastFullFrameSentTick));
+                PreparePlayerVisibility(peer.player, tick, peer.lastSentFrameTick);
             }
 
             hierarchy.GetLatestUnityState();

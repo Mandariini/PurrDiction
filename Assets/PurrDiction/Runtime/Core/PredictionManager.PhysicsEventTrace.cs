@@ -9,24 +9,22 @@ namespace PurrNet.Prediction
             Array.IndexOf(Environment.GetCommandLineArgs(), "-physicsEventTrace") >= 0;
         int _physicsEventTraceCount;
 
-        void TraceHistoryResync(string phase, PlayerID player, ulong failedTick, ulong previousLatch = 0,
-            ulong previousAck = 0, ulong coveringFullTick = 0)
+        void TraceHistoryResync(string phase, PlayerID player, ulong failedTick, ulong coveringFullTick = 0)
         {
             if (!PhysicsEventTraceEnabled || _physicsEventTraceCount >= 512)
                 return;
             _physicsEventTraceCount++;
             Debug.Log($"[HistoryResyncTrace] resync{phase} player={player} failedTick={failedTick} " +
-                      $"current={localTick} previousLatch={previousLatch} previousAck={previousAck} " +
-                      $"coveringFullTick={coveringFullTick}");
+                      $"current={localTick} coveringFullTick={coveringFullTick}");
         }
 
-        void TracePhysicsFrameSend(PlayerID player, ulong tick, ulong baseline, bool full, bool distressed)
+        void TracePhysicsFrameSend(PlayerID player, ulong tick, ulong baseline, bool full)
         {
             if (!PhysicsEventTraceEnabled || !full || _physicsEventTraceCount >= 512)
                 return;
             _physicsEventTraceCount++;
             Debug.Log($"[PhysicsEventTrace] fullSend player={player} current={tick} baseline={baseline} " +
-                      $"distressed={distressed} eventHistory={HasPhysicsEventHistory(baseline, tick)}");
+                      $"eventHistory={HasPhysicsEventHistory(baseline, tick)}");
         }
 
         void TracePhysicsEventReset(ulong tick)

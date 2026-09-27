@@ -45,10 +45,8 @@ namespace PurrNet.Prediction
         [SerializeField] private PredictedPrefabs _predictedPrefabs;
         [Tooltip("When a client's input for the current tick has not arrived, reuse its last known input instead of simulating with default input.")]
         [SerializeField] private bool _extrapolateMissingInputs = true;
-        [Tooltip("Ordinary server updates per second. 0 follows the simulation tick rate; higher values are capped at it. Simulation, client input uploads and reliable checkpoints are unaffected.")]
+        [Tooltip("Ordinary server updates per second. 0 follows the simulation tick rate; higher values are capped at it. Simulation, client input uploads and full frames are unaffected.")]
         [SerializeField, Min(0)] private int _serverUpdateRate;
-        [Tooltip("How much recent input history every ordinary server update repeats, in milliseconds. This is the longest burst of lost updates a client absorbs without waiting: lower values cut bandwidth, and a client that loses more than this in a row waits about one round trip for a wider update.")]
-        [SerializeField, Min(0)] private int _serverInputRedundancyMs = 150;
 
         [Header("Lag Compensation")]
         [Tooltip("Longest rewind a client may request when hit tests are resolved against collider rollback history, in seconds. Requests beyond this are clamped on the server. The view interpolation buffer never holds more than 0.1 s, so 0.15 s covers legitimate clients with headroom.")]
@@ -474,7 +472,6 @@ namespace PurrNet.Prediction
             _replayFrozenSystems.Clear();
             _systemsCount = 0;
             _inputHistorySystems = 0;
-            _requiresVerifiedInputCheckpoint = false;
             _nextHistoryResyncRequestAt = 0;
             _historyResyncPending = false;
             _historyResyncRequiredAfterTick = 0;
@@ -525,7 +522,6 @@ namespace PurrNet.Prediction
             minLeadSnapsTotal = 0;
             starvationJumpsTotal = 0;
             ResetSlackController();
-            reliableFramesSentTotal = 0;
             fullFramesSentTotal = 0;
             deltaSectionDeleteBitsTotal = 0;
             deltaSectionHierarchyBitsTotal = 0;
@@ -768,8 +764,6 @@ namespace PurrNet.Prediction
             for (var p = 0; p < _pendingFullSync.Count; p++)
             {
                 var player = _pendingFullSync[p];
-                var mtu = networkManager.GetMTU(player, Channel.Unreliable, true);
-                var maxUnreliableFrameBytes = GetMaxUnreliableFrameBytes(mtu);
 
                 var found = false;
                 for (var i = 0; i < _clientFrames.Count; i++)
@@ -778,13 +772,12 @@ namespace PurrNet.Prediction
                     if (!clientFrame.player.Equals(player))
                         continue;
 
-                    // An observer notification does not prove delivery of the pending checkpoint.
+                    // A repeated observer notification restarts this peer's stream from a full frame.
                     clientFrame.requiresFullCheckpoint = true;
                     clientFrame.fullFrame = false;
                     clientFrame.preparedFrameTick = 0;
                     clientFrame.preparedBaselineTick = 0;
                     clientFrame.preparedVisibilityTick = 0;
-                    clientFrame.maxUnreliableFrameBytes = maxUnreliableFrameBytes;
                     _clientFrames[i] = clientFrame;
                     found = true;
                     break;
@@ -800,8 +793,7 @@ namespace PurrNet.Prediction
                 {
                     player = player,
                     packer = BitPackerPool.Get(),
-                    requiresFullCheckpoint = true,
-                    maxUnreliableFrameBytes = maxUnreliableFrameBytes
+                    requiresFullCheckpoint = true
                 });
             }
 
@@ -1059,14 +1051,6 @@ namespace PurrNet.Prediction
 
         internal ulong verifiedHistoryWindowTicks => VerifiedHistoryWindowTicks(tickRate);
 
-        // Sender retention and receiver catch-up limits must agree or valid continuations can never apply.
-        internal static bool RequiresFullFrameForGap(ulong verifiedTick, ulong serverTick, ulong maxGapTicks)
-            => verifiedTick > 0 && serverTick > verifiedTick &&
-               serverTick - verifiedTick > maxGapTicks;
-
-        private bool RequiresFullFrameForGap(ulong verifiedTick, ulong serverTick)
-            => RequiresFullFrameForGap(verifiedTick, serverTick, verifiedHistoryWindowTicks);
-
         private const double InputResendIntervalSeconds = 0.02;
         // Copies sent after the input slack window cannot beat the server simulation deadline.
         internal static ulong InputRedundancyTicks(int tickRate)
@@ -1283,31 +1267,17 @@ namespace PurrNet.Prediction
                 var clientFrame = _clientFrames[j];
                 var player = clientFrame.player;
 
-                ulong baselineTick = 0;
+                ulong ackedTick = 0;
                 if (_clientTicks.TryGetValue(player, out var ackQueue))
-                    baselineTick = ackQueue.ackedServerTick;
-                clientFrame.ObserveAck(baselineTick, localTick);
+                    ackedTick = ackQueue.ackedServerTick;
 
-                ulong ackLag = localTick > baselineTick ? localTick - baselineTick : 0;
+                ulong ackLag = localTick > ackedTick ? localTick - ackedTick : 0;
                 if (ackLag > maxAckLag)
                     maxAckLag = ackLag;
 
-                bool checkpointPending = clientFrame.reliableFrame.IsPending(baselineTick);
-                if (!checkpointPending && clientFrame.reliableSentAtLocalTick != 0)
-                {
-                    ulong latchTicks = localTick > clientFrame.reliableSentAtLocalTick
-                        ? localTick - clientFrame.reliableSentAtLocalTick
-                        : 0;
-                    latchCyclesTotal++;
-                    latchTicksTotal += latchTicks;
-                    if (latchTicks > maxLatchTicks)
-                        maxLatchTicks = latchTicks;
-                    clientFrame.ClearRecoveryFrame();
-                }
-
-
-                // Continuations must use the promised checkpoint baseline even before its ACK arrives.
-                baselineTick = Math.Max(baselineTick, clientFrame.lastFullFrameSentTick);
+                // Frames share one ordered reliable stream, so the client applies every frame sent
+                // before this one: the previous frame is the baseline and nothing is repeated.
+                ulong baselineTick = clientFrame.lastSentFrameTick;
                 bool historyUnavailable = localTick > baselineTick &&
                     localTick - baselineTick > verifiedHistoryWindowTicks;
                 historyUnavailable |= !HasPhysicsEventHistory(baselineTick, localTick);
@@ -1318,16 +1288,7 @@ namespace PurrNet.Prediction
                 historyUnavailable |= !timeline.isPassThrough && hierarchy &&
                     !hierarchy.TryGetVerifiedState(baselineTick + 1, out _, out _);
                 clientFrame.requiresFullCheckpoint |= clientFrame.fullFrame;
-                clientFrame.fullFrame = (clientFrame.requiresFullCheckpoint || historyUnavailable) && !checkpointPending;
-
-                if (checkpointPending && historyUnavailable)
-                {
-                    suppressedTicksTotal++;
-                    clientFrame.preparedFrameTick = 0;
-                    clientFrame.preparedVisibilityTick = 0;
-                    _clientFrames[j] = clientFrame;
-                    continue;
-                }
+                clientFrame.fullFrame = clientFrame.requiresFullCheckpoint || historyUnavailable;
 
                 clientFrame.preparedFrameTick = localTick;
                 clientFrame.preparedBaselineTick = baselineTick;
@@ -1367,13 +1328,6 @@ namespace PurrNet.Prediction
                 }
                 else
                 {
-                    ulong inputBaselineTick = baselineTick;
-                    ulong redundancy = serverInputRedundancyTicks;
-                    if (redundancy > 0 && !checkpointPending && localTick - baselineTick > redundancy &&
-                        !clientFrame.AckStalledFor(localTick, redundancy))
-                        inputBaselineTick = localTick - redundancy;
-                    Packer<PackedUInt>.Write(frame, checked((uint)(localTick - inputBaselineTick)));
-
                     long sectionStart = frame.positionInBits;
                     WritePendingVisibilityDeleteSection(player, frame, localTick);
                     deltaSectionDeleteBitsTotal += (ulong)(frame.positionInBits - sectionStart);
@@ -1390,11 +1344,11 @@ namespace PurrNet.Prediction
 
                     sectionStart = frame.positionInBits;
                     using (WriteInputHistoryMarker.Auto())
-                        WriteVisibilityInputHistory(player, frame, inputBaselineTick, timeline);
+                        WriteVisibilityInputHistory(player, frame, baselineTick, timeline);
                     deltaSectionInputBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
                     sectionStart = frame.positionInBits;
-                    WriteLifecycleHistory(frame, baselineTick, timeline, inputBaselineTick + 1);
+                    WriteLifecycleHistory(frame, baselineTick, timeline, baselineTick + 1);
                     deltaSectionHierarchyBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
                     sectionStart = frame.positionInBits;
@@ -1423,17 +1377,9 @@ namespace PurrNet.Prediction
         /// </summary>
         public ulong lastMaxAckLagTicks { get; private set; }
 
-        /// <summary>
-        /// Ordinary frames this client could not use because their bounded input window started
-        /// after its verified tick. The server widens the window once the ack stalls. Diagnostic only.
-        /// </summary>
-        public ulong inputWindowSkippedFramesTotal { get; private set; }
 
-        /// <summary>
-        /// Count of per-client full checkpoints sent reliably since the session
-        /// started. Diagnostic only.
-        /// </summary>
-        public ulong reliableFramesSentTotal { get; private set; }
+        [Obsolete("Every frame is sent reliably; use fullFramesSentTotal to count full frames.")]
+        public ulong reliableFramesSentTotal => fullFramesSentTotal;
 
         /// <summary>
         /// Count of per-client full (non-delta) frames sent since the session started.
@@ -1445,10 +1391,14 @@ namespace PurrNet.Prediction
         /// Checkpoint credit accounting: ticks deferred for unavailable history, completed
         /// checkpoints, cumulative and worst acknowledgement delay in ticks. Diagnostic only.
         /// </summary>
-        public ulong suppressedTicksTotal { get; private set; }
-        public ulong latchCyclesTotal { get; private set; }
-        public ulong latchTicksTotal { get; private set; }
-        public ulong maxLatchTicks { get; private set; }
+        [Obsolete("Frames are delivered reliably and in order; a full frame no longer holds back other frames.")]
+        public ulong suppressedTicksTotal => 0;
+        [Obsolete("Frames are delivered reliably and in order; a full frame no longer holds back other frames.")]
+        public ulong latchCyclesTotal => 0;
+        [Obsolete("Frames are delivered reliably and in order; a full frame no longer holds back other frames.")]
+        public ulong latchTicksTotal => 0;
+        [Obsolete("Frames are delivered reliably and in order; a full frame no longer holds back other frames.")]
+        public ulong maxLatchTicks => 0;
 
         /// <summary>
         /// Client-side input upload accounting: payload sends (including timer-driven resends),
@@ -1511,8 +1461,7 @@ namespace PurrNet.Prediction
 
                 ulong baselineTick = frame.preparedBaselineTick;
 
-                TracePhysicsFrameSend(frame.player, localTick, baselineTick, frame.fullFrame,
-                    frame.reliableFrame.pendingTick != 0);
+                TracePhysicsFrameSend(frame.player, localTick, baselineTick, frame.fullFrame);
                 WritePhysicsEventHistory(
                     frame.player, timeline, frame.packer, localTick, baselineTick, frame.fullFrame);
                 WriteAddressedStateSection(
@@ -1536,16 +1485,6 @@ namespace PurrNet.Prediction
             var packer = clientFrame.packer;
             var deltaLen = packer.ToByteData().length;
             var fullFrame = clientFrame.fullFrame;
-            if (!fullFrame && deltaLen > clientFrame.maxUnreliableFrameBytes)
-            {
-                // Oversized deltas require a checkpoint to fit the transport fragmentation limit.
-                clientFrame.requiresFullCheckpoint = true;
-                clientFrame.preparedFrameTick = 0;
-                clientFrame.preparedVisibilityTick = 0;
-                oversizedFramesDeferredTotal++;
-                _clientFrames[index] = clientFrame;
-                return;
-            }
 
             ulong inputAck = 0;
             ulong baselineTick = clientFrame.preparedBaselineTick;
@@ -1581,29 +1520,22 @@ namespace PurrNet.Prediction
                 }
             }
 
-            ulong checkpointTick = fullFrame ? frameTick : clientFrame.lastFullFrameSentTick;
-            if (fullFrame)
-                SendFrameToRemoteReliable(player, frameTick, baselineTick, checkpointTick, inputAck, true, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
-            else
-                SendFrameToRemote(player, frameTick, baselineTick, checkpointTick, inputAck, false, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
+            SendFrameToRemote(player, frameTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
 
-            freshFramesSentTotal++;
             if (fullFrame)
             {
-                reliableFramesSentTotal++;
                 fullFramesSentTotal++;
                 fullFrameBytesTotal += (ulong)deltaLen;
             }
             else
             {
-                if (clientFrame.reliableFrame.pendingTick != 0)
-                    pipelinedDeltaFramesSentTotal++;
                 deltaFrameBytesTotal += (ulong)deltaLen;
                 if (deltaLen > maxDeltaFrameBytes)
                     maxDeltaFrameBytes = deltaLen;
             }
 
             clientFrame.sentVisibilityTick = frameTick;
+            clientFrame.lastSentFrameTick = frameTick;
             clientFrame.preparedVisibilityTick = 0;
             if (_playerVisibility.TryGetValue(player, out var visibilityTimeline))
                 HandleVisibilityFrameSent(player, visibilityTimeline, frameTick);
@@ -1621,24 +1553,6 @@ namespace PurrNet.Prediction
             }
 
             _clientFrames[index] = clientFrame;
-        }
-
-        internal static int GetMaxUnreliableFrameBytes(int mtu)
-        {
-            const int maxGeneratedRpcArgumentBytes = 40;
-            const int maxCompressedFrameExpansionBytes = 1;
-            const int maxEntryLengthPrefixBytes = 6;
-
-            var maxFragmentedMessageBytes = FragmentationLayer.GetMaxMessageSize(
-                mtu,
-                BroadcastModule.MAX_HEADER_SIZE);
-
-            return maxFragmentedMessageBytes -
-                   (maxGeneratedRpcArgumentBytes +
-                    maxCompressedFrameExpansionBytes +
-                    BroadcastModule.MAX_HEADER_SIZE +
-                    RPCBatch.MAX_HEADER_SIZE +
-                    maxEntryLengthPrefixBytes);
         }
 
         /// <summary>
@@ -1765,7 +1679,6 @@ namespace PurrNet.Prediction
             public BitPacker packer;
             public ulong serverTick;
             public ulong baselineTick;
-            public ulong checkpointTick;
             public ulong inputAck;
             public bool fullFrame;
             public bool hasInputMargin;
@@ -1783,26 +1696,11 @@ namespace PurrNet.Prediction
 
         readonly Queue<FrameDelta> _deltas = new ();
 
-        [TargetRpc(channel: Channel.Unreliable, compressionLevel: CompressionLevel.Fast, mtuExceeded: MTUBehaviour.Fragment, immediate: true)]
-        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, PackedULong checkpointTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
+        // Every frame travels on one ordered reliable stream, so a delta can always use the frame before it.
+        [TargetRpc(channel: Channel.ReliableOrdered, compressionLevel: CompressionLevel.Fast)]
+        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
         {
-            if (fullFrame)
-            {
-                delta.packer.Dispose();
-                return;
-            }
-            HandleFrameFromServer(serverTick, baselineTick, checkpointTick, inputAck, false, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
-        }
-
-        [TargetRpc(compressionLevel: CompressionLevel.Best)]
-        private void SendFrameToRemoteReliable([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, PackedULong checkpointTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
-        {
-            if (!fullFrame)
-            {
-                delta.packer.Dispose();
-                return;
-            }
-            HandleFrameFromServer(serverTick, baselineTick, checkpointTick, inputAck, true, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
+            HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
         }
 
         /// <summary>
@@ -1811,7 +1709,7 @@ namespace PurrNet.Prediction
         public ulong framesReceivedTotal { get; private set; }
         public ulong fullFramesReceivedTotal { get; private set; }
 
-        private void HandleFrameFromServer(ulong serverTick, ulong baselineTick, ulong checkpointTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
+        private void HandleFrameFromServer(ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
         {
             delta.packer.SkipBytes(delta.originalLength);
 
@@ -1822,12 +1720,11 @@ namespace PurrNet.Prediction
             // Input ACKs remain valid even if replay rejects this frame; pacing feedback does not.
             _inputAckTick = Math.Max(_inputAckTick, inputAck);
 
-            ReceiveCheckpointFrame(new FrameDelta
+            ReceiveFrame(new FrameDelta
             {
                 packer = delta.packer,
                 serverTick = serverTick,
                 baselineTick = baselineTick,
-                checkpointTick = checkpointTick,
                 inputAck = inputAck,
                 fullFrame = fullFrame,
                 hasInputMargin = hasInputMargin,
@@ -1873,12 +1770,10 @@ namespace PurrNet.Prediction
             int frameEndBit = frame.positionInBits;
             frame.ResetPositionAndMode(true);
 
-            // Decide before anything is staged whether this frame's input window reaches this peer.
-            uint inputHistoryTicks = Packer<PackedUInt>.Read(frame);
-            if (frame.positionInBits > frameEndBit || inputHistoryTicks > serverTick - baselineTick)
-                throw new MissingPredictionBaselineException("Invalid authoritative input history window.");
-            if (serverTick - inputHistoryTicks > _verifiedServerTick)
-                throw new InputHistoryWindowException(serverTick, serverTick - inputHistoryTicks + 1, _verifiedServerTick);
+            // Decide before anything is staged whether this frame continues this peer's verified timeline.
+            if (baselineTick > _verifiedServerTick)
+                throw new MissingPredictionBaselineException(
+                    $"Frame {serverTick} continues tick {baselineTick} but tick {_verifiedServerTick + 1} was never verified.");
 
             bool crossedGap = _verifiedServerTick > 0 &&
                               serverTick > _verifiedServerTick + 1;
@@ -1894,8 +1789,6 @@ namespace PurrNet.Prediction
                 false,
                 crossedGap);
             ReadInputHistory(frame, serverTick, baselineTick, frameEndBit);
-            if (_verifiedInputFrom != serverTick - inputHistoryTicks + 1)
-                throw new MissingPredictionBaselineException("Authoritative input history does not match its window.");
             using var lifecycleHistory = ReadLifecycleHistory(frame, baselineTick, serverTick, frameEndBit);
             int stateRecordsStart = frame.positionInBits;
 
@@ -2358,19 +2251,9 @@ namespace PurrNet.Prediction
                     if (frame.serverTick <= _verifiedServerTick)
                         continue;
 
-                    // A checkpoint prevents callbacks from being delivered twice after a partial replay failure.
-                    if (!frame.fullFrame && _requiresVerifiedInputCheckpoint)
+                    // Only a full frame can follow a frame that failed; its callbacks must not run twice.
+                    if (!frame.fullFrame && _awaitingFullFrame)
                         continue;
-
-                    if (!frame.fullFrame && frame.checkpointTick != _appliedCheckpointTick)
-                        continue;
-
-                    if (!frame.fullFrame &&
-                        RequiresFullFrameForGap(_verifiedServerTick, frame.serverTick))
-                    {
-                        MarkHistoryResyncNeeded(frame.serverTick);
-                        continue;
-                    }
 
                     isVerified = true;
 
@@ -2389,7 +2272,7 @@ namespace PurrNet.Prediction
                             ReadFullFrame(frame.packer, frame.serverTick, frame.serverTick, frame.serverTick);
                             if (_frameApplyHadRecordFailure)
                             {
-                                RejectCheckpoint(frame.checkpointTick);
+                                MarkHistoryResyncNeeded(frame.serverTick);
                                 continue;
                             }
                             SimulateFrame(frame.serverTick, HistorySaveMode.VerifiedFrame);
@@ -2410,12 +2293,6 @@ namespace PurrNet.Prediction
                             SimulateFrame(frame.serverTick, HistorySaveMode.VerifiedFrame);
                             SaveEnteringState(frame.serverTick + 1);
                         }
-                        catch (InputHistoryWindowException)
-                        {
-                            // Nothing was staged. Later frames widen once the server sees the stalled ack.
-                            inputWindowSkippedFramesTotal++;
-                            continue;
-                        }
                         catch (Exception error)
                         {
                             HandleFrameApplicationFailure(frame, error);
@@ -2434,10 +2311,8 @@ namespace PurrNet.Prediction
                         _ackedServerTick = frame.serverTick;
                         if (frame.fullFrame)
                         {
-                            _requiresVerifiedInputCheckpoint = false;
-                            _appliedCheckpointTick = frame.checkpointTick;
+                            _awaitingFullFrame = false;
                             CompleteHistoryResync(frame.serverTick);
-                            ReleaseCheckpointContinuation(frame.checkpointTick);
                         }
                         // Advance the baseline floor only after decoding, replay and state capture succeed.
                         if (!_frameApplyHadBaselineFailure && isClient && !isServer && !frame.fullFrame &&
@@ -2571,8 +2446,8 @@ namespace PurrNet.Prediction
             _frameApplyHadBaselineFailure = true;
             if (frame.fullFrame)
             {
-                RejectCheckpoint(frame.checkpointTick);
-                PurrLogger.LogError($"Cannot apply prediction checkpoint {frame.checkpointTick}: {error}");
+                MarkHistoryResyncNeeded(frame.serverTick);
+                PurrLogger.LogError($"Cannot apply full prediction frame {frame.serverTick}: {error}");
                 if (++_consecutiveRejectedCheckpoints == MaxRejectedCheckpointsBeforeTolerance)
                     PurrLogger.LogWarning($"{_consecutiveRejectedCheckpoints} consecutive prediction checkpoints " +
                         "were rejected; callback exceptions during verified replay will now be logged and " +
@@ -2580,8 +2455,7 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            // Even a state-save failure can follow callbacks; require a checkpoint to avoid delivering them twice.
-            _requiresVerifiedInputCheckpoint = true;
+            // Even a state-save failure can follow callbacks; require a full frame to avoid delivering them twice.
             MarkHistoryResyncNeeded(frame.serverTick);
             string reason = error is MissingPredictionBaselineException
                 ? "A full sync was requested for the missing baseline."
@@ -3053,7 +2927,6 @@ namespace PurrNet.Prediction
             if (isSpawned && isClient && !isServer)
             {
                 ResendCachedInput();
-                ExpireStagedCheckpoint();
                 SendPendingHistoryResyncRequest();
 
                 // NetworkManager.Update (-999) finishes catch-up before this Update (1000) reconciles once.

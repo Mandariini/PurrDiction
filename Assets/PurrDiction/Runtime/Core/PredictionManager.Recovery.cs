@@ -15,6 +15,7 @@ namespace PurrNet.Prediction
 
         private void MarkHistoryResyncNeeded(ulong failedTick)
         {
+            _awaitingFullFrame = true;
             _historyResyncPending = true;
             _historyResyncRequiredAfterTick = Math.Max(_historyResyncRequiredAfterTick, failedTick);
             SendPendingHistoryResyncRequest();
@@ -36,7 +37,7 @@ namespace PurrNet.Prediction
                 return;
 
             TraceHistoryResync("Request", localPlayer ?? default, _historyResyncRequiredAfterTick);
-            RequestHistoryResync(_historyResyncRequiredAfterTick, _appliedCheckpointTick, _rejectedCheckpointTick);
+            RequestHistoryResync(_historyResyncRequiredAfterTick);
         }
 
         private void CompleteHistoryResync(ulong fullTick)
@@ -50,14 +51,13 @@ namespace PurrNet.Prediction
         }
 
         [ServerRpc(requireOwnership: false)]
-        private void RequestHistoryResync(ulong failedTick, ulong appliedCheckpointTick,
-            ulong rejectedCheckpointTick, RPCInfo info = default)
-            => HandleHistoryResyncRequest(info.sender, failedTick, appliedCheckpointTick, rejectedCheckpointTick);
+        private void RequestHistoryResync(ulong failedTick, RPCInfo info = default)
+            => HandleHistoryResyncRequest(info.sender, failedTick);
 
-        private void HandleHistoryResyncRequest(PlayerID player, ulong failedTick,
-            ulong appliedCheckpointTick, ulong rejectedCheckpointTick)
+        // Frames are ordered, so a full frame sent after the failed tick is already on its way.
+        private void HandleHistoryResyncRequest(PlayerID player, ulong failedTick)
         {
-            if (!_clientTicks.TryGetValue(player, out var input) || failedTick > localTick)
+            if (!_clientTicks.ContainsKey(player) || failedTick > localTick)
                 return;
 
             for (int i = 0; i < _clientFrames.Count; i++)
@@ -66,41 +66,9 @@ namespace PurrNet.Prediction
                 if (!frame.player.Equals(player))
                     continue;
 
-                // Delivery proof releases the pending checkpoint; only successful application advances its ACK.
-                ulong pendingTick = frame.reliableFrame.pendingTick;
-                bool rejected = pendingTick != 0 && rejectedCheckpointTick == pendingTick;
-                if (pendingTick != 0 && (appliedCheckpointTick == pendingTick || rejected))
+                if (frame.requiresFullCheckpoint || frame.lastFullFrameSentTick > failedTick)
                 {
-                    if (!rejected)
-                        input.ackedServerTick = Math.Max(input.ackedServerTick, pendingTick);
-                    frame.ClearRecoveryFrame();
-                    _clientFrames[i] = frame;
-                }
-
-                // A partial delta cannot complete a repair that requires a full snapshot.
-                if (!rejected && frame.lastFullFrameSentTick > 0 && frame.lastFullFrameSentTick >= failedTick &&
-                    input.ackedServerTick >= frame.lastFullFrameSentTick)
-                {
-                    TraceHistoryResync("Covered", player, failedTick, frame.reliableFrame.pendingTick,
-                        input.ackedServerTick, frame.lastFullFrameSentTick);
-                    return;
-                }
-
-                // Wait for delivery proof before replacing an in-flight checkpoint.
-                if (frame.reliableFrame.IsPending(input.ackedServerTick))
-                {
-                    if (failedTick > frame.lastFullFrameSentTick)
-                        frame.requiresFullCheckpoint = true;
-                    _clientFrames[i] = frame;
-                    TraceHistoryResync("Coalesced", player, failedTick, frame.reliableFrame.pendingTick,
-                        input.ackedServerTick, frame.reliableSentAtLocalTick);
-                    return;
-                }
-                frame.ClearRecoveryFrame();
-                _clientFrames[i] = frame;
-                if (frame.requiresFullCheckpoint || frame.fullFrame)
-                {
-                    TraceHistoryResync("Coalesced", player, failedTick, 0, input.ackedServerTick);
+                    TraceHistoryResync("Covered", player, failedTick, frame.lastFullFrameSentTick);
                     return;
                 }
 
@@ -112,8 +80,7 @@ namespace PurrNet.Prediction
                 if (QueueFullResync(player))
                 {
                     _historyResyncServedAt[player] = now;
-                    TraceHistoryResync("Serve", player, failedTick, frame.reliableFrame.pendingTick,
-                        input.ackedServerTick);
+                    TraceHistoryResync("Serve", player, failedTick);
                 }
                 return;
             }
