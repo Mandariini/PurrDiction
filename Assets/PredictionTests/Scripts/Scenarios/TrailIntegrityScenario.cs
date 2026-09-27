@@ -17,6 +17,8 @@ public class TrailIntegrityScenario : Scenario
     private const double InputSlackUpperSlopMs = 30d;
     private const double MaxStandingSlackTicks = 2.3d;
     private const float InputSlackWarmupSeconds = 5f;
+    private const long MinSmoothnessFrames = 200;
+    private const double MaxUnconfirmedExtraStepPercent = 10d;
 
     private GameObject _gunnerPrefab;
     private GameObject _projectilePrefab;
@@ -190,6 +192,15 @@ public class TrailIntegrityScenario : Scenario
         if (TrailViewTracker.failures.Count > 0)
             return ScenarioResult.Fail(report);
 
+        // An unconfirmed projectile is re-created by every reconcile and can change id when other
+        // players' spawns land first; its view must still glide like a confirmed one. Comparing the two
+        // keeps network jitter, which affects both, out of the verdict.
+        var unconfirmed = TrailViewTracker.unconfirmedSmoothness;
+        var confirmed = TrailViewTracker.confirmedSmoothness;
+        if (unconfirmed.frames >= MinSmoothnessFrames &&
+            unconfirmed.stepPercent > confirmed.stepPercent + MaxUnconfirmedExtraStepPercent)
+            return ScenarioResult.Fail($"unconfirmed projectiles stepped instead of gliding: {report}");
+
         if (pureClient)
         {
             if (pm.renderPhaseFrameAppliesTotal + pm.tickPhaseFrameAppliesTotal == 0)
@@ -263,7 +274,8 @@ public class TrailIntegrityScenario : Scenario
         sb.Append($"samples={TrailViewTracker.totalSamples} segments={TrailViewTracker.segmentsStarted} ");
         sb.Append($"failures={TrailViewTracker.failures.Count} diagnostics={TrailViewTracker.diagnostics.Count} ");
         sb.Append($"resurrections={TrailViewTracker.resurrections} maxBackward={TrailViewTracker.maxBackward:F3} ");
-        sb.Append($"kinds={TrailViewTracker.DescribeKindCounts()}");
+        sb.Append($"kinds={TrailViewTracker.DescribeKindCounts()} ");
+        sb.Append($"smooth[unconfirmed {TrailViewTracker.unconfirmedSmoothness} | confirmed {TrailViewTracker.confirmedSmoothness}]");
 
         AppendSamples(sb, " | FAIL ", TrailViewTracker.failures, 10);
         AppendSamples(sb, " | diag ", TrailViewTracker.diagnostics, 10);

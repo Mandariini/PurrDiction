@@ -157,6 +157,33 @@ public class TrailViewTracker : MonoBehaviour
                $"buffer={viewBuffer},latch={pendingLatch},applies={frameApplies}]";
     }
 
+    // Rendered motion of owned projectiles against their constant speed, split by whether the server has
+    // confirmed the projectile yet. A frame whose travel is off by more than half the expected step is a
+    // step: the view stood still, jumped, or restarted instead of gliding.
+    public struct Smoothness
+    {
+        public long frames;
+        public long steps;
+        public double deviation;
+
+        public double stepPercent => frames == 0 ? 0 : 100d * steps / frames;
+
+        public void Add(float ratio)
+        {
+            frames++;
+            var off = Mathf.Abs(ratio - 1f);
+            deviation += off;
+            if (off > 0.5f)
+                steps++;
+        }
+
+        public override string ToString()
+            => frames == 0 ? "n=0" : $"n={frames} steps={stepPercent:F1}% dev={deviation / frames:F2}";
+    }
+
+    public static Smoothness unconfirmedSmoothness;
+    public static Smoothness confirmedSmoothness;
+
     public static readonly List<Sample> failures = new();
     public static readonly List<Sample> diagnostics = new();
     public static readonly HashSet<uint> deadIds = new();
@@ -201,6 +228,8 @@ public class TrailViewTracker : MonoBehaviour
         segmentsStarted = 0;
         resurrections = 0;
         maxBackward = 0f;
+        unconfirmedSmoothness = default;
+        confirmedSmoothness = default;
     }
 
     public static string DescribeKindCounts()
@@ -301,6 +330,7 @@ public class TrailViewTracker : MonoBehaviour
         {
             CheckChannel("view", _prevView, viewPos, frame, tick, instanceId, owned);
             CheckChannel("sim", _prevSim, simPos, frame, tick, instanceId, owned);
+            SampleSmoothness(viewPos.x - _prevView.x, owned);
         }
         else if (_hasDisabledSample)
         {
@@ -320,6 +350,24 @@ public class TrailViewTracker : MonoBehaviour
         _prevFrame = frame;
         _previousContext = _currentContext;
         _hasPreviousContext = true;
+    }
+
+    private void SampleSmoothness(float travel, bool owned)
+    {
+        if (!owned || !_hasPreviousContext || _currentContext.deleteRequested || _previousContext.deleteRequested ||
+            _previousContext.age == 0 || _currentContext.age >= TrailProjectile.LifetimeTicks)
+            return;
+
+        var expected = TrailGunner.ProjectileSpeed * Time.deltaTime;
+        if (expected <= 1e-5f)
+            return;
+
+        // Until the server confirms it, every reconcile re-creates the projectile, and other players'
+        // spawns can shift its id; its view must glide through both.
+        if (_currentContext.projectileVerifiedTick.HasValue)
+            confirmedSmoothness.Add(travel / expected);
+        else
+            unconfirmedSmoothness.Add(travel / expected);
     }
 
     private void CheckChannel(string channel, Vector3 prev, Vector3 cur, int frame, ulong tick, uint instanceId, bool owned)
