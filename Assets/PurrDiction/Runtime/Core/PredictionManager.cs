@@ -1216,7 +1216,7 @@ namespace PurrNet.Prediction
                 }
 
                 int blockBits = wireBlock.positionInBits;
-                payload.WriteBits(GetUploadViewOffset(tick), (byte)ViewOffsetBits);
+                payload.WriteBits(GetUploadViewOffset(tick), ViewOffsetBits);
                 Packer<PackedUInt>.Write(payload, (uint)blockBits);
                 Packer<PackedUInt>.Write(payload, (uint)curSpans.Count);
                 payload.WriteBitsWithoutConsumingIt(wireBlock, blockBits);
@@ -2791,7 +2791,7 @@ namespace PurrNet.Prediction
                 for (uint i = 0; i < tickCount; i++)
                 {
                     uint viewOffset = ClampViewOffset(
-                        (uint)payload.ReadBits((byte)ViewOffsetBits), maxLagCompensationTicks);
+                        (uint)payload.ReadBits(ViewOffsetBits), maxLagCompensationTicks);
                     PackedUInt blockBits = default;
                     Packer<PackedUInt>.Read(payload, ref blockBits);
                     PackedUInt count = default;
