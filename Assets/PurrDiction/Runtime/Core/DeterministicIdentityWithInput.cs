@@ -42,9 +42,23 @@ namespace PurrNet.Prediction
         {
             base.Setup(manager, world, id, owner);
 
-            if (_inputHistory == null)
-                _inputHistory = new History<INPUT>(world.tickRate * 5);
+            EnsureInputHistory(world);
             DisposeInputStorage();
+        }
+
+        internal override void PrewarmPredictionState(PredictionManager world)
+        {
+            base.PrewarmPredictionState(world);
+            EnsureInputHistory(world);
+        }
+
+        private void EnsureInputHistory(PredictionManager world)
+        {
+            if (_inputHistory != null && _inputHistory.Capacity == world.tickRate * 5)
+                return;
+
+            _inputHistory?.Clear();
+            _inputHistory = new History<INPUT>(world.tickRate * 5);
         }
 
         internal override void ReleasePredictionStateForPool()

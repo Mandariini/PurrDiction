@@ -206,12 +206,11 @@ namespace PurrNet.Prediction
             ResetStateToInitialState();
             GetLatestUnityState();
 
-            var interpolationBuffer = PredictionManager.GetViewInterpolationMaxBufferSize(world.tickRate);
-
-            if (_interpolatedState == null)
+            if (!HasViewBufferFor(world))
             {
+                _interpolatedState?.Teleport(0, default);
                 _interpolatedState = new PredictedViewBuffer<FULL_STATE<STATE>>(
-                    FULLInterpolate, world.localTickInContext, fullPredictedState.DeepCopy(), interpolationBuffer + 2);
+                    FULLInterpolate, world.localTickInContext, fullPredictedState.DeepCopy(), ViewBufferCapacity(world));
             }
             else
                 _interpolatedState.Teleport(world.localTickInContext, fullPredictedState.DeepCopy());
@@ -219,10 +218,39 @@ namespace PurrNet.Prediction
             _viewState?.Dispose();
             _viewState = null;
 
-            if (_stateHistory == null)
+            _stateHistory?.Clear();
+            if (!HasStateHistoryFor(world))
                 _stateHistory = new History<FULL_STATE<STATE>>(world.tickRate * 10);
-            else _stateHistory.Clear();
             _stateHistory.Write(0, fullPredictedState.DeepCopy());
+        }
+
+        private static int ViewBufferCapacity(PredictionManager world)
+            => PredictionManager.GetViewInterpolationMaxBufferSize(world.tickRate) + 2;
+
+        private bool HasViewBufferFor(PredictionManager world)
+            => _interpolatedState != null && _interpolatedState.capacity == ViewBufferCapacity(world);
+
+        private bool HasStateHistoryFor(PredictionManager world)
+            => _stateHistory != null && _stateHistory.Capacity == world.tickRate * 10;
+
+        internal override void PrewarmPredictionState(PredictionManager world)
+        {
+            base.PrewarmPredictionState(world);
+
+            if (!HasViewBufferFor(world))
+            {
+                _interpolatedState?.Teleport(0, default);
+                _interpolatedState = new PredictedViewBuffer<FULL_STATE<STATE>>(
+                    FULLInterpolate, 0, default, ViewBufferCapacity(world));
+            }
+
+            if (!HasStateHistoryFor(world))
+            {
+                _stateHistory?.Clear();
+                _stateHistory = new History<FULL_STATE<STATE>>(world.tickRate * 10);
+            }
+
+            world.PrewarmVerifiedStore<PredictedIdentityState>();
         }
 
         protected virtual void GetUnityState(ref STATE state) {}

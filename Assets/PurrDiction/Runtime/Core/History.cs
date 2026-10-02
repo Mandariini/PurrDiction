@@ -145,6 +145,8 @@ namespace PurrNet.Prediction
             return BackingStoragePayloadBytes;
         }
 
+        internal bool HasEagerBackingStorage => m_maxCount > 0 && m_ticks.Length >= m_limitToCut + 1;
+
         internal long BackingStoragePayloadBytes =>
             (long)m_ticks.Length * (Unsafe.SizeOf<T>() + sizeof(ulong));
 

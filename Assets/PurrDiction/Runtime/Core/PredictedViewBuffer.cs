@@ -11,7 +11,7 @@ namespace PurrNet.Prediction
             public T value;
         }
 
-        private readonly List<Entry> _samples = new();
+        private readonly List<Entry> _samples;
         private readonly LerpFunction<T> _lerp;
         private readonly int _capacity;
 
@@ -22,9 +22,12 @@ namespace PurrNet.Prediction
         {
             _lerp = lerp ?? throw new ArgumentNullException(nameof(lerp));
             _capacity = Math.Max(1, capacity);
+            _samples = new List<Entry>(_capacity + 1);
             _anchor = initial;
             _anchorTick = tick;
         }
+
+        internal int capacity => _capacity;
 
         /// <summary>
         /// Samples not yet reached by the presented tick.

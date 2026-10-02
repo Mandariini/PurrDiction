@@ -43,6 +43,9 @@ namespace PurrNet.Prediction
         private readonly Dictionary<PredictedObjectID, InstanceDetails> _previousLifecyclePieces = new();
         private readonly HashSet<PredictedObjectID> _changedLifecyclePieces = new();
         private readonly Stack<LifecycleTick> _lifecycleReplayPool = new();
+        private readonly Stack<LifecycleReplay> _lifecycleReplays = new();
+        private LifecycleTick _readingLifecycleBatch;
+        private AddressedPredictionRecords.ReadRecord _readLifecycleEntrant;
         private readonly Dictionary<PredictedObjectID, int> _topologyCodecScratch = new();
 
         private void EnsureLifecycleHistoryCapacity()
@@ -219,6 +222,7 @@ namespace PurrNet.Prediction
             _topologyCodecScratch.Clear();
             while (_lifecycleReplayPool.Count > 0)
                 _lifecycleReplayPool.Pop().Dispose();
+            _lifecycleReplays.Clear();
         }
 
         private bool IsLifecycleEntrant(ulong tick, PredictedComponentID id)
@@ -327,6 +331,9 @@ namespace PurrNet.Prediction
             public readonly List<LifecycleTick> ticks = new();
             public void Dispose()
             {
+                if (owner == null)
+                    return;
+
                 foreach (var tick in ticks)
                 {
                     if (tick.ownsTopology)
@@ -340,12 +347,18 @@ namespace PurrNet.Prediction
                     owner._lifecycleReplayPool.Push(tick);
                 }
                 ticks.Clear();
+
+                var pool = owner._lifecycleReplays;
+                owner = null;
+                pool.Push(this);
             }
         }
 
         private LifecycleReplay ReadLifecycleHistory(BitPacker frame, ulong baselineTick, ulong serverTick, int endBit)
         {
-            var result = new LifecycleReplay { owner = this, firstTick = baselineTick + 1 };
+            var result = _lifecycleReplays.Count > 0 ? _lifecycleReplays.Pop() : new LifecycleReplay();
+            result.owner = this;
+            result.firstTick = baselineTick + 1;
             try
             {
                 if (frame.positionInBits >= endBit)
@@ -391,14 +404,16 @@ namespace PurrNet.Prediction
                     AddressedPredictionRecords.SkipSection(frame, endBit);
                     int after = frame.positionInBits;
                     frame.SetBitPosition(start);
-                    AddressedPredictionRecords.ReadSection((id, full, payload, bits) =>
+                    var outerBatch = _readingLifecycleBatch;
+                    _readingLifecycleBatch = batch;
+                    try
                     {
-                        if (!full || !batch.roster.Add(id) || bits == 0)
-                            throw new MissingPredictionBaselineException("Invalid lifecycle entrant state.");
-                        int origin = batch.payload.positionInBits;
-                        batch.payload.WriteBitDataWithoutConsumingIt(new BitData(payload, 0, bits));
-                        batch.entrants.Add(new LifecycleEntry { id = id, origin = origin, bits = bits });
-                    }, frame);
+                        AddressedPredictionRecords.ReadSection(_readLifecycleEntrant ??= ReadLifecycleEntrant, frame);
+                    }
+                    finally
+                    {
+                        _readingLifecycleBatch = outerBatch;
+                    }
                     frame.SetBitPosition(after);
                 }
                 return result;
@@ -410,6 +425,16 @@ namespace PurrNet.Prediction
                     throw;
                 throw new MissingPredictionBaselineException($"Invalid lifecycle transcript: {error.Message}");
             }
+        }
+
+        private void ReadLifecycleEntrant(PredictedComponentID id, bool full, BitPacker payload, int bits)
+        {
+            var batch = _readingLifecycleBatch;
+            if (!full || !batch.roster.Add(id) || bits == 0)
+                throw new MissingPredictionBaselineException("Invalid lifecycle entrant state.");
+            int origin = batch.payload.positionInBits;
+            batch.payload.WriteBitDataWithoutConsumingIt(new BitData(payload, 0, bits));
+            batch.entrants.Add(new LifecycleEntry { id = id, origin = origin, bits = bits });
         }
 
         private void ApplyLifecycleHistory(LifecycleReplay history, ulong tick)

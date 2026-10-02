@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using PurrNet.Logging;
 using PurrNet.Packing;
+using PurrNet.Pooling;
 using Unity.Profiling;
 using UnityEngine;
 
@@ -193,8 +194,8 @@ namespace PurrNet.Prediction
                 }
             }
 
-            dirty.Clear();
             _dirtyVisibility.Remove(player);
+            HashSetPool<PredictedObjectID>.Destroy(dirty);
             return changed;
         }
 
@@ -439,7 +440,10 @@ namespace PurrNet.Prediction
             _visibilityRootScratch.Clear();
 
             if (retired.Count == 0)
+            {
                 _retiredVisibilityRoots.Remove(player);
+                HashSetPool<PredictedObjectID>.Destroy(retired);
+            }
         }
 
         void AcknowledgeHiddenVisibility(
@@ -481,7 +485,7 @@ namespace PurrNet.Prediction
         {
             if (!_retiredVisibilityRoots.TryGetValue(player, out var retired))
             {
-                retired = new HashSet<PredictedObjectID>();
+                retired = HashSetPool<PredictedObjectID>.Instantiate();
                 _retiredVisibilityRoots.Add(player, retired);
             }
 
@@ -535,7 +539,7 @@ namespace PurrNet.Prediction
         {
             if (!_dirtyVisibility.TryGetValue(player, out var dirty))
             {
-                dirty = new HashSet<PredictedObjectID>();
+                dirty = HashSetPool<PredictedObjectID>.Instantiate();
                 _dirtyVisibility.Add(player, dirty);
             }
 
@@ -563,7 +567,7 @@ namespace PurrNet.Prediction
             if (!cachedIsServer ||
                 !system ||
                 system.id.objectId.instanceId.value == 1 ||
-                previousOwner.Equals(currentOwner))
+                previousOwner == currentOwner)
             {
                 return;
             }
@@ -1213,6 +1217,24 @@ namespace PurrNet.Prediction
                     : "The rest of the frame was applied; the server will answer the stalled ack with a full sync."));
         }
 
+        private struct AddressedReadContext
+        {
+            public ulong stateTick;
+            public ulong baselineTick;
+            public ulong serverTick;
+            public bool fullFrame;
+            public bool eventHandlers;
+            public bool deferUnityApply;
+        }
+
+        private AddressedReadContext _addressedRead;
+        private AddressedPredictionRecords.ReadRecord _readHierarchyRecord;
+        private AddressedPredictionRecords.ReadRecord _readStateRecord;
+        private AddressedPredictionRecords.RecordFailure _addressedRecordFailure;
+
+        private AddressedPredictionRecords.RecordFailure addressedRecordFailure =>
+            _addressedRecordFailure ??= OnAddressedRecordFailure;
+
         void ReadAddressedHierarchy(
             BitPacker frame,
             ulong stateTick,
@@ -1228,29 +1250,49 @@ namespace PurrNet.Prediction
             if (!hasHierarchy)
                 return;
 
-            AddressedPredictionRecords.ReadOne(
-                source: frame,
-                readRecord: (id, isFullState, payload, _) =>
-                {
-                    if (!_instanceMap.TryGetValue(id, out var system) || system != hierarchy)
-                    {
-                        throw new InvalidOperationException(
-                            $"Required hierarchy record {id} could not be resolved.");
-                    }
+            var outer = _addressedRead;
+            _addressedRead = new AddressedReadContext
+            {
+                stateTick = stateTick,
+                baselineTick = baselineTick,
+                serverTick = serverTick,
+                fullFrame = fullFrame,
+                deferUnityApply = deferUnityApply
+            };
+            try
+            {
+                AddressedPredictionRecords.ReadOne(
+                    source: frame,
+                    readRecord: _readHierarchyRecord ??= ReadHierarchyRecord,
+                    onRecordFailure: addressedRecordFailure);
+            }
+            finally
+            {
+                _addressedRead = outer;
+            }
 
-                    ApplyAddressedState(
-                        system,
-                        payload,
-                        fullFrame || isFullState,
-                        stateTick,
-                        baselineTick,
-                        serverTick,
-                        false,
-                        !deferUnityApply);
-                },
-                onRecordFailure: OnAddressedRecordFailure);
             if (_frameApplyHadBaselineFailure)
                 throw new MissingPredictionBaselineException("Required authoritative hierarchy could not be decoded.");
+        }
+
+        void ReadHierarchyRecord(PredictedComponentID id, bool isFullState, BitPacker payload, int payloadBitCount)
+        {
+            if (!_instanceMap.TryGetValue(id, out var system) || system != hierarchy)
+            {
+                throw new InvalidOperationException(
+                    $"Required hierarchy record {id} could not be resolved.");
+            }
+
+            var read = _addressedRead;
+            ApplyAddressedState(
+                system,
+                payload,
+                read.fullFrame || isFullState,
+                read.stateTick,
+                read.baselineTick,
+                read.serverTick,
+                false,
+                !read.deferUnityApply);
         }
 
         void ReadAddressedStateSection(
@@ -1280,50 +1322,26 @@ namespace PurrNet.Prediction
                 }
             }
 
-            AddressedPredictionRecords.ReadSection(
-                source: frame,
-                readRecord: (id, isFullState, payload, _) =>
-                {
-                    if (!_instanceMap.TryGetValue(id, out var system) ||
-                        system.isEventHandler != eventHandlers ||
-                        system == hierarchy)
-                    {
-                        return;
-                    }
-
-                    if (_recordDecodeQuarantine.Contains(id))
-                        return;
-
-                    if (!_addressedReadIdsScratch.Add(id))
-                    {
-                        throw new InvalidOperationException(
-                            $"Duplicate addressed state record {id}.");
-                    }
-
-                    bool full = fullFrame || isFullState;
-                    ulong recordBaseline = baselineTick;
-                    if (!full)
-                    {
-                        if (Packer<bool>.Read(payload))
-                        {
-                            uint offset = Packer<PackedUInt>.Read(payload);
-                            if (offset == 0 || offset >= stateTick - baselineTick)
-                                throw new MissingPredictionBaselineException(
-                                    $"Invalid entering baseline for record {id} at tick {stateTick}.");
-                            recordBaseline = stateTick - offset;
-                        }
-                    }
-
-                    ApplyAddressedState(
-                        system,
-                        payload,
-                        full,
-                        stateTick,
-                        recordBaseline,
-                        serverTick,
-                        eventHandlers);
-                },
-                onRecordFailure: OnAddressedRecordFailure);
+            var outer = _addressedRead;
+            _addressedRead = new AddressedReadContext
+            {
+                stateTick = stateTick,
+                baselineTick = baselineTick,
+                serverTick = serverTick,
+                fullFrame = fullFrame,
+                eventHandlers = eventHandlers
+            };
+            try
+            {
+                AddressedPredictionRecords.ReadSection(
+                    source: frame,
+                    readRecord: _readStateRecord ??= ReadStateRecord,
+                    onRecordFailure: addressedRecordFailure);
+            }
+            finally
+            {
+                _addressedRead = outer;
+            }
 
             if (fullFrame || baselineTick == 0)
                 return;
@@ -1380,6 +1398,49 @@ namespace PurrNet.Prediction
             if (!softCorrected)
                 system.RunRollback(stateTick);
             system.lastVerifiedTick = stateTick;
+        }
+
+        void ReadStateRecord(PredictedComponentID id, bool isFullState, BitPacker payload, int payloadBitCount)
+        {
+            var read = _addressedRead;
+            if (!_instanceMap.TryGetValue(id, out var system) ||
+                system.isEventHandler != read.eventHandlers ||
+                system == hierarchy)
+            {
+                return;
+            }
+
+            if (_recordDecodeQuarantine.Contains(id))
+                return;
+
+            if (!_addressedReadIdsScratch.Add(id))
+            {
+                throw new InvalidOperationException(
+                    $"Duplicate addressed state record {id}.");
+            }
+
+            bool full = read.fullFrame || isFullState;
+            ulong recordBaseline = read.baselineTick;
+            if (!full)
+            {
+                if (Packer<bool>.Read(payload))
+                {
+                    uint offset = Packer<PackedUInt>.Read(payload);
+                    if (offset == 0 || offset >= read.stateTick - read.baselineTick)
+                        throw new MissingPredictionBaselineException(
+                            $"Invalid entering baseline for record {id} at tick {read.stateTick}.");
+                    recordBaseline = read.stateTick - offset;
+                }
+            }
+
+            ApplyAddressedState(
+                system,
+                payload,
+                full,
+                read.stateTick,
+                recordBaseline,
+                read.serverTick,
+                read.eventHandlers);
         }
 
         void ReadAddressedFirstInputSection(BitPacker frame, ulong inputTick)

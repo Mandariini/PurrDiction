@@ -64,20 +64,34 @@ namespace PurrNet.Prediction
         readonly Dictionary<PredictedObjectID, Entry> _byPieceId = new ();
         readonly List<Entry> _entries = new ();
         readonly HashSet<GameObject> _entryPieceScratch = new ();
+        readonly Stack<Entry> _freeEntries = new ();
+
+        Entry RentEntry(GameObject rootGo, PredictedObjectID rootPieceId, PackedInt prefabId, ulong addedTick,
+            Vector3 rootSpawnPosition, bool isComplete, in SpawnKey spawnKey)
+        {
+            var entry = _freeEntries.Count > 0 ? _freeEntries.Pop() : new Entry();
+            entry.rootGo = rootGo;
+            entry.rootPieceId = rootPieceId;
+            entry.prefabId = prefabId;
+            entry.addedTick = addedTick;
+            entry.rootSpawnPosition = rootSpawnPosition;
+            entry.isComplete = isComplete;
+            entry.spawnKey = spawnKey;
+            return entry;
+        }
+
+        void ReturnEntry(Entry entry)
+        {
+            entry.rootGo = null;
+            entry.spawnKey = default;
+            entry.pieces.Clear();
+            _freeEntries.Push(entry);
+        }
 
         public void PutTree(PackedInt prefabId, PredictedObjectID rootPieceId, Vector3 rootSpawnPosition,
             GameObject rootGo, List<PooledPiece> pieces, ulong tick, bool isComplete, in SpawnKey spawnKey = default)
         {
-            var entry = new Entry
-            {
-                rootGo = rootGo,
-                rootPieceId = rootPieceId,
-                prefabId = prefabId,
-                addedTick = tick,
-                rootSpawnPosition = rootSpawnPosition,
-                isComplete = isComplete,
-                spawnKey = spawnKey
-            };
+            var entry = RentEntry(rootGo, rootPieceId, prefabId, tick, rootSpawnPosition, isComplete, spawnKey);
 
             for (var i = 0; i < pieces.Count; i++)
             {
@@ -90,15 +104,7 @@ namespace PurrNet.Prediction
 
         public void PutPiece(PackedInt prefabId, PredictedObjectID pieceId, uint pieceIndex, GameObject go, ulong tick)
         {
-            var entry = new Entry
-            {
-                rootGo = go,
-                rootPieceId = pieceId,
-                prefabId = prefabId,
-                addedTick = tick,
-                rootSpawnPosition = go.transform.position,
-                isComplete = false
-            };
+            var entry = RentEntry(go, pieceId, prefabId, tick, go.transform.position, false, default);
 
             entry.pieces.Add(new PooledPiece(pieceId, pieceIndex, go));
             MapPiece(pieceId, entry);
@@ -170,9 +176,7 @@ namespace PurrNet.Prediction
             if (match == null)
                 return false;
 
-            RemoveEntry(match);
-            resultPieces.AddRange(match.pieces);
-            rootGo = match.rootGo;
+            TakeEntry(match, resultPieces, out rootGo);
             return true;
         }
 
@@ -195,9 +199,7 @@ namespace PurrNet.Prediction
                 return false;
             }
 
-            RemoveEntry(entry);
-            resultPieces.AddRange(entry.pieces);
-            rootGo = entry.rootGo;
+            TakeEntry(entry, resultPieces, out rootGo);
             return true;
         }
 
@@ -212,9 +214,7 @@ namespace PurrNet.Prediction
                 return false;
             }
 
-            RemoveEntry(entry);
-            resultPieces.AddRange(entry.pieces);
-            rootGo = entry.rootGo;
+            TakeEntry(entry, resultPieces, out rootGo);
             return true;
         }
 
@@ -246,9 +246,7 @@ namespace PurrNet.Prediction
                 return false;
             }
 
-            RemoveEntry(closest);
-            resultPieces.AddRange(closest.pieces);
-            rootGo = closest.rootGo;
+            TakeEntry(closest, resultPieces, out rootGo);
             return true;
         }
 
@@ -297,7 +295,10 @@ namespace PurrNet.Prediction
                 go.transform.SetParent(null, false);
 
             if (entry.pieces.Count == 0)
+            {
                 _entries.Remove(entry);
+                ReturnEntry(entry);
+            }
             else if (go == entry.rootGo)
             {
                 var newRoot = entry.pieces[0];
@@ -326,14 +327,8 @@ namespace PurrNet.Prediction
                 var subRoot = subtreeRoots[i];
                 subRoot.SetParent(null, false);
 
-                var subEntry = new Entry
-                {
-                    rootGo = subRoot.gameObject,
-                    prefabId = entry.prefabId,
-                    addedTick = entry.addedTick,
-                    rootSpawnPosition = subRoot.position,
-                    isComplete = false
-                };
+                var subEntry = RentEntry(subRoot.gameObject, default, entry.prefabId, entry.addedTick,
+                    subRoot.position, false, default);
 
                 MovePiecesInSubtree(entry, subEntry, subRoot);
                 subEntry.rootPieceId = subEntry.pieces.Count > 0 ? subEntry.pieces[0].id : default;
@@ -377,11 +372,14 @@ namespace PurrNet.Prediction
             to.pieces.Sort(PieceIndexComparer.instance);
         }
 
-        void RemoveEntry(Entry entry)
+        void TakeEntry(Entry entry, List<PooledPiece> resultPieces, out GameObject rootGo)
         {
             for (var i = 0; i < entry.pieces.Count; i++)
                 UnmapPiece(entry.pieces[i].id, entry);
             _entries.Remove(entry);
+            resultPieces.AddRange(entry.pieces);
+            rootGo = entry.rootGo;
+            ReturnEntry(entry);
         }
 
         public void ClearOld(PredictionManager predictionManager)
@@ -415,13 +413,15 @@ namespace PurrNet.Prediction
 
             _entries.Remove(entry);
 
-            if (!entry.rootGo)
-                return;
+            if (entry.rootGo)
+            {
+                if (entry.isComplete)
+                    predictionManager.InternalDelete(entry.prefabId, entry.rootGo);
+                else
+                    UnityProxy.DestroyImmediateDirectly(entry.rootGo);
+            }
 
-            if (entry.isComplete)
-                predictionManager.InternalDelete(entry.prefabId, entry.rootGo);
-            else
-                UnityProxy.DestroyImmediateDirectly(entry.rootGo);
+            ReturnEntry(entry);
         }
     }
 }

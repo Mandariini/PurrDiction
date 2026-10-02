@@ -694,6 +694,7 @@ namespace PurrNet.Prediction
             isServer = manager.isServer;
             this.id = id;
             _destroyedFired = false;
+            _poolPrewarmed = true;
             predictionManager = world;
             sceneId = world.sceneId;
             _metadataVerified = null;
@@ -941,8 +942,23 @@ namespace PurrNet.Prediction
             OnAddedToPool();
         }
 
+        private bool _poolPrewarmed;
+
+        internal void PrewarmForPool(PredictionManager world)
+        {
+            if (_poolPrewarmed)
+                return;
+
+            _poolPrewarmed = true;
+            PrewarmPredictionState(world);
+        }
+
+        internal virtual void PrewarmPredictionState(PredictionManager world) { }
+
         internal virtual void ReleasePredictionStateForPool()
         {
+            _metadataVerified = null;
+            _moduleSetVerified = null;
             ReleaseModuleStateForPool();
         }
 

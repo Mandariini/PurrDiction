@@ -73,6 +73,12 @@ namespace PurrNet.Prediction
 
         internal override void GetLatestUnityState() { }
 
+        internal override void PrewarmPredictionState(PredictionManager world)
+        {
+            base.PrewarmPredictionState(world);
+            world.PrewarmVerifiedStore<PredictedIdentityState>();
+        }
+
         internal override void WriteFirstState(ulong tick, BitPacker packer)
         {
             var metadata = new PredictedIdentityState { owner = owner };

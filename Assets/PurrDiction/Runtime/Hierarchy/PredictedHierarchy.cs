@@ -44,6 +44,26 @@ namespace PurrNet.Prediction
 
         internal bool ContainsPooledObject(PredictedObjectID id) => _pool.Contains(id);
 
+        internal bool CollectVerifiedPieceIds(ulong fromTick, HashSet<PredictedObjectID> result)
+        {
+            var history = verifiedStateHistory;
+            if (history == null || history.Count == 0)
+                return false;
+
+            int start = history.Find(fromTick, out int index) ? index : System.Math.Max(0, index - 1);
+            for (var i = start; i < history.Count; i++)
+            {
+                var pieces = history[i].state.spawnedPrefabs;
+                if (pieces.isDisposed)
+                    continue;
+
+                for (var p = 0; p < pieces.Count; p++)
+                    result.Add(pieces[p].instanceId);
+            }
+
+            return true;
+        }
+
         readonly Dictionary<PredictedObjectID, int> _targetIdsScratch = new ();
         readonly List<InstanceDetails> _removalScratch = new ();
         readonly HashSet<PredictedObjectID> _removalSetScratch = new ();
@@ -64,6 +84,7 @@ namespace PurrNet.Prediction
         readonly Dictionary<PredictedObjectID, List<InstanceDetails>> _cascadeGroups = new ();
         readonly List<PredictedObjectID> _cascadeGroupOrder = new ();
         readonly Dictionary<PredictedObjectID, int> _cascadeGroupDepth = new ();
+        CascadeGroupComparer _cascadeGroupComparer;
         readonly HashSet<PredictedObjectID> _cascadeMemberScratch = new ();
         readonly List<InstanceDetails> _cascadeRootScratch = new ();
         readonly Dictionary<PredictedObjectID, DecorationAnchor> _pendingDecorationRestores = new ();
@@ -370,6 +391,19 @@ namespace PurrNet.Prediction
             _replacedEntrantsScratch.Clear();
             _isRollingBack = false;
             InvalidateVisibilityTopology();
+        }
+
+        private sealed class CascadeGroupComparer : IComparer<PredictedObjectID>
+        {
+            readonly Dictionary<PredictedObjectID, int> _depth;
+
+            public CascadeGroupComparer(Dictionary<PredictedObjectID, int> depth) => _depth = depth;
+
+            public int Compare(PredictedObjectID a, PredictedObjectID b)
+            {
+                int cmp = _depth[b].CompareTo(_depth[a]);
+                return cmp != 0 ? cmp : a.instanceId.value.CompareTo(b.instanceId.value);
+            }
         }
 
         private struct DecorationAnchor
@@ -1515,11 +1549,8 @@ namespace PurrNet.Prediction
                     _cascadeRootScratch.Add(removal);
             }
 
-            _cascadeGroupOrder.Sort((a, b) =>
-            {
-                int cmp = _cascadeGroupDepth[b].CompareTo(_cascadeGroupDepth[a]);
-                return cmp != 0 ? cmp : a.instanceId.value.CompareTo(b.instanceId.value);
-            });
+            _cascadeGroupComparer ??= new CascadeGroupComparer(_cascadeGroupDepth);
+            _cascadeGroupOrder.Sort(_cascadeGroupComparer);
 
             var isVerified = predictionManager.isVerified;
 

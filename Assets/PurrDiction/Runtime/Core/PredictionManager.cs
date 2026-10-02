@@ -160,6 +160,30 @@ namespace PurrNet.Prediction
                 if (prefab.pooled)
                     _pools.Register(prefab.prefab, prefab.warmupCount);
             }
+
+            if (isSpawned)
+                PrewarmPooledPredictionState();
+        }
+
+        private void PrewarmPooledPredictionState()
+        {
+            if (_pools == null || tickRate <= 0)
+                return;
+
+            var pooled = ListPool<GameObject>.Instantiate();
+            var identities = ListPool<PredictedIdentity>.Instantiate();
+            _pools.CollectPooled(pooled);
+
+            for (var i = 0; i < pooled.Count; i++)
+            {
+                identities.Clear();
+                pooled[i].GetComponentsInChildren(true, identities);
+                for (var k = 0; k < identities.Count; k++)
+                    identities[k].PrewarmForPool(this);
+            }
+
+            ListPool<PredictedIdentity>.Destroy(identities);
+            ListPool<GameObject>.Destroy(pooled);
         }
 
         public float tickDelta { get; private set; }
@@ -183,14 +207,21 @@ namespace PurrNet.Prediction
 
         public PredictedRandomSystem random { get; private set; }
 
-        internal interface IVerifiedStateStore
+        internal abstract class VerifiedStore
         {
-            void Clear();
-            bool TryMaintainBackingStorage(int maximumPayloadBytes, bool pruneBeforeBaseline, ulong baselineTick,
+            internal uint typeHash;
+            internal PredictedComponentID componentId;
+            internal int subKey;
+            internal int maintenanceIndex;
+            internal VerifiedStore nextForComponent;
+
+            public abstract void Clear();
+            public abstract bool CanRecycle(int capacity);
+            public abstract bool TryMaintainBackingStorage(int maximumPayloadBytes, bool pruneBeforeBaseline, ulong baselineTick,
                 out int prunedEntries, out int prunedPayloadBytes, out int allocatedPayloadBytes);
         }
 
-        private sealed class VerifiedStateStore<T> : IVerifiedStateStore where T : struct, IDisposable
+        private sealed class VerifiedStateStore<T> : VerifiedStore where T : struct, IDisposable
         {
             public readonly History<T> history;
 
@@ -199,9 +230,11 @@ namespace PurrNet.Prediction
                 history = new History<T>(capacity);
             }
 
-            public void Clear() => history.Clear();
+            public override void Clear() => history.Clear();
 
-            public bool TryMaintainBackingStorage(int maximumPayloadBytes, bool pruneBeforeBaseline, ulong baselineTick,
+            public override bool CanRecycle(int capacity) => history.Capacity == capacity && history.HasEagerBackingStorage;
+
+            public override bool TryMaintainBackingStorage(int maximumPayloadBytes, bool pruneBeforeBaseline, ulong baselineTick,
                 out int prunedEntries, out int prunedPayloadBytes, out int allocatedPayloadBytes)
             {
                 int entryBytes = System.Runtime.CompilerServices.Unsafe.SizeOf<T>() + sizeof(ulong);
@@ -215,12 +248,19 @@ namespace PurrNet.Prediction
             }
         }
 
-        readonly Dictionary<(uint, PredictedComponentID, int), IVerifiedStateStore> _verifiedStores = new ();
-        readonly List<(PredictedComponentID componentId, IVerifiedStateStore store)> _verifiedStoreMaintenance = new ();
+        readonly Dictionary<(uint, PredictedComponentID, int), VerifiedStore> _verifiedStores = new ();
+        readonly Dictionary<PredictedComponentID, VerifiedStore> _verifiedStoresByComponent = new ();
+        readonly List<VerifiedStore> _verifiedStoreMaintenance = new ();
+        readonly Dictionary<uint, Stack<VerifiedStore>> _recycledVerifiedStores = new ();
+        readonly List<PredictedComponentID> _retiredVerifiedComponents = new ();
+        readonly HashSet<PredictedComponentID> _retiredVerifiedComponentSet = new ();
+        readonly HashSet<PredictedObjectID> _verifiedPieceScratch = new ();
         int _verifiedStoreMaintenanceCursor;
         const int VerifiedStoresInspectedPerFrame = 8;
         const int VerifiedStoreCompactionPayloadBudget = 64 * 1024;
         const int VerifiedHistoryEntriesPrunedPerFrame = 64;
+        const int RetiredVerifiedComponentsReleasedPerFrame = 128;
+        const int RecycledVerifiedStoresPerType = 512;
         static readonly ProfilerMarker VerifiedHistoryMaintenanceMarker = new("PredictionManager.VerifiedHistoryMaintenance");
         static readonly ProfilerMarker VerifiedHistoryRebindMarker = new("PredictionManager.VerifiedHistoryRebind");
 
@@ -233,6 +273,10 @@ namespace PurrNet.Prediction
         internal long verifiedHistoryPrunedPayloadBytesTotal;
         internal long verifiedHistoryCompactedArrayPayloadBytesTotal;
         internal long verifiedHistoryRestoredArrayPayloadBytesTotal;
+        internal long verifiedHistoryReleasedStoresTotal;
+        internal long verifiedHistoryRecycledStoresTotal;
+
+        internal int verifiedStoreCount => _verifiedStores.Count;
 
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, out bool created) where T : struct, IDisposable
         {
@@ -241,7 +285,8 @@ namespace PurrNet.Prediction
 
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, int subKey, out bool created) where T : struct, IDisposable
         {
-            var key = (Hasher<T>.stableHash, componentId, subKey);
+            var typeHash = Hasher<T>.stableHash;
+            var key = (typeHash, componentId, subKey);
 
             if (_verifiedStores.TryGetValue(key, out var store))
             {
@@ -252,11 +297,38 @@ namespace PurrNet.Prediction
                 return history;
             }
 
-            var newStore = new VerifiedStateStore<T>(tickRate * 10);
+            int capacity = tickRate * 10;
+            var newStore = TakeRecycledVerifiedStore(typeHash, capacity) as VerifiedStateStore<T> ??
+                           new VerifiedStateStore<T>(capacity);
+            newStore.typeHash = typeHash;
+            newStore.componentId = componentId;
+            newStore.subKey = subKey;
+            newStore.maintenanceIndex = _verifiedStoreMaintenance.Count;
+            _verifiedStoreMaintenance.Add(newStore);
+            _verifiedStoresByComponent.TryGetValue(componentId, out var componentHead);
+            newStore.nextForComponent = componentHead;
+            _verifiedStoresByComponent[componentId] = newStore;
             _verifiedStores[key] = newStore;
-            _verifiedStoreMaintenance.Add((componentId, newStore));
             created = true;
             return newStore.history;
+        }
+
+        private VerifiedStore TakeRecycledVerifiedStore(uint typeHash, int capacity)
+        {
+            if (!_recycledVerifiedStores.TryGetValue(typeHash, out var recycled))
+                return null;
+
+            while (recycled.Count > 0)
+            {
+                var store = recycled.Pop();
+                // A client adopts the server's tick rate from its first full frame.
+                if (!store.CanRecycle(capacity))
+                    continue;
+                verifiedHistoryRecycledStoresTotal++;
+                return store;
+            }
+
+            return null;
         }
 
         private void ClearVerifiedStores()
@@ -264,8 +336,145 @@ namespace PurrNet.Prediction
             foreach (var store in _verifiedStores.Values)
                 store.Clear();
             _verifiedStores.Clear();
+            _verifiedStoresByComponent.Clear();
             _verifiedStoreMaintenance.Clear();
+            _recycledVerifiedStores.Clear();
+            _retiredVerifiedComponents.Clear();
+            _retiredVerifiedComponentSet.Clear();
             _verifiedStoreMaintenanceCursor = 0;
+        }
+
+        private void RetireVerifiedStores(PredictedComponentID componentId)
+        {
+            if (componentId.objectId.instanceId.value == 1 ||
+                !_verifiedStoresByComponent.ContainsKey(componentId))
+            {
+                return;
+            }
+
+            if (_retiredVerifiedComponentSet.Add(componentId))
+                _retiredVerifiedComponents.Add(componentId);
+        }
+
+        private void ReleaseRetiredVerifiedStores()
+        {
+            int count = _retiredVerifiedComponents.Count;
+            if (count == 0)
+                return;
+
+            bool pureClient = isClient && !isServer;
+            if (pureClient && !hierarchy)
+            {
+                _retiredVerifiedComponents.Clear();
+                _retiredVerifiedComponentSet.Clear();
+                return;
+            }
+
+            int released = 0;
+            int kept = 0;
+            bool collectedVerifiedPieces = false;
+            bool hasVerifiedTopology = false;
+
+            for (var i = 0; i < count; i++)
+            {
+                var componentId = _retiredVerifiedComponents[i];
+                bool keep;
+
+                if (_instanceMap.ContainsKey(componentId) || !_verifiedStoresByComponent.ContainsKey(componentId))
+                {
+                    keep = false;
+                }
+                else if (released >= RetiredVerifiedComponentsReleasedPerFrame ||
+                         (hierarchy && hierarchy.ContainsPooledObject(componentId.objectId)))
+                {
+                    keep = true;
+                }
+                else if (!pureClient)
+                {
+                    ReleaseVerifiedStores(componentId);
+                    released++;
+                    keep = false;
+                }
+                else
+                {
+                    if (!collectedVerifiedPieces)
+                    {
+                        hasVerifiedTopology = hierarchy.CollectVerifiedPieceIds(_verifiedHistoryBaselineFloor, _verifiedPieceScratch);
+                        collectedVerifiedPieces = true;
+                    }
+
+                    keep = !hasVerifiedTopology || _verifiedPieceScratch.Contains(componentId.objectId);
+                    if (!keep)
+                    {
+                        ReleaseVerifiedStores(componentId);
+                        released++;
+                    }
+                }
+
+                if (keep)
+                    _retiredVerifiedComponents[kept++] = componentId;
+                else
+                    _retiredVerifiedComponentSet.Remove(componentId);
+            }
+
+            _retiredVerifiedComponents.RemoveRange(kept, count - kept);
+            _verifiedPieceScratch.Clear();
+        }
+
+        private void ReleaseVerifiedStores(PredictedComponentID componentId)
+        {
+            if (!_verifiedStoresByComponent.Remove(componentId, out var store))
+                return;
+
+            int capacity = tickRate * 10;
+            while (store != null)
+            {
+                var next = store.nextForComponent;
+                _verifiedStores.Remove((store.typeHash, componentId, store.subKey));
+                RemoveFromVerifiedStoreMaintenance(store);
+                store.Clear();
+                store.nextForComponent = null;
+                store.componentId = default;
+                verifiedHistoryReleasedStoresTotal++;
+
+                if (store.CanRecycle(capacity))
+                {
+                    var recycled = RecycledVerifiedStores(store.typeHash);
+                    if (recycled.Count < RecycledVerifiedStoresPerType)
+                        recycled.Push(store);
+                }
+
+                store = next;
+            }
+        }
+
+        internal void PrewarmVerifiedStore<T>() where T : struct, IDisposable
+        {
+            var recycled = RecycledVerifiedStores(Hasher<T>.stableHash);
+            if (recycled.Count < RecycledVerifiedStoresPerType)
+                recycled.Push(new VerifiedStateStore<T>(tickRate * 10));
+        }
+
+        private Stack<VerifiedStore> RecycledVerifiedStores(uint typeHash)
+        {
+            if (!_recycledVerifiedStores.TryGetValue(typeHash, out var recycled))
+            {
+                recycled = new Stack<VerifiedStore>();
+                _recycledVerifiedStores.Add(typeHash, recycled);
+            }
+
+            return recycled;
+        }
+
+        private void RemoveFromVerifiedStoreMaintenance(VerifiedStore store)
+        {
+            int index = store.maintenanceIndex;
+            int last = _verifiedStoreMaintenance.Count - 1;
+            var moved = _verifiedStoreMaintenance[last];
+            _verifiedStoreMaintenance[index] = moved;
+            moved.maintenanceIndex = index;
+            _verifiedStoreMaintenance.RemoveAt(last);
+            store.maintenanceIndex = -1;
         }
 
         private void MaintainVerifiedStoreStorage()
@@ -274,20 +483,23 @@ namespace PurrNet.Prediction
                 return;
 
             using var maintenanceScope = VerifiedHistoryMaintenanceMarker.Auto();
+            ReleaseRetiredVerifiedStores();
+
             int count = _verifiedStoreMaintenance.Count;
             int remaining = Math.Min(VerifiedStoresInspectedPerFrame, count);
             while (remaining-- > 0)
             {
                 if (_verifiedStoreMaintenanceCursor >= count)
                     _verifiedStoreMaintenanceCursor = 0;
-                var entry = _verifiedStoreMaintenance[_verifiedStoreMaintenanceCursor++];
+                var store = _verifiedStoreMaintenance[_verifiedStoreMaintenanceCursor++];
                 verifiedHistoryMaintenanceInspectionsTotal++;
-                if (_instanceMap.ContainsKey(entry.componentId) ||
-                    (hierarchy && hierarchy.ContainsPooledObject(entry.componentId.objectId)))
+                if (_instanceMap.ContainsKey(store.componentId) ||
+                    _retiredVerifiedComponentSet.Contains(store.componentId) ||
+                    (hierarchy && hierarchy.ContainsPooledObject(store.componentId.objectId)))
                     continue;
 
                 // Only pure clients have a monotonic baseline floor; server stores serve independent client baselines.
-                if (entry.store.TryMaintainBackingStorage(VerifiedStoreCompactionPayloadBudget,
+                if (store.TryMaintainBackingStorage(VerifiedStoreCompactionPayloadBudget,
                         isClient && !isServer, _verifiedHistoryBaselineFloor,
                         out int prunedEntries, out int prunedPayloadBytes, out int allocatedPayloadBytes))
                 {
@@ -350,6 +562,8 @@ namespace PurrNet.Prediction
             {
                 Time.fixedDeltaTime = tickDelta;
             }
+
+            PrewarmPooledPredictionState();
         }
 
         // Undiscovered identities never receive Setup, leaving state uninitialized and callback IDs at zero.
@@ -732,6 +946,7 @@ namespace PurrNet.Prediction
                 _instanceMap.Remove(predictedIdentity.id);
                 _recordDecodeQuarantine.Remove(predictedIdentity.id);
                 _recordFailureLogAt.Remove(predictedIdentity.id);
+                RetireVerifiedStores(predictedIdentity.id);
             }
 
             if (_systems.Remove(predictedIdentity))

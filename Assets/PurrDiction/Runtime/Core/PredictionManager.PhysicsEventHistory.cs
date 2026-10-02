@@ -221,46 +221,26 @@ namespace PurrNet.Prediction
                         AddressedPredictionRecords.SkipSection(source, frameEndBit, 2);
                         continue;
                     }
-                    bool has3D = false;
-                    bool has2D = false;
+                    var outer = _readingPhysicsBatch;
+                    _readingPhysicsBatch = new PhysicsBatchRead { batch = batch };
                     try
                     {
                         int recordsStart = source.positionInBits;
                         AddressedPredictionRecords.SkipSection(source, frameEndBit, 2);
                         source.SetBitPosition(recordsStart);
                         AddressedPredictionRecords.ReadSection(source: source,
-                            readRecord: (id, full, payload, _) =>
-                            {
-                                if (!full)
-                                    throw new InvalidOperationException("Historical physics batches must be self-contained.");
-#if UNITY_PHYSICS_3D
-                                if (physics3d && id.Equals(physics3d.id))
-                                {
-                                    if (has3D)
-                                        throw new InvalidOperationException("Duplicate historical 3D physics batch.");
-                                    has3D = true;
-                                    Packer<PredictedPhysicsData>.Read(payload, ref batch.physics3D);
-                                    return;
-                                }
-#endif
-#if UNITY_PHYSICS_2D
-                                if (physics2d && id.Equals(physics2d.id))
-                                {
-                                    if (has2D)
-                                        throw new InvalidOperationException("Duplicate historical 2D physics batch.");
-                                    has2D = true;
-                                    Packer<PredictedPhysics2DData>.Read(payload, ref batch.physics2D);
-                                    return;
-                                }
-#endif
-                                throw new InvalidOperationException($"Unknown historical physics handler {id}.");
-                            });
+                            readRecord: _readPhysicsBatchRecord ??= ReadPhysicsBatchRecord);
+                        batch = _readingPhysicsBatch.batch;
                         batches.Add(batch);
                     }
                     catch
                     {
-                        batch.Dispose();
+                        _readingPhysicsBatch.batch.Dispose();
                         throw;
+                    }
+                    finally
+                    {
+                        _readingPhysicsBatch = outer;
                     }
                 }
                 return result;
@@ -270,6 +250,43 @@ namespace PurrNet.Prediction
                 result.Dispose();
                 throw;
             }
+        }
+
+        private struct PhysicsBatchRead
+        {
+            public HistoricalPhysicsBatch batch;
+            public bool has3D;
+            public bool has2D;
+        }
+
+        private PhysicsBatchRead _readingPhysicsBatch;
+        private AddressedPredictionRecords.ReadRecord _readPhysicsBatchRecord;
+
+        private void ReadPhysicsBatchRecord(PredictedComponentID id, bool full, BitPacker payload, int payloadBitCount)
+        {
+            if (!full)
+                throw new InvalidOperationException("Historical physics batches must be self-contained.");
+#if UNITY_PHYSICS_3D
+            if (physics3d && id.Equals(physics3d.id))
+            {
+                if (_readingPhysicsBatch.has3D)
+                    throw new InvalidOperationException("Duplicate historical 3D physics batch.");
+                _readingPhysicsBatch.has3D = true;
+                Packer<PredictedPhysicsData>.Read(payload, ref _readingPhysicsBatch.batch.physics3D);
+                return;
+            }
+#endif
+#if UNITY_PHYSICS_2D
+            if (physics2d && id.Equals(physics2d.id))
+            {
+                if (_readingPhysicsBatch.has2D)
+                    throw new InvalidOperationException("Duplicate historical 2D physics batch.");
+                _readingPhysicsBatch.has2D = true;
+                Packer<PredictedPhysics2DData>.Read(payload, ref _readingPhysicsBatch.batch.physics2D);
+                return;
+            }
+#endif
+            throw new InvalidOperationException($"Unknown historical physics handler {id}.");
         }
 
         private void ApplyPhysicsEventHistory(HistoricalPhysicsEvents history, ulong tick, ref int index)
