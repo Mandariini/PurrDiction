@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 using NUnit.Framework;
 using UnityEditorInternal;
@@ -11,29 +10,68 @@ using UnityEngine.TestTools;
 
 namespace PurrNet.Prediction.Tests.Editor
 {
-    // The heap counter misses small allocations that reuse freed slots, so this counts every GC.Alloc
-    // sample the profiler attributes to PurrNet or PurrDiction code while pooled objects churn
-    // through coalesced frames on a server and a client.
+    // The heap counter misses small allocations that reuse freed slots, so these count every GC.Alloc
+    // sample the profiler attributes to PurrNet or PurrDiction code while a server and a client run.
     public sealed class AllocationProfilerTests
     {
         [UnityTest]
         public IEnumerator SteadyPooledChurnThroughCoalescedFramesAllocatesNothing()
         {
             new PooledSpawnAllocationTests().RegisterPackers();
-            var worldType = typeof(PooledSpawnAllocationTests).GetNestedType("World", BindingFlags.NonPublic);
-            var world = (IDisposable)Activator.CreateInstance(worldType, BindingFlags.Instance | BindingFlags.NonPublic,
-                null, new object[] { 60, 0 }, null);
-            var churn = worldType.GetMethod("Churn", BindingFlags.Instance | BindingFlags.NonPublic);
+            using var world = new PooledSpawnAllocationTests.World(60);
+            var live = new Queue<PredictedObjectID>();
+            ulong tick = 11;
+            for (int i = 1; i <= 60 * 30; i++, tick++)
+                world.Churn(tick, live, deliver: i % 3 == 0);
+
+            var frames = AssertTicksAllocateNothing(20, i => world.Churn(tick++, live, deliver: i == 3));
+            while (frames.MoveNext())
+                yield return frames.Current;
+        }
+
+        // Predicted projectiles make the topology the hierarchy copies into its histories swing in size.
+        // Each copy took whichever pooled list was returned last and grew it, allocating a new backing
+        // array several kilobytes long on most copies through a fight.
+        [UnityTest]
+        public IEnumerator PredictedShotsWithASwingingLiveCountAllocateNothing([Values(false, true)] bool mispredict)
+        {
+            SpawnChurnShooter.mispredict = mispredict;
+            new PooledSpawnAllocationTests().RegisterPackers();
+            using var world = new PooledSpawnAllocationTests.World(60, shooter: true);
+            var live = new Queue<PredictedObjectID>();
+            ulong tick = 11;
+            world.server.hierarchy.Create(1, Vector3.zero, Quaternion.identity);
+            // A cold pool keeps adding lists for each size the fight reaches until the histories have
+            // cycled a few times over; it settles within about 40 s of ticks.
+            int fewest = int.MaxValue, most = 0;
+            for (int i = 1; i <= 60 * 60; i++, tick++)
+            {
+                world.Churn(tick, live, spawn: false, deliver: i % 3 == 0);
+                world.LateUpdate();
+                int count = world.client.hierarchy.currentState.spawnedPrefabs.Count;
+                fewest = Math.Min(fewest, count);
+                most = Math.Max(most, count);
+            }
+            Assert.That(most - fewest, Is.GreaterThan(20), "the client's live count must swing");
+
+            var frames = AssertTicksAllocateNothing(60, i =>
+            {
+                world.Churn(tick++, live, spawn: false, deliver: i == 3);
+                world.LateUpdate();
+            });
+            while (frames.MoveNext())
+                yield return frames.Current;
+        }
+
+        // Runs frames of three ticks with allocation callstacks recorded, then fails on any allocation
+        // attributed to product code.
+        static IEnumerator AssertTicksAllocateNothing(int frames, Action<int> tick)
+        {
             bool wasProfiling = ProfilerDriver.enabled;
             bool wasProfilingEditor = ProfilerDriver.profileEditor;
             bool hadCallstacks = UnityEngine.Profiling.Profiler.enableAllocationCallstacks;
             try
             {
-                var live = new Queue<PredictedObjectID>();
-                ulong tick = 11;
-                for (int i = 1; i <= 60 * 30; i++, tick++)
-                    churn.Invoke(world, new object[] { tick, live, true, i % 3 == 0 });
-
                 ProfilerDriver.ClearAllFrames();
                 UnityEngine.Profiling.Profiler.enableAllocationCallstacks = true;
                 ProfilerDriver.profileEditor = true;
@@ -41,10 +79,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 yield return null;
                 yield return null;
 
-                for (int frame = 0; frame < 20; frame++)
+                for (int frame = 0; frame < frames; frame++)
                 {
-                    for (int i = 1; i <= 3; i++, tick++)
-                        churn.Invoke(world, new object[] { tick, live, true, i == 3 });
+                    for (int i = 1; i <= 3; i++)
+                        tick(i);
                     yield return null;
                 }
 
@@ -64,7 +102,6 @@ namespace PurrNet.Prediction.Tests.Editor
                 ProfilerDriver.enabled = wasProfiling;
                 ProfilerDriver.profileEditor = wasProfilingEditor;
                 UnityEngine.Profiling.Profiler.enableAllocationCallstacks = hadCallstacks;
-                world.Dispose();
             }
         }
 

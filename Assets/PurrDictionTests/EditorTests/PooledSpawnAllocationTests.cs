@@ -23,6 +23,9 @@ namespace PurrNet.Prediction.Tests.Editor
             Hasher.PrepareType(typeof(SpawnChurnInput));
             Hasher.PrepareType(typeof(SpawnChurnState));
             Hasher.PrepareType(typeof(SpawnChurnProbe));
+            Hasher.PrepareType(typeof(SpawnChurnAge));
+            Hasher.PrepareType(typeof(SpawnChurnShooter));
+            Hasher.PrepareType(typeof(SpawnChurnBullet));
             Hasher.PrepareType(typeof(PredictedHierarchyState));
             Hasher.PrepareType(typeof(InstanceDetails));
             Hasher.PrepareType(typeof(PredictedTransformState));
@@ -37,6 +40,12 @@ namespace PurrNet.Prediction.Tests.Editor
             DeltaPacker<SpawnChurnInput>.Register(
                 (BitPacker p, SpawnChurnInput old, SpawnChurnInput value) => DeltaPacker<int>.Write(p, old.amount, value.amount),
                 (BitPacker p, SpawnChurnInput old, ref SpawnChurnInput value) => DeltaPacker<int>.Read(p, old.amount, ref value.amount));
+            Packer<SpawnChurnAge>.RegisterWriter((p, v) => Packer<int>.Write(p, v.ticks));
+            Packer<SpawnChurnAge>.RegisterReader((BitPacker p, ref SpawnChurnAge v) =>
+                v.ticks = Packer<int>.Read(p));
+            DeltaPacker<SpawnChurnAge>.Register(
+                (BitPacker p, SpawnChurnAge old, SpawnChurnAge value) => DeltaPacker<int>.Write(p, old.ticks, value.ticks),
+                (BitPacker p, SpawnChurnAge old, ref SpawnChurnAge value) => DeltaPacker<int>.Read(p, old.ticks, ref value.ticks));
             DeltaPacker<SpawnChurnState>.Register(
                 (BitPacker p, SpawnChurnState old, SpawnChurnState value) => DeltaPacker<int>.Write(p, old.value, value.value),
                 (BitPacker p, SpawnChurnState old, ref SpawnChurnState value) => DeltaPacker<int>.Read(p, old.value, ref value.value));
@@ -174,7 +183,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(perFrame, Is.LessThan(128), report);
         }
 
-        private sealed class World : IDisposable
+        internal sealed class World : IDisposable
         {
             private readonly List<GameObject> _objects = new();
             private readonly List<NetworkManager> _networks = new();
@@ -186,7 +195,7 @@ namespace PurrNet.Prediction.Tests.Editor
             private readonly int _tickRate;
             internal readonly PredictionManager server, client;
 
-            internal World(int tickRate, int warmup = 0)
+            internal World(int tickRate, int warmup = 0, bool shooter = false)
             {
                 _tickRate = tickRate;
                 _previousCadence = PredictionPerformanceTelemetry.reconcileIntervalSeconds;
@@ -198,6 +207,16 @@ namespace PurrNet.Prediction.Tests.Editor
                 prefab.AddComponent<SpawnChurnProbe>();
                 _prefabs = ScriptableObject.CreateInstance<PredictedPrefabs>();
                 _prefabs.prefabs.Add(new PredictedPrefab { prefab = prefab, pooled = true, warmupCount = warmup });
+                if (shooter)
+                {
+                    var gun = NewObject("Churn shooter");
+                    gun.AddComponent<SpawnChurnShooter>();
+                    _prefabs.prefabs.Add(new PredictedPrefab { prefab = gun, pooled = true });
+                    var bullet = NewObject("Churn bullet");
+                    bullet.AddComponent<PredictedTransform>();
+                    bullet.AddComponent<SpawnChurnBullet>();
+                    _prefabs.prefabs.Add(new PredictedPrefab { prefab = bullet, pooled = true, warmupCount = warmup });
+                }
                 server.predictedPrefabs = _prefabs;
                 client.predictedPrefabs = _prefabs;
 
@@ -308,6 +327,16 @@ namespace PurrNet.Prediction.Tests.Editor
                 // OnPostTick clears the bandwidth profiler's per-tick records.
                 TickBandwidthProfiler.MarkEndOfTick();
             }
+
+            // PredictedHierarchy releases despawned instances held for rollback from LateUpdate, which
+            // edit-mode tests never run.
+            internal void LateUpdate()
+            {
+                HierarchyLateUpdate.Invoke(server.hierarchy, null);
+                HierarchyLateUpdate.Invoke(client.hierarchy, null);
+            }
+
+            static readonly MethodInfo HierarchyLateUpdate = typeof(PredictedHierarchy).GetMethod("LateUpdate", Fields);
 
             // Measures only the client's frame application; the server keeps preparing a frame each
             // tick and sends every Nth, so each delivered frame covers that many ticks.
@@ -631,5 +660,42 @@ namespace PurrNet.Prediction.Tests.Editor
 
         protected override void Simulate(SpawnChurnInput input, ref SpawnChurnState state, float delta)
             => state.value += input.amount;
+    }
+
+    public struct SpawnChurnAge : IPredictedData<SpawnChurnAge>
+    {
+        public int ticks;
+        public void Dispose() { }
+    }
+
+    // Fires in bursts on every peer, so a client predicts spawns while it replays and the live count
+    // swings. With mispredict the server fires on other ticks, and the client undoes the shots it
+    // predicted wrongly.
+    public sealed class SpawnChurnShooter : PredictedIdentity<SpawnChurnAge>
+    {
+        internal static bool mispredict;
+
+        protected override void Simulate(ref SpawnChurnAge state, float delta)
+        {
+            state.ticks++;
+            bool firing = state.ticks / 40 % 2 == 0;
+            if (mispredict)
+                firing &= predictionManager.cachedIsServer ? state.ticks % 7 < 3 : state.ticks % 5 < 2;
+            if (!firing)
+                return;
+            for (int i = 0; i < 2; i++)
+                predictionManager.hierarchy.Create(2, new Vector3(state.ticks, i, 0), Quaternion.identity);
+        }
+    }
+
+    public sealed class SpawnChurnBullet : PredictedIdentity<SpawnChurnAge>
+    {
+        private const int Lifetime = 30;
+
+        protected override void Simulate(ref SpawnChurnAge state, float delta)
+        {
+            if (++state.ticks >= Lifetime)
+                predictionManager.hierarchy.Delete(gameObject);
+        }
     }
 }
