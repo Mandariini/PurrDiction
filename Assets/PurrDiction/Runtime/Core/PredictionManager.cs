@@ -532,7 +532,8 @@ namespace PurrNet.Prediction
 
         protected override void OnEarlySpawn()
         {
-            RegisterScene();
+            RegisterScenes();
+            HookSceneLoads();
 
             tickRate = networkManager.tickModule.tickRate;
             tickDelta = 1f / tickRate;
@@ -598,7 +599,7 @@ namespace PurrNet.Prediction
                 var identity = all[i];
 
                 if (!identity ||
-                    identity.gameObject.scene.handle != gameObject.scene.handle ||
+                    !IsManagedScene(identity.gameObject.scene) ||
                     identity.transform.root == transform.root ||
                     identity.predictionManager ||
                     known.Contains(identity))
@@ -607,32 +608,13 @@ namespace PurrNet.Prediction
                 }
 
                 PurrLogger.LogWarning(
-                    $"PredictedIdentity '{identity.name}' ({identity.GetType().Name}) is in the scene but was not discovered during registration. " +
+                    $"PredictedIdentity '{identity.name}' ({identity.GetType().Name}) is in a scene managed by this PredictionManager but was not discovered during registration. " +
                     "It will never simulate or sync, its state stays uninitialized, and physics events involving it pass a null 'other' to callbacks. " +
-                    "Spawn it with PredictionManager.hierarchy.Create, keep it in the scene file, or enable 'includeInstantiatedSceneObjects' in NetworkRules.",
+                    "Spawn it with PredictionManager.hierarchy.Create, keep it in the scene file, load its scene before this manager spawns, or enable 'includeInstantiatedSceneObjects' in NetworkRules.",
                     identity);
             }
 
             HashSetPool<PredictedIdentity>.Destroy(known);
-        }
-
-        private void RegisterScene()
-        {
-            var identities = ListPool<PredictedIdentity>.Instantiate();
-
-#if HAS_DISCOVERY_RULE
-            SceneObjectsModule.GetScenePredictedIdentities(gameObject.scene, identities, networkManager.networkRules.ShouldIncludeInstantiatedSceneObjects());
-#else
-            SceneObjectsModule.GetScenePredictedIdentities(gameObject.scene, identities);
-#endif
-
-            int count = identities.Count;
-            for (var i = 0; i < count; ++i)
-            {
-                var pid = identities[i];
-                _queue.Add(pid);
-            }
-            ListPool<PredictedIdentity>.Destroy(identities);
         }
 
         private TickManager _tickManager;
@@ -660,6 +642,8 @@ namespace PurrNet.Prediction
         protected override void OnDestroy()
         {
             base.OnDestroy();
+
+            UnhookSceneLoads();
 
             foreach (var packer in _clientFrames)
                 packer.Dispose();
