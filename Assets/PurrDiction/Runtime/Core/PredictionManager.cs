@@ -2979,6 +2979,10 @@ namespace PurrNet.Prediction
         {
             using (payload)
             {
+                if (tickCount > MaxInputWindow ||
+                    (tickCount > 0 && firstTick > ulong.MaxValue - (tickCount - 1)))
+                    return;
+
                 if (!_clientTicks.TryGetValue(info.sender, out var ticks))
                 {
                     ticks = new InputQueue();
@@ -2990,7 +2994,7 @@ namespace PurrNet.Prediction
 
                 if (tickCount > 0)
                 {
-                    ulong newestTick = firstTick + tickCount - 1;
+                    ulong newestTick = firstTick + (tickCount - 1);
                     if (newestTick > ticks.rawHighestReceivedTick)
                     {
                         ticks.rawHighestReceivedTick = newestTick;
@@ -3011,7 +3015,7 @@ namespace PurrNet.Prediction
                     ulong tick = firstTick + i;
                     if (tick < localTick || tick <= ticks.lastConsumedTick)
                         continue;
-                    if (tick > localTick + MaxInputWindow * 2)
+                    if (tick > localTick && tick - localTick > MaxInputWindow * 2)
                         continue;
                     if (ticks.byTick.ContainsKey(tick))
                         continue;
@@ -3104,7 +3108,7 @@ namespace PurrNet.Prediction
                         return;
 
                     bool tooOld = tick < localTick || tick <= ticks.lastConsumedTick;
-                    bool tooFar = tick > localTick + MaxInputWindow * 2;
+                    bool tooFar = tick > localTick && tick - localTick > MaxInputWindow * 2;
 
                     if (!tooOld && !tooFar && !ticks.byTick.ContainsKey(tick))
                     {
