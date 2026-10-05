@@ -2322,8 +2322,8 @@ namespace PurrNet.Prediction
 
             double droop = Math.Max(0d, _slackEmaMs - _slackFloorEstimateMs);
             double scale = ComputeTickPacingScale(_slackEmaMs, ComputeSlackTargetMs(_slackDevEmaMs, droop));
-            ulong lead = localTick > _verifiedServerTick ? localTick - _verifiedServerTick : 0;
-            SetTickPacingScale(ClampPacingScaleForLead(scale, lead, MinLead));
+            ulong curLead = localTick > _verifiedServerTick ? localTick - _verifiedServerTick : 0;
+            SetTickPacingScale(ClampPacingScaleForLead(scale, curLead, MinLead));
         }
 
         private void ResetSlackController()
@@ -2587,9 +2587,9 @@ namespace PurrNet.Prediction
 
                     AdjustLeadFromInputMargin();
 
-                    ulong lead = localTick > _verifiedServerTick ? localTick - _verifiedServerTick : 0;
+                    ulong curLead = localTick > _verifiedServerTick ? localTick - _verifiedServerTick : 0;
 
-                    if (lead < MinLead)
+                    if (curLead < MinLead)
                     {
                         localTick = _verifiedServerTick + TargetLead;
                         localTickInContext = localTick;
@@ -2598,9 +2598,9 @@ namespace PurrNet.Prediction
                         minLeadSnapsTotal++;
                         ResetSlackController();
                     }
-                    else if (lead > AbsoluteMaxLead)
+                    else if (curLead > AbsoluteMaxLead)
                     {
-                        _pauseAdvanceTicks = lead - AbsoluteMaxLead;
+                        _pauseAdvanceTicks = curLead - AbsoluteMaxLead;
                         leadPausesTotal++;
                     }
 
