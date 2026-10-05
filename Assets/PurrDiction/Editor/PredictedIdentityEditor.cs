@@ -37,7 +37,9 @@ namespace PurrNet.Prediction.Editor
         public override VisualElement CreateInspectorGUI()
         {
             var inspector = EditorAttributesIntegration.CreateInspectorGUI(
-                this, "_predictionPolicySource", "_predictionPolicy", "_desyncPolicy");
+                this, "_predictionPolicySource", "_predictionPolicy", "_desyncPolicy") ??
+                AlchemyIntegration.CreateInspectorGUI(
+                    this, "_predictionPolicySource", "_predictionPolicy", "_desyncPolicy");
             if (inspector == null)
                 return null;
 
@@ -67,6 +69,7 @@ namespace PurrNet.Prediction.Editor
 #endif
         {
             EditorAttributesIntegration.OnDisable(this);
+            AlchemyIntegration.OnDisable(this);
 #if TRI_INSPECTOR_PACKAGE || ODIN_INSPECTOR
             base.OnDisable();
 #endif

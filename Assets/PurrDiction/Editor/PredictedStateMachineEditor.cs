@@ -72,6 +72,7 @@ namespace PurrNet.Prediction.Editor
         {
             EditorApplication.update -= OnEditorUpdate;
             EditorAttributesIntegration.OnDisable(this);
+            AlchemyIntegration.OnDisable(this);
             _stateMachineInfoContainer = null;
         }
 
@@ -83,7 +84,8 @@ namespace PurrNet.Prediction.Editor
         public override VisualElement CreateInspectorGUI()
         {
             var inspector = EditorAttributesIntegration.CreateInspectorGUI(
-                this, "_defaultStateIndex", "_wrappedStates");
+                this, "_defaultStateIndex", "_wrappedStates") ??
+                AlchemyIntegration.CreateInspectorGUI(this, "_defaultStateIndex", "_wrappedStates");
             if (inspector == null)
                 return null;
 
