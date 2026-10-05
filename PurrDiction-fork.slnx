@@ -3,8 +3,8 @@
   <Project Path="PurrNet.Prediction.csproj" />
   <Project Path="PurrDiction.PlayModeTests.csproj" />
   <Project Path="PurrNet.Prediction.Tests.csproj" />
-  <Project Path="PurrDiction.Editor.csproj" />
   <Project Path="PurrNet.Prediction.EditorTests.csproj" />
+  <Project Path="PurrDiction.Editor.csproj" />
   <Project Path="PurrDiction.Examples.csproj" />
   <Project Path="PurrNet.Prediction.Benchmarks.Editor.csproj" />
   <Project Path="PurrNet.Prediction.Prebuilt.csproj" />

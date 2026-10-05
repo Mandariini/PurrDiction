@@ -14,6 +14,13 @@ namespace Purrdiction.Codegen
     [UsedImplicitly]
     public class PredictionProcessor : ILPostProcessor
     {
+        private enum SimulationOnlyOwnerType
+        {
+            None,
+            PredictedIdentity,
+            PredictedModule
+        }
+
         static DisposableList<TypeDefinition> GetAllTypes(ModuleDefinition module)
         {
             var types = DisposableList<TypeDefinition>.Create(32);
@@ -84,10 +91,8 @@ namespace Purrdiction.Codegen
 
                         FPProcessor.HandleType(module, type, messages);
 
-                        if (!PurrNet.Codegen.PostProcessor.InheritsFrom(type, typeof(PredictedIdentity).FullName))
-                            continue;
-
                         var methods = type.Methods;
+                        var ownerType = GetSimulationOnlyOwnerType(type);
 
                         for (var i = 0; i < methods.Count; i++)
                         {
@@ -101,6 +106,36 @@ namespace Purrdiction.Codegen
                                 if (attribute.AttributeType.FullName != typeof(SimulationOnlyAttribute).FullName)
                                     continue;
 
+                                if (ownerType == SimulationOnlyOwnerType.None)
+                                {
+                                    messages.Add(new DiagnosticMessage
+                                    {
+                                        DiagnosticType = DiagnosticType.Error,
+                                        MessageData = $"[<b>{method.FullName}</b>] SimulationOnly attribute can only be used on PredictedIdentity or PredictedModule instance methods",
+                                    });
+                                    continue;
+                                }
+
+                                if (method.IsStatic)
+                                {
+                                    messages.Add(new DiagnosticMessage
+                                    {
+                                        DiagnosticType = DiagnosticType.Error,
+                                        MessageData = $"[<b>{method.FullName}</b>] SimulationOnly attribute cannot be used on static methods",
+                                    });
+                                    continue;
+                                }
+
+                                if (!method.HasBody)
+                                {
+                                    messages.Add(new DiagnosticMessage
+                                    {
+                                        DiagnosticType = DiagnosticType.Error,
+                                        MessageData = $"[<b>{method.FullName}</b>] SimulationOnly attribute requires a method body",
+                                    });
+                                    continue;
+                                }
+
                                 var returnType = method.ReturnType;
 
                                 if (returnType.FullName != module.TypeSystem.Void.FullName)
@@ -113,7 +148,7 @@ namespace Purrdiction.Codegen
                                     continue;
                                 }
 
-                                ProcessMethod(method, module);
+                                ProcessMethod(method, module, ownerType);
                             }
                         }
                     }
@@ -158,18 +193,40 @@ namespace Purrdiction.Codegen
             }
         }
 
-        private static void ProcessMethod(MethodDefinition method, ModuleDefinition module)
+        private static SimulationOnlyOwnerType GetSimulationOnlyOwnerType(TypeDefinition type)
         {
-            var predictedIdentity = PurrNet.Codegen.ModuleExtensions.GetTypeDefinition(module, typeof(PredictedIdentity));
-            var isSimulatingMethod = PurrNet.Codegen.ModuleExtensions.GetMethod(predictedIdentity, "IsSimulating");
-            var isSimulating = PurrNet.Codegen.ModuleExtensions.Import(module, isSimulatingMethod);
+            if (PurrNet.Codegen.PostProcessor.InheritsFrom(type, typeof(PredictedIdentity).FullName))
+                return SimulationOnlyOwnerType.PredictedIdentity;
+
+            if (PurrNet.Codegen.PostProcessor.InheritsFrom(type, typeof(PredictedModule).FullName))
+                return SimulationOnlyOwnerType.PredictedModule;
+
+            return SimulationOnlyOwnerType.None;
+        }
+
+        private static MethodReference GetCanRunSimulationOnlyMethod(ModuleDefinition module, Type type)
+        {
+            var typeDef = PurrNet.Codegen.ModuleExtensions.GetTypeDefinition(module, type);
+            var method = PurrNet.Codegen.ModuleExtensions.GetMethod(typeDef, "CanRunSimulationOnly");
+            return PurrNet.Codegen.ModuleExtensions.Import(module, method);
+        }
+
+        private static void ProcessMethod(MethodDefinition method, ModuleDefinition module, SimulationOnlyOwnerType ownerType)
+        {
+            MethodReference canRunSimulationOnly = ownerType switch
+            {
+                SimulationOnlyOwnerType.PredictedIdentity => GetCanRunSimulationOnlyMethod(module, typeof(PredictedIdentity)),
+                SimulationOnlyOwnerType.PredictedModule => GetCanRunSimulationOnlyMethod(module, typeof(PredictedModule)),
+                _ => throw new ArgumentOutOfRangeException(nameof(ownerType), ownerType, null)
+            };
 
             var instructions = method.Body.Instructions;
             var processor = method.Body.GetILProcessor();
             var first = instructions[0];
 
             processor.InsertBefore(first, processor.Create(OpCodes.Ldarg_0));
-            processor.InsertBefore(first, processor.Create(OpCodes.Call, isSimulating));
+            processor.InsertBefore(first, processor.Create(OpCodes.Ldstr, method.FullName));
+            processor.InsertBefore(first, processor.Create(OpCodes.Call, canRunSimulationOnly));
             processor.InsertBefore(first, processor.Create(OpCodes.Brtrue, first));
             processor.InsertBefore(first, processor.Create(OpCodes.Ret));
         }
