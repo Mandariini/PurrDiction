@@ -936,7 +936,8 @@ namespace PurrNet.Prediction
 
         public void UnregisterInstance(PredictedIdentity predictedIdentity)
         {
-            if (_systems.Contains(predictedIdentity))
+            int systemIndex = _systems.IndexOf(predictedIdentity);
+            if (systemIndex >= 0)
                 HandleVisibilitySystemRemoved(predictedIdentity);
 
             // An expired pooled instance may share its old ID with a live replacement.
@@ -949,8 +950,9 @@ namespace PurrNet.Prediction
                 RetireVerifiedStores(predictedIdentity.id);
             }
 
-            if (_systems.Remove(predictedIdentity))
+            if (systemIndex >= 0)
             {
+                _systems.RemoveAt(systemIndex);
                 --_systemsCount;
                 if (predictedIdentity.hasInput)
                 {

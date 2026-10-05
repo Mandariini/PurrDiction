@@ -1,29 +1,41 @@
 using System;
-using System.Collections.Generic;
 using NUnit.Framework;
 
 namespace PurrNet.Prediction.Tests.Editor
 {
     public sealed class PredictedViewBufferTests
     {
-        private sealed class Tracked : IDisposable
+        private sealed class Lease
+        {
+            public int releases;
+        }
+
+        private readonly struct Tracked : IDisposable
         {
             public readonly float value;
-            public bool disposed;
+            public readonly Lease ownership;
 
-            public Tracked(float value) => this.value = value;
+            public bool disposed => disposalCount > 0;
+            public int disposalCount => ownership?.releases ?? 0;
 
-            public void Dispose() => disposed = true;
+            public Tracked(float value) : this(value, new Lease()) { }
+
+            public Tracked(float value, Lease ownership)
+            {
+                this.value = value;
+                this.ownership = ownership;
+            }
+
+            public void Dispose()
+            {
+                if (ownership != null)
+                    ++ownership.releases;
+            }
         }
 
-        private static readonly List<Tracked> _lerpResults = new();
-
+        // Interpolation borrows the anchor's storage; the caller must not dispose the result.
         private static Tracked Lerp(Tracked from, Tracked to, float t)
-        {
-            var result = new Tracked(from.value + (to.value - from.value) * t);
-            _lerpResults.Add(result);
-            return result;
-        }
+            => new Tracked(from.value + (to.value - from.value) * t, from.ownership);
 
         private static PredictedViewBuffer<Tracked> Create(ulong tick, float value, int capacity = 8)
             => new PredictedViewBuffer<Tracked>(Lerp, tick, new Tracked(value), capacity);
@@ -179,6 +191,108 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(buffer.CountAhead(11.5d), Is.EqualTo(1));
             Assert.That(buffer.anchorTick, Is.EqualTo(10UL));
             Assert.That(buffer.Count, Is.EqualTo(2));
+        }
+
+        [Test]
+        public void ReplacingTheAnchorDisposesOnlyThePreviousAnchorOnce()
+        {
+            var previous = new Tracked(100f);
+            var replacement = new Tracked(200f);
+            var pending = new Tracked(110f);
+            var buffer = new PredictedViewBuffer<Tracked>(Lerp, 10, previous, 8);
+            buffer.Add(11, pending);
+            buffer.Add(10, replacement);
+
+            Assert.That(previous.disposalCount, Is.EqualTo(1));
+            Assert.That(replacement.disposalCount, Is.Zero);
+            Assert.That(pending.disposalCount, Is.Zero);
+            Assert.That(buffer.Count, Is.EqualTo(1));
+            Assert.That(buffer.Sample(10d).value, Is.EqualTo(200f));
+
+            buffer.Teleport(0, default);
+            buffer.Teleport(0, default);
+            Assert.That(previous.disposalCount, Is.EqualTo(1));
+            Assert.That(replacement.disposalCount, Is.EqualTo(1));
+            Assert.That(pending.disposalCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void SamplingBorrowsStorageUntilTheAnchorAdvances()
+        {
+            var first = new Tracked(100f);
+            var second = new Tracked(120f);
+            var buffer = new PredictedViewBuffer<Tracked>(Lerp, 10, first, 8);
+            buffer.Add(12, second);
+
+            var sample = buffer.Sample(11d);
+            Assert.That(sample.value, Is.EqualTo(110f));
+            Assert.That(sample.ownership, Is.SameAs(first.ownership));
+            Assert.That(first.disposalCount, Is.Zero);
+            Assert.That(second.disposalCount, Is.Zero);
+            buffer.Sample(11.5d);
+            Assert.That(sample.disposalCount, Is.Zero);
+
+            sample = buffer.Sample(12d);
+            Assert.That(sample.ownership, Is.SameAs(second.ownership));
+            Assert.That(first.disposalCount, Is.EqualTo(1));
+            Assert.That(second.disposalCount, Is.Zero);
+
+            buffer.Teleport(0, default);
+            Assert.That(first.disposalCount, Is.EqualTo(1));
+            Assert.That(sample.disposalCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void MinimumCapacityAndDefaultStructStateRemainUsable()
+        {
+            var buffer = new PredictedViewBuffer<Tracked>(Lerp, 0, default, 0);
+            Assert.That(buffer.capacity, Is.EqualTo(1));
+            buffer.Add(1, default);
+            buffer.Add(2, default);
+            Assert.That(buffer.Count, Is.EqualTo(1));
+            Assert.That(buffer.Sample(2d).value, Is.Zero);
+
+            buffer.Teleport(0, default);
+            buffer.Teleport(0, default);
+            Assert.That(buffer.Count, Is.Zero);
+            Assert.That(buffer.Sample(0d).value, Is.Zero);
+        }
+
+        [Test]
+        public void OutOfOrderSamplesAdvanceInTickOrderWithoutDoubleDisposal()
+        {
+            var anchor = new Tracked(100f);
+            var twelve = new Tracked(120f);
+            var thirteen = new Tracked(130f);
+            var fourteen = new Tracked(140f);
+            var buffer = new PredictedViewBuffer<Tracked>(Lerp, 10, anchor, 8);
+            buffer.Add(14, fourteen);
+            buffer.Add(12, twelve);
+            buffer.Add(13, thirteen);
+
+            Assert.That(buffer.TryGetNextTick(out var next), Is.True);
+            Assert.That(next, Is.EqualTo(12UL));
+            Assert.That(buffer.CountAhead(12.5d), Is.EqualTo(2));
+            Assert.That(buffer.Sample(12.5d).value, Is.EqualTo(125f));
+            Assert.That(buffer.anchorTick, Is.EqualTo(12UL));
+            Assert.That(anchor.disposalCount, Is.EqualTo(1));
+            Assert.That(twelve.disposalCount, Is.Zero);
+
+            Assert.That(buffer.Sample(14d).value, Is.EqualTo(140f));
+            Assert.That(twelve.disposalCount, Is.EqualTo(1));
+            Assert.That(thirteen.disposalCount, Is.EqualTo(1));
+            Assert.That(fourteen.disposalCount, Is.Zero);
+            Assert.That(buffer.Count, Is.Zero);
+            Assert.That(buffer.TryGetNextTick(out next), Is.False);
+            Assert.That(next, Is.Zero);
+
+            buffer.Sample(15d);
+            buffer.Teleport(0, default);
+            buffer.Teleport(0, default);
+            Assert.That(anchor.disposalCount, Is.EqualTo(1));
+            Assert.That(twelve.disposalCount, Is.EqualTo(1));
+            Assert.That(thirteen.disposalCount, Is.EqualTo(1));
+            Assert.That(fourteen.disposalCount, Is.EqualTo(1));
         }
     }
 }

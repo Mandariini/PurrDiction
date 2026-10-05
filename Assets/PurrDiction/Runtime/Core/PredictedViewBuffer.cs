@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace PurrNet.Prediction
 {
-    internal sealed class PredictedViewBuffer<T> where T : IDisposable
+    internal sealed class PredictedViewBuffer<T> where T : struct, IDisposable
     {
         private struct Entry
         {
@@ -65,7 +65,7 @@ namespace PurrNet.Prediction
         {
             if (tick == _anchorTick)
             {
-                _anchor?.Dispose();
+                _anchor.Dispose();
                 _anchor = value;
                 return;
             }
@@ -83,7 +83,7 @@ namespace PurrNet.Prediction
             if (index > 0 && _samples[index - 1].tick == tick)
             {
                 var existing = _samples[index - 1];
-                existing.value?.Dispose();
+                existing.value.Dispose();
                 existing.value = value;
                 _samples[index - 1] = existing;
                 return;
@@ -93,7 +93,7 @@ namespace PurrNet.Prediction
 
             while (_samples.Count > _capacity)
             {
-                _samples[0].value?.Dispose();
+                _samples[0].value.Dispose();
                 _samples.RemoveAt(0);
             }
         }
@@ -105,10 +105,10 @@ namespace PurrNet.Prediction
         public void Teleport(ulong tick, T value)
         {
             for (int i = 0; i < _samples.Count; i++)
-                _samples[i].value?.Dispose();
+                _samples[i].value.Dispose();
             _samples.Clear();
 
-            _anchor?.Dispose();
+            _anchor.Dispose();
             _anchor = value;
             _anchorTick = tick;
         }
@@ -122,7 +122,7 @@ namespace PurrNet.Prediction
         {
             while (_samples.Count > 0 && _samples[0].tick <= presentTick)
             {
-                _anchor?.Dispose();
+                _anchor.Dispose();
                 _anchor = _samples[0].value;
                 _anchorTick = _samples[0].tick;
                 _samples.RemoveAt(0);
