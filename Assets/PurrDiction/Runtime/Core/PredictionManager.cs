@@ -14,6 +14,13 @@ using UnityEngine.SceneManagement;
 
 namespace PurrNet.Prediction
 {
+    public enum SimulationOnlyOutsideSimulationBehavior
+    {
+        ReturnEarly,
+        LogAndReturnEarly,
+        LogOnly
+    }
+
     [DefaultExecutionOrder(1000)]
     [AddComponentMenu("PurrDiction/Prediction Manager")]
     [PackerDependencies(typeof(NetworkID), typeof(SceneID))]
@@ -23,7 +30,7 @@ namespace PurrNet.Prediction
         static void Initialize() => _instances.Clear();
 
 #if UNITY_6000_3_OR_NEWER
-        static readonly Dictionary<SceneHandle, PredictionManager> _instances = new ();
+        static readonly Dictionary<SceneHandle, PredictionManager> _instances = new();
 #else
         static readonly Dictionary<int, PredictionManager> _instances = new ();
 #endif
@@ -36,7 +43,8 @@ namespace PurrNet.Prediction
 
         [SerializeField] private PredictionPhysicsProvider _physicsProvider;
         [SerializeField] private UpdateViewMode _updateViewMode = UpdateViewMode.Update;
-        [SerializeField, PurrLock] private BuiltInSystems _builtInSystems =
+        [SerializeField, PurrLock]
+        private BuiltInSystems _builtInSystems =
             BuiltInSystems.Physics3D |
             BuiltInSystems.Physics2D |
             BuiltInSystems.Time |
@@ -61,6 +69,9 @@ namespace PurrNet.Prediction
         [Tooltip("How often clients report deterministic state hashes to the server, in seconds. Only applies when the resolved policy of at least one identity is not Ignore.")]
         [SerializeField, Min(0.05f)] private float _desyncCheckIntervalSeconds = 0.25f;
 
+        [Header("Simulation Only Outside Simulation")]
+        [SerializeField] private SimulationOnlyOutsideSimulationBehavior _simulationOnlyOutsideSimulationBehavior = SimulationOnlyOutsideSimulationBehavior.LogAndReturnEarly;
+
         public PredictedPrefabs predictedPrefabs
         {
             get => _predictedPrefabs;
@@ -72,6 +83,8 @@ namespace PurrNet.Prediction
         }
 
         public DesyncPolicy desyncPolicy => _desyncPolicy;
+
+        public SimulationOnlyOutsideSimulationBehavior simulationOnlyOutsideSimulationBehavior => _simulationOnlyOutsideSimulationBehavior;
 
         static readonly ProfilerMarker SimulateMarker = new("PredictionManager.Simulate");
         static readonly ProfilerMarker SimulateInputsMarker = new("PredictionManager.PrepareSimulationInputs");
@@ -2277,6 +2290,30 @@ namespace PurrNet.Prediction
 
             viewOffsetTicks = 0;
             return false;
+        }
+
+        internal bool CanRunSimulationOnly(PredictedIdentity identity, string methodName)
+        {
+            if (isSimulating)
+                return true;
+
+            switch (_simulationOnlyOutsideSimulationBehavior)
+            {
+                case SimulationOnlyOutsideSimulationBehavior.ReturnEarly:
+                    return false;
+                case SimulationOnlyOutsideSimulationBehavior.LogAndReturnEarly:
+                    PurrLogger.LogWarning(
+                        $"Ignored [SimulationOnly] call to '{methodName}' on '{identity.GetType().Name}' because the prediction manager is not simulating.",
+                        identity);
+                    return false;
+                case SimulationOnlyOutsideSimulationBehavior.LogOnly:
+                    PurrLogger.LogWarning(
+                        $"[SimulationOnly] method '{methodName}' on '{identity.GetType().Name}' was called while the prediction manager was not simulating. Continuing because the behavior is set to LogOnly.",
+                        identity);
+                    return true;
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
         }
 
         private void DoPhysicsPass(PredictionPerformanceTelemetry.PassScope performance)
