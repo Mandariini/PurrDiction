@@ -8,9 +8,9 @@ namespace PurrNet.Prediction.Editor
     [CustomEditor(typeof(PredictedTransform), true)]
     public class PredictedTransformEditor : PredictedIdentityEditor
     {
-        public override void OnInspectorGUI()
+        protected override void DrawInspectorExtras()
         {
-            base.OnInspectorGUI();
+            base.DrawInspectorExtras();
 
             for (int i = 0; i < targets.Length; i++)
             {
