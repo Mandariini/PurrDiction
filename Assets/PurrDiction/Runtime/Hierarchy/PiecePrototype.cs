@@ -41,11 +41,17 @@ namespace PurrNet.Prediction
         /// <summary>Total NetworkIdentity components across all pieces; the size of one id block.</summary>
         public readonly int networkIdentityCount;
 
+        /// <summary>
+        /// True when anything under the prefab root carries a PredictedParent component.
+        /// </summary>
+        public readonly bool hasParentCarrier;
+
         public int pieceCount => pieces.Length;
 
-        private PiecePrototype(PrototypePiece[] pieces)
+        private PiecePrototype(PrototypePiece[] pieces, bool hasParentCarrier)
         {
             this.pieces = pieces;
+            this.hasParentCarrier = hasParentCarrier;
             for (var i = 0; i < pieces.Length; i++)
                 networkIdentityCount += pieces[i].networkIdentityCount;
         }
@@ -82,7 +88,8 @@ namespace PurrNet.Prediction
 
             var result = new List<PrototypePiece>();
             BuildRecursive(root.transform, -1, result, boundaries);
-            return new PiecePrototype(result.ToArray());
+            bool hasParentCarrier = root.GetComponentInChildren<PredictedParent>(true) != null;
+            return new PiecePrototype(result.ToArray(), hasParentCarrier);
         }
 
         static void BuildRecursive(Transform current, int parentPieceIndex, List<PrototypePiece> result, HashSet<Transform> boundaries)

@@ -17,6 +17,19 @@ namespace PurrNet.Prediction
         readonly Dictionary<int, PiecePrototype> _prototypes = new ();
         readonly PredictedPiecePool _pool = new ();
 
+        /// <summary>
+        /// True once any registered prototype contains a PredictedParent component. While
+        /// false, no live record can carry a dynamic parent link, so deletes may take the
+        /// own-root fast path and per-record carrier lookups are skipped entirely.
+        /// </summary>
+        bool _anyCarrierPrefabs;
+
+        /// <summary>
+        /// Live records carrying a spawn parent. While zero, no cross-root parent chain can exist, 
+        /// so the delete fast path needs no per-record check.
+        /// </summary>
+        int _liveSpawnParentCount;
+
         private PredictedNetworkMirror _networkMirror;
 
         internal PredictedNetworkMirror networkMirror => _networkMirror ??= new PredictedNetworkMirror(predictionManager, this);
@@ -376,13 +389,10 @@ namespace PurrNet.Prediction
 
             _spawnedPrefabs.Clear();
             _recordsById.Clear();
+            _liveSpawnParentCount = 0;
 
             for (var i = 0; i < target.Count; i++)
-            {
-                var record = target[i];
-                _spawnedPrefabs.Add(record);
-                _recordsById[record.instanceId] = record;
-            }
+                AddRecord(target[i]);
 
             _nextInstanceId = state.nextInstanceId;
 
@@ -597,8 +607,16 @@ namespace PurrNet.Prediction
                 return null;
 
             proto = PiecePrototype.Build(prefab);
-            _prototypes[prefabId] = proto;
+            RegisterPrototype(prefabId, proto);
             return proto;
+        }
+
+        void RegisterPrototype(int prefabId, PiecePrototype proto)
+        {
+            _prototypes[prefabId] = proto;
+
+            if (proto != null && proto.hasParentCarrier)
+                _anyCarrierPrefabs = true;
         }
 
         public PredictedObjectID? Create(int prefabId, PlayerID? owner = null)
@@ -722,11 +740,7 @@ namespace PurrNet.Prediction
                 return default;
 
             for (var k = 0; k < _recordBuildScratch.Count; k++)
-            {
-                var record = _recordBuildScratch[k];
-                _spawnedPrefabs.Add(record);
-                _recordsById[record.instanceId] = record;
-            }
+                AddRecord(_recordBuildScratch[k]);
 
             NotifyInstanceParentChanged(rootGo);
 
@@ -1318,7 +1332,7 @@ namespace PurrNet.Prediction
                 if (proto == null)
                     continue;
 
-                _prototypes[pid] = proto;
+                RegisterPrototype(pid, proto);
 
                 if (!proto.TryCollectInstancePieces(root, _collectScratch, _sceneBoundariesScratch))
                     continue;
@@ -1345,8 +1359,7 @@ namespace PurrNet.Prediction
                     _isSceneObject.Add(pieceId);
                     _instanceMap.Add(pieceId, pieceGo);
                     _goToId.Add(pieceGo, pieceId);
-                    _spawnedPrefabs.Add(record);
-                    _recordsById[pieceId] = record;
+                    AddRecord(record);
 
                     predictionManager.RegisterInstance(pieceGo, pieceId, null, false, false);
                 }
@@ -1593,6 +1606,81 @@ namespace PurrNet.Prediction
             _cascadeParentScratch.Clear();
             _cascadeReachScratch.Clear();
 
+            if (!_anyCarrierPrefabs && !AnyLiveSpawnParent())
+            {
+                var proto = GetPrototype(target.prefabId);
+
+                if (proto != null)
+                {
+                    CollectOwnRootCascade(target, proto);
+                    return;
+                }
+            }
+
+            CollectCascadeGeneric(target);
+        }
+
+        /// <summary>
+        /// True when any live record carries a spawn parent. Such links can point across spawn
+        /// roots, so while one exists the cascade falls back to the generic chain walk.
+        /// </summary>
+        private bool AnyLiveSpawnParent()
+        {
+            return _liveSpawnParentCount > 0;
+        }
+
+        /// <summary>
+        /// Fast cascade for worlds with no cross-root parent links: only pieces of the target's own
+        /// spawn block can chain up to the target, and those links are structural (taken straight
+        /// from the prefab prototype), so the removal set is derived without scanning every record.
+        /// </summary>
+        private void CollectOwnRootCascade(in InstanceDetails target, PiecePrototype proto)
+        {
+            _removalScratch.Add(target);
+            _removalSetScratch.Add(target.instanceId);
+
+            if (proto.pieceCount <= 1)
+                return;
+
+            uint targetPiece = target.pieceIndex.value;
+            uint rootBase = target.rootId.instanceId.value;
+
+            for (var k = 0; k < proto.pieceCount; k++)
+            {
+                if ((uint)k == targetPiece)
+                    continue;
+
+                int parent = proto.pieces[k].parentPieceIndex;
+                bool reaches = false;
+                int hops = 0;
+
+                while (parent >= 0 && hops <= proto.pieceCount)
+                {
+                    if (parent == (int)targetPiece)
+                    {
+                        reaches = true;
+                        break;
+                    }
+
+                    parent = proto.pieces[parent].parentPieceIndex;
+                    hops++;
+                }
+
+                if (!reaches)
+                    continue;
+
+                var pieceId = new PredictedObjectID(rootBase + (uint)k);
+
+                if (_recordsById.TryGetValue(pieceId, out var record))
+                {
+                    _removalScratch.Add(record);
+                    _removalSetScratch.Add(pieceId);
+                }
+            }
+        }
+
+        private void CollectCascadeGeneric(in InstanceDetails target)
+        {
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
             {
                 var record = _spawnedPrefabs[i];
@@ -1637,6 +1725,10 @@ namespace PurrNet.Prediction
 
         private void RebaseSurvivorsOfDeletedParents()
         {
+            // Nothing to rebase (and nothing to scan) unless some record carries a spawn parent.
+            if (_liveSpawnParentCount == 0)
+                return;
+
             bool changed = false;
 
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
@@ -1655,8 +1747,7 @@ namespace PurrNet.Prediction
                 var rebased = new InstanceDetails(record.prefabId, record.pieceIndex.value, record.instanceId,
                     position, rotation, record.owner, null, record.networkId);
 
-                _spawnedPrefabs[i] = rebased;
-                _recordsById[record.instanceId] = rebased;
+                ReplaceRecord(i, rebased);
                 changed = true;
             }
 
@@ -1696,7 +1787,7 @@ namespace PurrNet.Prediction
 
         private PredictedObjectID? EffectiveParentObject(in InstanceDetails record)
         {
-            if (_instanceMap.TryGetValue(record.instanceId, out var go) && go &&
+            if (_anyCarrierPrefabs && _instanceMap.TryGetValue(record.instanceId, out var go) && go &&
                 go.TryGetComponent<PredictedParent>(out var carrier))
             {
                 var link = carrier.resolvedParent;
@@ -1709,6 +1800,11 @@ namespace PurrNet.Prediction
 
         private void PromoteOrphans(InstanceDetails rootRecord)
         {
+            // Only a multi-piece spawn block can hold records besides the deleted root.
+            var proto = GetPrototype(rootRecord.prefabId);
+            if (proto != null && proto.pieceCount <= 1)
+                return;
+
             var rootId = rootRecord.rootId;
 
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
@@ -1724,8 +1820,7 @@ namespace PurrNet.Prediction
                 go.transform.GetPositionAndRotation(out var pos, out var rot);
                 var promoted = new InstanceDetails(record.prefabId, record.pieceIndex.value, record.instanceId, pos, rot, rootRecord.owner, record.parent, record.networkId);
 
-                _spawnedPrefabs[i] = promoted;
-                _recordsById[record.instanceId] = promoted;
+                ReplaceRecord(i, promoted);
             }
         }
 
@@ -1787,8 +1882,17 @@ namespace PurrNet.Prediction
 
                 for (var i = 0; i < _spawnedPrefabs.Count; i++)
                 {
-                    if (!_removedRecordScratch.Contains(_spawnedPrefabs[i].instanceId))
-                        _spawnedPrefabs[w++] = _spawnedPrefabs[i];
+                    var record = _spawnedPrefabs[i];
+
+                    if (_removedRecordScratch.Contains(record.instanceId))
+                    {
+                        if (record.parent.HasValue)
+                            _liveSpawnParentCount--;
+
+                        continue;
+                    }
+
+                    _spawnedPrefabs[w++] = record;
                 }
 
                 _spawnedPrefabs.RemoveRange(w, _spawnedPrefabs.Count - w);
@@ -1869,6 +1973,26 @@ namespace PurrNet.Prediction
                 RescueAndCollect(current.GetChild(i), memberSet, members);
         }
 
+        /// <summary>Adds a record, keeping <see cref="_liveSpawnParentCount"/> in sync.</summary>
+        private void AddRecord(in InstanceDetails record)
+        {
+            _spawnedPrefabs.Add(record);
+            _recordsById[record.instanceId] = record;
+
+            if (record.parent.HasValue)
+                _liveSpawnParentCount++;
+        }
+
+        /// <summary>Replaces a record in place, keeping <see cref="_liveSpawnParentCount"/> in sync.</summary>
+        private void ReplaceRecord(int index, in InstanceDetails record)
+        {
+            if (_spawnedPrefabs[index].parent.HasValue != record.parent.HasValue)
+                _liveSpawnParentCount += record.parent.HasValue ? 1 : -1;
+
+            _spawnedPrefabs[index] = record;
+            _recordsById[record.instanceId] = record;
+        }
+
         private void RemoveRecord(PredictedObjectID id)
         {
             if (!_recordsById.Remove(id))
@@ -1878,6 +2002,9 @@ namespace PurrNet.Prediction
             {
                 if (_spawnedPrefabs[i].instanceId.Equals(id))
                 {
+                    if (_spawnedPrefabs[i].parent.HasValue)
+                        _liveSpawnParentCount--;
+
                     _spawnedPrefabs.RemoveAt(i);
                     InvalidateVisibilityTopology();
                     return;
@@ -2185,6 +2312,7 @@ namespace PurrNet.Prediction
             _goToId.Clear();
             _spawnedPrefabs.Clear();
             _recordsById.Clear();
+            _liveSpawnParentCount = 0;
             _isSceneObject.Clear();
             _reservedSceneObjects.Clear();
             _pendingSceneReservations.Clear();
