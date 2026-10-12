@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace PurrNet.Prediction
 {
-    public readonly struct PredictedComponentID : IPackedAuto, IEquatable<PredictedComponentID>
+    public readonly struct PredictedComponentID : IPackedAuto, IEquatable<PredictedComponentID>, IComparable<PredictedComponentID>
     {
         public readonly PredictedObjectID objectId;
         public readonly PackedUInt componentId;
@@ -61,6 +61,15 @@ namespace PurrNet.Prediction
         public bool Equals(PredictedComponentID other)
         {
             return objectId.Equals(other.objectId) && componentId.value == other.componentId.value;
+        }
+
+        /// <summary>
+        /// Orders component ids by object id, then by component id.
+        /// </summary>
+        public int CompareTo(PredictedComponentID other)
+        {
+            var objectCompare = objectId.instanceId.value.CompareTo(other.objectId.instanceId.value);
+            return objectCompare != 0 ? objectCompare : componentId.value.CompareTo(other.componentId.value);
         }
 
         public override bool Equals(object obj)
