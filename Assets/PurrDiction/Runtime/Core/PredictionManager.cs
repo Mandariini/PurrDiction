@@ -781,7 +781,11 @@ namespace PurrNet.Prediction
             {
                 var component = components[(int)i];
 
-                if (!_systems.Contains(component))
+                int existingIndex = FindSystemIndex(component);
+
+                // Only an exact instance match counts as still registered; the id slot may hold a
+                // stale pooled instance that shares the id with this component.
+                if (existingIndex < 0)
                 {
                     var componentId = new PredictedComponentID(objectID, i);
                     bool sameId = component.id.Equals(componentId);
@@ -905,17 +909,19 @@ namespace PurrNet.Prediction
                 system.SetPreserveStateOnSetup(false);
             }
 
-            var myObjId = pid.objectId.instanceId.value;
-            int posToInsert = _systemsCount;
+            // The list is id-sorted, so the insert position comes from a binary search
+            int index = _systems.BinarySearch(0, _systemsCount, system, SystemIdComparer.Instance);
 
-            for (int i = 0; i < _systemsCount; i++)
+            // a miss reports the insertion point as the bitwise complement (~index)
+            // a hit returns an equal-id entry, start after it
+            int posToInsert = index >= 0 ? index + 1 : ~index;
+
+            // A stale pooled instance can share its id with a live replacement.
+            // Keep inserting after every entry with this id
+            while (posToInsert < _systemsCount &&
+                   SystemIdComparer.Instance.Compare(_systems[posToInsert], system) == 0)
             {
-                var curObjId = _systems[i].id.objectId.instanceId.value;
-                if (curObjId > myObjId || curObjId == myObjId && _systems[i].id.componentId.value > pid.componentId.value)
-                {
-                    posToInsert = i;
-                    break;
-                }
+                posToInsert++;
             }
 
             _systems.Insert(posToInsert, system);
@@ -936,7 +942,7 @@ namespace PurrNet.Prediction
 
         public void UnregisterInstance(PredictedIdentity predictedIdentity)
         {
-            int systemIndex = _systems.IndexOf(predictedIdentity);
+            int systemIndex = FindSystemIndex(predictedIdentity);
             if (systemIndex >= 0)
                 HandleVisibilitySystemRemoved(predictedIdentity);
 
@@ -960,6 +966,49 @@ namespace PurrNet.Prediction
                 }
                 predictedIdentity.RecordCompletedRegistrationPolicy();
             }
+        }
+
+        /// <summary>
+        /// Finds the index of a registered system, _systems is kept sorted by id, 
+        /// so the lookup binary searches the list. A stale pooled instance can share its id
+        /// with a live replacement, so only an exact instance match counts.
+        /// Returns -1 when the system is not registered.
+        /// </summary>
+        private int FindSystemIndex(PredictedIdentity system)
+        {
+            // a stale pooled instance can share id with a live replacement. 
+            // So a hit only proves the id is in the list: BinarySearch returns
+            // an arbitrary entry of the equal-id run and it may not be this instance.
+            int index = _systems.BinarySearch(0, _systemsCount, system, SystemIdComparer.Instance);
+            if (index < 0)
+                return -1;
+
+            // Equal ids are contiguous, so only that run needs the exact-instance check.
+            if (ReferenceEquals(_systems[index], system))
+                return index;
+            
+            // Left side
+            for (int i = index - 1; i >= 0 && SystemIdComparer.Instance.Compare(_systems[i], system) == 0; i--)
+            {
+                if (ReferenceEquals(_systems[i], system))
+                    return i;
+            }
+
+            // Right side
+            for (int i = index + 1; i < _systemsCount && SystemIdComparer.Instance.Compare(_systems[i], system) == 0; i++)
+            {
+                if (ReferenceEquals(_systems[i], system))
+                    return i;
+            }
+
+            return -1;
+        }
+
+        private sealed class SystemIdComparer : IComparer<PredictedIdentity>
+        {
+            public static readonly SystemIdComparer Instance = new ();
+
+            public int Compare(PredictedIdentity x, PredictedIdentity y) => x.id.CompareTo(y.id);
         }
 
         protected override void OnObserverRemoved(PlayerID player)
@@ -2731,7 +2780,7 @@ namespace PurrNet.Prediction
             PredictionPolicy oldPolicy,
             PredictionPolicy newPolicy)
         {
-            if (!isReplaying || !_systems.Contains(system))
+            if (!isReplaying || FindSystemIndex(system) < 0)
                 return;
 
             bool wasSoftCorrected = oldPolicy == PredictionPolicy.SoftCorrection;
