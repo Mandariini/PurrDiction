@@ -92,6 +92,7 @@ namespace PurrNet.Prediction
         private readonly List<NetworkIdentity> _identityScratch = new();
         private readonly List<PredictedObjectID> _idScratch = new();
         private readonly HashSet<PredictedObjectID> _verifiedScratch = new();
+        private PlayerID? _hostPlayer;
 
         internal int spawnedPieceCount => _spawned.Count;
 
@@ -287,8 +288,29 @@ namespace PurrNet.Prediction
                 _observed.Remove(player);
         }
 
+        internal void AddHostPlayer(PlayerID player)
+        {
+            if (!isServer)
+                return;
+
+            _hostPlayer = player;
+
+            if (_spawned.Count == 0)
+                return;
+
+            var target = bridge;
+            if (target == null)
+                return;
+
+            foreach (var (pieceId, entry) in _spawned)
+                AddObserver(target, player, pieceId, entry.identities);
+        }
+
         internal void RemovePlayer(PlayerID player)
         {
+            if (_hostPlayer == player)
+                _hostPlayer = null;
+
             if (!_observed.Remove(player, out var observed))
                 return;
 
@@ -313,6 +335,7 @@ namespace PurrNet.Prediction
                 Despawn(_idScratch[i]);
             _idScratch.Clear();
             _observed.Clear();
+            _hostPlayer = null;
         }
 
         private void Spawn(in InstanceDetails record, GameObject go, PiecePrototype proto, PlayerID? owner)
@@ -377,6 +400,24 @@ namespace PurrNet.Prediction
                 // Created during tick T lands in frame T+1; created between ticks lands in frame T.
                 spawnTick = _manager.localTick + 1
             };
+
+            if (_hostPlayer.HasValue)
+                AddObserver(target, _hostPlayer.Value, record.instanceId, identities);
+        }
+
+        private void AddObserver(IPredictedNetworkBridge target, PlayerID player, PredictedObjectID pieceId, NetworkIdentity[] identities)
+        {
+            if (!_observed.TryGetValue(player, out var observed))
+            {
+                observed = new HashSet<PredictedObjectID>();
+                _observed.Add(player, observed);
+            }
+
+            if (!observed.Add(pieceId))
+                return;
+
+            for (var i = 0; i < identities.Length; i++)
+                if (identities[i]) target.AddObserver(identities[i], player);
         }
 
         private void Despawn(PredictedObjectID pieceId)

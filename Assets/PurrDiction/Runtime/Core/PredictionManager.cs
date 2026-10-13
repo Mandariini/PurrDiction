@@ -996,7 +996,14 @@ namespace PurrNet.Prediction
 
         protected override void OnObserverAdded(PlayerID player)
         {
-            if (player == localPlayer || player.isBot)
+            if (player == localPlayer)
+            {
+                if (hierarchy)
+                    hierarchy.networkMirror.AddHostPlayer(player);
+                return;
+            }
+
+            if (player.isBot)
                 return;
 
             _pendingFullSync.Add(player);

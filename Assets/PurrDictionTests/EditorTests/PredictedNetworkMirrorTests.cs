@@ -19,6 +19,10 @@ namespace PurrNet.Prediction.Tests.Editor
         private readonly List<GameObject> _objects = new();
         private readonly PlayerID _owner = new(3, false);
         private readonly PlayerID _viewer = new(7, false);
+        private readonly PlayerID _host = new(1, false);
+
+        [OneTimeSetUp]
+        public void RegisterPackers() => NetworkManager.CallAllRegisters();
 
         [TearDown]
         public void TearDown()
@@ -190,6 +194,90 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void HostObservesEveryIdentityAsSoonAsItsPieceSpawns()
+        {
+            using var world = new World(this, asServer: true);
+            world.AddHostObserver(_host);
+            Assert.That(world.bridge.observers, Is.Empty);
+
+            var id = world.Create(_owner);
+
+            Assert.That(world.bridge.observers, Has.Count.EqualTo(3), "the host never acknowledges frames, so it cannot wait for one");
+            for (var i = 0; i < world.bridge.observers.Count; i++)
+            {
+                Assert.That(world.bridge.observers[i].player, Is.EqualTo(_host));
+                Assert.That(world.bridge.observers[i].identity, Is.SameAs(world.bridge.finalized[i]));
+            }
+            Assert.That(world.mirror.IsObserving(_host, id), Is.True);
+            Assert.That(world.mirror.IsObserving(_host, new PredictedObjectID(id.instanceId.value + 1)), Is.True);
+        }
+
+        [Test]
+        public void HostAddedAfterPiecesSpawnedObservesAllOfThem()
+        {
+            using var world = new World(this, asServer: true);
+            var id = world.Create(null);
+            Assert.That(world.bridge.observers, Is.Empty, "no local player yet");
+            world.bridge.Reset();
+
+            world.AddHostObserver(_host);
+            Assert.That(world.bridge.observers, Has.Count.EqualTo(3));
+            Assert.That(world.mirror.IsObserving(_host, id), Is.True);
+
+            world.bridge.Reset();
+            world.AddHostObserver(_host);
+            Assert.That(world.bridge.observers, Is.Empty, "a repeated notification adds nothing");
+        }
+
+        [Test]
+        public void HostObservesReCreatedInstancesUntilItIsRemoved()
+        {
+            using var world = new World(this, asServer: true, pooled: true);
+            world.AddHostObserver(_host);
+            var first = world.Create(null);
+            world.DeleteNow(first);
+            Assert.That(world.mirror.IsObserving(_host, first), Is.False);
+            world.bridge.Reset();
+
+            var second = world.Create(null);
+            Assert.That(world.bridge.observers, Has.Count.EqualTo(3), "the pooled identities are observed again under their new piece");
+            Assert.That(world.mirror.IsObserving(_host, second), Is.True);
+
+            world.bridge.Reset();
+            world.mirror.RemovePlayer(_host);
+            Assert.That(world.bridge.removedObservers, Has.Count.EqualTo(3));
+            Assert.That(world.mirror.IsObserving(_host, second), Is.False);
+
+            world.bridge.Reset();
+            world.Create(null);
+            Assert.That(world.bridge.observers, Is.Empty, "a removed host no longer observes new pieces");
+        }
+
+        [Test]
+        public void RemotePlayersStillWaitForAnAcknowledgementOnAHost()
+        {
+            using var world = new World(this, asServer: true);
+            world.AddHostObserver(_host);
+            var id = world.Create(null);
+            world.bridge.Reset();
+            var timeline = new PlayerVisibilityTimeline(defaultVisible: true);
+            ulong spawnTick = world.manager.localTick + 1;
+
+            world.mirror.SyncObservers(_viewer, timeline, spawnTick - 1);
+            Assert.That(world.bridge.observers, Is.Empty);
+            Assert.That(world.mirror.IsObserving(_host, id), Is.True);
+
+            world.mirror.SyncObservers(_viewer, timeline, spawnTick);
+            Assert.That(world.bridge.observers, Has.Count.EqualTo(3));
+            Assert.That(world.mirror.IsObserving(_viewer, id), Is.True);
+
+            world.bridge.Reset();
+            world.mirror.RemovePlayer(_viewer);
+            Assert.That(world.bridge.removedObservers, Has.Count.EqualTo(3));
+            Assert.That(world.mirror.IsObserving(_host, id), Is.True, "removing a remote player leaves the host observing");
+        }
+
+        [Test]
         public void PooledReuseForAnotherInstanceDespawnsTheStaleIdentitiesFirst()
         {
             using var world = new World(this, asServer: true, pooled: true);
@@ -315,6 +403,12 @@ namespace PurrNet.Prediction.Tests.Editor
                 var id = hierarchy.Create(0, Vector3.zero, Quaternion.identity, instanceOwner);
                 Assert.That(id.HasValue, Is.True);
                 return id.Value;
+            }
+
+            internal void AddHostObserver(PlayerID player)
+            {
+                Set(typeof(NetworkIdentity), manager, "_localPlayer", (PlayerID?)player);
+                manager.TriggerOnObserverAdded(player, false);
             }
 
             /// <summary>Client only: makes a topology with (optionally) one mixed instance the latest verified state.</summary>
