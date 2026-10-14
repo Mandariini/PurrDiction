@@ -156,7 +156,7 @@ namespace PurrNet.Prediction
 
             _stateHistory?.Clear();
             if (!HasStateHistoryFor(world))
-                _stateHistory = History<FULL_STATE<STATE>>.ForTickWindow(world.tickRate * 10);
+                _stateHistory = History<FULL_STATE<STATE>>.ForTickWindow(StateHistoryCapacity(world));
 
             _stateHistory.Write(0, fullPredictedState.DeepCopy());
 
@@ -170,7 +170,13 @@ namespace PurrNet.Prediction
             => _interpolatedState != null && _interpolatedState.capacity == ViewBufferCapacity(world);
 
         private bool HasStateHistoryFor(PredictionManager world)
-            => _stateHistory != null && _stateHistory.Capacity == world.tickRate * 10;
+            => _stateHistory != null && _stateHistory.Capacity == StateHistoryCapacity(world);
+
+        // Server baselines cannot outlive the retained network transcript. Clients
+        // keep the longer local timeline for prediction lead and delayed verification.
+        // Collider lag compensation has its own independently configured history.
+        private static int StateHistoryCapacity(PredictionManager world)
+            => world.isServer ? checked((int)world.verifiedHistoryWindowTicks) : world.tickRate * 10;
 
         internal override void PrewarmPredictionState(PredictionManager world)
         {
@@ -188,7 +194,7 @@ namespace PurrNet.Prediction
             if (!HasStateHistoryFor(world))
             {
                 _stateHistory?.Clear();
-                _stateHistory = History<FULL_STATE<STATE>>.ForTickWindow(world.tickRate * 10);
+                _stateHistory = History<FULL_STATE<STATE>>.ForTickWindow(StateHistoryCapacity(world));
             }
 
             world.PrewarmVerifiedStore<FULL_STATE<STATE>>();
