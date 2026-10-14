@@ -103,6 +103,61 @@ namespace PurrNet.Prediction.Tests.Editor
             }
         }
 
+        private static PredictedHierarchyState CapturedTopology(PredictionManager world, ulong tick)
+        {
+            var entry = Invoke(world, "GetLifecycleTick", tick);
+            Assert.That(entry, Is.Not.Null);
+            return (PredictedHierarchyState)entry.GetType().GetField("topology").GetValue(entry);
+        }
+
+        [Test]
+        public void StableTopologySharesStorageUntilTheLastBorrowedTickExpires()
+        {
+            using var f = new Fixture(false, beforeBaseline: world => world.CreateServerIdentity(100));
+            var original = CapturedTopology(f.server, Baseline);
+            for (ulong tick = Baseline + 1; tick <= Baseline + 4; tick++)
+            {
+                using var packet = f.StepServer(tick);
+                var stored = CapturedTopology(f.server, tick);
+                Assert.That(stored.spawnedPrefabs.list, Is.SameAs(original.spawnedPrefabs.list));
+                Assert.That(original.spawnedPrefabs.isDisposed, Is.False);
+            }
+            f.CreateServerIdentity(200);
+            ulong changedTick = Baseline + 5;
+            using (var packet = f.StepServer(changedTick)) { }
+            var changed = CapturedTopology(f.server, changedTick);
+            Assert.That(changed.spawnedPrefabs.list, Is.Not.SameAs(original.spawnedPrefabs.list));
+            Assert.That(changed.spawnedPrefabs.Count, Is.EqualTo(2));
+            Assert.That(original.spawnedPrefabs.Count, Is.EqualTo(1));
+            ulong end = changedTick + f.server.verifiedHistoryWindowTicks + 1;
+            for (ulong tick = changedTick + 1; tick <= end; tick++)
+            {
+                using var packet = f.StepServer(tick);
+                Assert.That(CapturedTopology(f.server, tick).spawnedPrefabs.list, Is.SameAs(changed.spawnedPrefabs.list));
+            }
+            Assert.That(original.spawnedPrefabs.isDisposed, Is.True, "the last old-topology owner has expired");
+            Assert.That(changed.spawnedPrefabs.isDisposed, Is.False, "the current topology is still owned by the newest tick");
+            Invoke(f.server, "DisposeLifecycleHistory");
+            Assert.That(changed.spawnedPrefabs.isDisposed, Is.True);
+        }
+
+        [Test]
+        public void FailedCaptureDoesNotDisposeTheBorrowedTopology()
+        {
+            using var f = new Fixture(false, beforeBaseline: world => world.CreateServerIdentity(100));
+            var original = CapturedTopology(f.server, Baseline);
+            var failure = f.server.RegisterSystem<FailingLifecycleGlobal>();
+            failure.fail = true;
+            Set(f.server, "<localTick>k__BackingField", Baseline + 1);
+            Assert.Throws<InvalidOperationException>(() => Invoke(f.server, "CaptureLifecycleHistory", Baseline + 1));
+            Assert.That(original.spawnedPrefabs.isDisposed, Is.False);
+            Assert.That(original.spawnedPrefabs.Count, Is.EqualTo(1));
+            failure.fail = false;
+            Invoke(f.server, "CaptureLifecycleHistory", Baseline + 1);
+            Assert.That(CapturedTopology(f.server, Baseline + 1).spawnedPrefabs.list,
+                Is.SameAs(original.spawnedPrefabs.list));
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void LostBirthFrameRestoresCustomEnteringStateAndOriginalTickInputs(bool pooled)
@@ -1079,6 +1134,17 @@ namespace PurrNet.Prediction.Tests.Editor
             this.parent = parent;
         }
         public override string ToString() => $"{objectId}@{tick}:state={enteringValue},input={input},starts={starts},parent={parent}";
+    }
+
+    public sealed class FailingLifecycleGlobal : PredictedIdentity<LifecycleLedgerState>
+    {
+        public bool fail;
+        protected override LifecycleLedgerState GetInitialState() => default;
+        internal override void WriteFirstState(ulong tick, BitPacker packer)
+        {
+            if (fail) throw new InvalidOperationException("Injected lifecycle capture failure");
+            base.WriteFirstState(tick, packer);
+        }
     }
 
     public sealed class LifecycleLedger : DeterministicIdentity<LifecycleLedgerState>

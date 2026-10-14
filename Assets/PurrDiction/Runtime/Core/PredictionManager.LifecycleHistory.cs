@@ -105,8 +105,11 @@ namespace PurrNet.Prediction
             _lifecycleCaptureScratch = null;
             if (captured.ownsTopology)
                 captured.topology.Dispose();
-            captured.topology = hierarchy.currentState.Duplicate();
-            captured.ownsTopology = true;
+            bool sharesPreviousTopology = previous != null &&
+                SameTopologySnapshot(previous.topology, hierarchy.currentState);
+            captured.topology = sharesPreviousTopology ? previous.topology : hierarchy.currentState.Duplicate();
+            // Borrow while preparing: a failed entrant writer must leave the old owner intact.
+            captured.ownsTopology = !sharesPreviousTopology;
             captured.tick = tick;
             captured.roster.Clear();
             captured.parents.Clear();
@@ -179,6 +182,13 @@ namespace PurrNet.Prediction
             }
 
             int index = (int)(tick % (ulong)_lifecycleHistory.Length);
+            if (sharesPreviousTopology)
+            {
+                // Capture and expiry are chronological. The newest user outlives every
+                // earlier borrower, so ownership can move forward without reference counts.
+                previous.ownsTopology = false;
+                captured.ownsTopology = true;
+            }
             _lifecycleCaptureScratch = _lifecycleHistory[index];
             _lifecycleHistory[index] = captured;
             _latestLifecycleTick = tick;
@@ -192,6 +202,27 @@ namespace PurrNet.Prediction
                     _lifecycleHistory[i] = null;
                 }
             }
+        }
+
+        private static bool SameTopologySnapshot(in PredictedHierarchyState a, in PredictedHierarchyState b)
+        {
+            if (a.nextInstanceId != b.nextInstanceId ||
+                a.spawnedPrefabs.isDisposed != b.spawnedPrefabs.isDisposed ||
+                a.toDelete.isDisposed != b.toDelete.isDisposed)
+                return false;
+            if (!a.spawnedPrefabs.isDisposed)
+            {
+                if (a.spawnedPrefabs.Count != b.spawnedPrefabs.Count) return false;
+                for (int i = 0; i < a.spawnedPrefabs.Count; i++)
+                    if (!a.spawnedPrefabs[i].Equals(b.spawnedPrefabs[i])) return false;
+            }
+            if (!a.toDelete.isDisposed)
+            {
+                if (a.toDelete.Count != b.toDelete.Count) return false;
+                for (int i = 0; i < a.toDelete.Count; i++)
+                    if (!a.toDelete[i].Equals(b.toDelete[i])) return false;
+            }
+            return true;
         }
 
         private bool HasReplayHistory(ulong baseline, ulong through)
