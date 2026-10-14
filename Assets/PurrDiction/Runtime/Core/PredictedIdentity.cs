@@ -395,9 +395,13 @@ namespace PurrNet.Prediction
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal PredictionPolicy EffectivePolicy()
         {
+            var policy = predictionPolicy;
+            if (policy is PredictionPolicy.FullPrediction or PredictionPolicy.ServerRelay)
+                return policy;
+
             return ResolveEffectivePolicy(
-                predictionPolicy,
-                IsOwner(),
+                policy,
+                (policy is PredictionPolicy.PredictedIfOwned or PredictionPolicy.PredictedIfOwnedWithSoftFallback) && IsOwner(),
                 !isDeterministic && supportsSoftCorrection);
         }
 
@@ -453,6 +457,9 @@ namespace PurrNet.Prediction
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool SkipsCurrentSimulationPhase()
         {
+            if (predictionPolicy == PredictionPolicy.FullPrediction)
+                return false;
+
             var manager = predictionManager;
             if (manager.cachedIsServer)
                 return false;
