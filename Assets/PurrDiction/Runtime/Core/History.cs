@@ -215,7 +215,7 @@ namespace PurrNet.Prediction
             }
 
             InsertAt(index, tick, data);
-            m_contiguous = false;
+            RefreshContiguity();
 
             if (m_maxCount > 0)
                 TryToDownsize();
@@ -250,6 +250,15 @@ namespace PurrNet.Prediction
             RemoveFront(m_count - m_maxCount);
         }
 
+        // Sorted unique ticks fill the entire interval exactly when its span equals
+        // the entry count. A sparse startup or replay gap need not disable direct
+        // indexing after that gap has expired or been filled.
+        private void RefreshContiguity()
+        {
+            m_contiguous = m_count <= 1 ||
+                m_ticks[Phys(m_count - 1)] - m_ticks[m_head] == (ulong)(m_count - 1);
+        }
+
         private void RemoveFront(int count)
         {
             for (int i = 0; i < count; i++)
@@ -262,8 +271,8 @@ namespace PurrNet.Prediction
             m_head = Phys(count);
             m_count -= count;
 
-            if (m_count <= 1)
-                m_contiguous = true;
+            if (!m_contiguous)
+                RefreshContiguity();
         }
 
         private void RemoveBack(int count)
@@ -277,8 +286,8 @@ namespace PurrNet.Prediction
 
             m_count -= count;
 
-            if (m_count <= 1)
-                m_contiguous = true;
+            if (!m_contiguous)
+                RefreshContiguity();
         }
 
         /// <summary>
@@ -530,11 +539,7 @@ namespace PurrNet.Prediction
             m_values[Phys(m_count - 1)] = default;
             m_count--;
 
-            if (index != 0 && index != m_count)
-                m_contiguous = false;
-
-            if (m_count <= 1)
-                m_contiguous = true;
+            RefreshContiguity();
         }
     }
 }
