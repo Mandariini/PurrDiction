@@ -30,6 +30,69 @@ namespace PurrNet.Prediction.Tests.Editor
                     value.value = Packer<int>.Read(packer));
         }
 
+        [TestCase(20)]
+        [TestCase(60)]
+        [TestCase(240)]
+        public void DelayedClientKeepsEveryProtocolBaselineOnTheServerClock(int rate)
+        {
+            var senderObject = new GameObject("Window sender identity");
+            var senderWorldObject = new GameObject("Window sender world");
+            var receiverObject = new GameObject("Window receiver identity");
+            var receiverWorldObject = new GameObject("Window receiver world");
+            try
+            {
+                var senderWorld = CreateManager(senderWorldObject);
+                var receiverWorld = CreateManager(receiverWorldObject);
+                SetField(typeof(PredictionManager), senderWorld, "<tickRate>k__BackingField", rate);
+                SetField(typeof(PredictionManager), receiverWorld, "<tickRate>k__BackingField", rate);
+                var sender = senderObject.AddComponent<OmittedStateIdentity>();
+                var receiver = receiverObject.AddComponent<OmittedStateIdentity>();
+                var id = new PredictedComponentID(new PredictedObjectID(401), 0);
+                InitializeIdentity(sender, senderWorld, id, 0);
+                var receiverVerified = InitializeIdentity(receiver, receiverWorld, id, 0);
+                int window = (int)receiverWorld.verifiedHistoryWindowTicks;
+                Assert.That(receiverVerified.Capacity, Is.EqualTo(window));
+                // Local prediction can be far ahead of a delayed authoritative stream.
+                // It must neither age the server-clock baselines nor shrink replay/view history.
+                const ulong localOffset = 10000;
+                using var payload = BitPackerPool.Get();
+                for (ulong serverTick = 1; serverTick <= (ulong)(window * 3); serverTick++)
+                {
+                    SetLocalTick(senderWorld, serverTick);
+                    SetLocalTick(receiverWorld, serverTick + localOffset);
+                    sender.fullPredictedState = FullState((int)serverTick);
+                    payload.ResetPositionAndMode(false);
+                    if (serverTick == 1)
+                    {
+                        sender.WriteFirstState(serverTick, payload);
+                        payload.ResetPositionAndMode(true);
+                        receiver.ReadFirstState(localOffset + serverTick, payload, serverTick);
+                    }
+                    else
+                    {
+                        ulong baseline = serverTick > (ulong)window ? serverTick - (ulong)window : 1;
+                        sender.WriteCurrentState(default, payload, baseline);
+                        Assert.That(receiver.HasUnchangedStateBaseline(baseline), Is.True);
+                        payload.ResetPositionAndMode(true);
+                        receiver.ReadState(localOffset + serverTick, payload, baseline, serverTick);
+                    }
+                    receiver.lastVerifiedTick = localOffset + serverTick;
+                    Assert.That(receiver.verifiedState.Value.value, Is.EqualTo((int)serverTick));
+                }
+                var predicted = GetField<History<FULL_STATE<OmittedState>>>(
+                    typeof(PredictedIdentity<OmittedState>), receiver, "_stateHistory");
+                Assert.That(predicted.Capacity, Is.EqualTo(200), "the replay/view store remains separate");
+                Assert.That(receiverVerified.Count, Is.EqualTo(window + 1));
+            }
+            finally
+            {
+                Object.DestroyImmediate(senderObject);
+                Object.DestroyImmediate(receiverObject);
+                Object.DestroyImmediate(senderWorldObject);
+                Object.DestroyImmediate(receiverWorldObject);
+            }
+        }
+
         [Test]
         public void StateDeltaReusePreservesWireBitsAndDetectsMutationWithinTheSameTick()
         {

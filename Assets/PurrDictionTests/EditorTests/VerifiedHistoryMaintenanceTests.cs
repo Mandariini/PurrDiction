@@ -145,7 +145,7 @@ namespace PurrNet.Prediction.Tests.Editor
             fixture.Maintain();
             foreach (var history in new[] { live, module, pooled })
             {
-                Assert.That(Backing(history), Is.EqualTo(602));
+                Assert.That(Backing(history), Is.EqualTo(98));
                 Assert.That(history.Count, Is.EqualTo(50));
                 Assert.That(history.OldestTick, Is.Zero);
             }
@@ -161,10 +161,10 @@ namespace PurrNet.Prediction.Tests.Editor
             var second = fixture.Create(109, 40);
             fixture.Maintain();
             Assert.That(fixture.manager.verifiedHistoryMaintenanceInspectionsTotal, Is.EqualTo(8));
-            Assert.That(Backing(first), Is.EqualTo(602));
+            Assert.That(Backing(first), Is.EqualTo(98));
             fixture.Maintain();
             Assert.That(Backing(first), Is.EqualTo(40));
-            Assert.That(Backing(second), Is.EqualTo(602));
+            Assert.That(Backing(second), Is.EqualTo(98));
             Assert.That(fixture.manager.verifiedHistoryMaintainedStoresTotal, Is.EqualTo(1));
             fixture.Maintain();
             Assert.That(Backing(second), Is.EqualTo(40));
@@ -193,12 +193,15 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(Backing(history), Is.EqualTo(1));
         }
 
-        [TestCase(20)]
-        [TestCase(60)]
-        [TestCase(240)]
-        public void ServerHistoryRetainsTheEntireProtocolWindowWithoutGrowing(int tickRate)
+        [TestCase(20, true)]
+        [TestCase(60, true)]
+        [TestCase(240, true)]
+        [TestCase(20, false)]
+        [TestCase(60, false)]
+        [TestCase(240, false)]
+        public void VerifiedHistoryRetainsTheEntireProtocolWindowWithoutGrowing(int tickRate, bool server)
         {
-            using var fixture = new Fixture(true);
+            using var fixture = new Fixture(server);
             Set(typeof(PredictionManager), fixture.manager, "<tickRate>k__BackingField", tickRate);
             var history = fixture.Create(302, 0);
             int window = (int)fixture.manager.verifiedHistoryWindowTicks;
@@ -251,8 +254,8 @@ namespace PurrNet.Prediction.Tests.Editor
             var rebound = fixture.manager.GetVerifiedHistory<Value>(new PredictedComponentID(new PredictedObjectID(401), 0), 8, out var created);
             Assert.That(created, Is.False);
             Assert.That(rebound, Is.SameAs(history));
-            Assert.That(Backing(rebound), Is.EqualTo(602));
-            Assert.That(fixture.manager.verifiedHistoryRestoredArrayPayloadBytesTotal, Is.EqualTo(602 * 12));
+            Assert.That(Backing(rebound), Is.EqualTo(98));
+            Assert.That(fixture.manager.verifiedHistoryRestoredArrayPayloadBytesTotal, Is.EqualTo(98 * 12));
             for (ulong tick = 0; tick < 40; tick++)
             {
                 Assert.That(rebound.Read(tick, out var value), Is.True);
@@ -354,7 +357,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var history = fixture.Create(501, 40);
             Set(typeof(PredictionManager), fixture.manager, field, true);
             fixture.Maintain();
-            Assert.That(Backing(history), Is.EqualTo(602));
+            Assert.That(Backing(history), Is.EqualTo(98));
             Assert.That(fixture.manager.verifiedHistoryMaintenanceInspectionsTotal, Is.Zero);
             Set(typeof(PredictionManager), fixture.manager, field, false);
         }

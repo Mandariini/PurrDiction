@@ -278,9 +278,10 @@ namespace PurrNet.Prediction
 
         internal int verifiedStoreCount => _verifiedStores.Count;
 
-        // Server deltas cannot reference ticks outside the retained input/lifecycle
-        // transcript. Client stores also support delayed apply and view consumers.
-        private int verifiedStoreCapacity => isServer ? checked((int)verifiedHistoryWindowTicks) : tickRate * 10;
+        // Both peers keep the complete input/lifecycle baseline window. Receiver stores
+        // advance on received server ticks, so delivery delay does not age their baselines.
+        // Prediction, verified view sampling and deterministic replay use separate histories.
+        private int verifiedStoreCapacity => checked((int)verifiedHistoryWindowTicks);
 
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, out bool created) where T : struct, IDisposable
         {
