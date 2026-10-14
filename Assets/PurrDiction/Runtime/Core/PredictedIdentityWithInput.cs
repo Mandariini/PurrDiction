@@ -56,11 +56,12 @@ namespace PurrNet.Prediction
 
         private void EnsureInputHistory(PredictionManager world)
         {
-            if (_inputHistory != null && _inputHistory.Capacity == world.tickRate * 5)
+            int capacity = world.isServer ? checked((int)world.verifiedHistoryWindowTicks) : world.tickRate * 5;
+            if (_inputHistory != null && _inputHistory.Capacity == capacity)
                 return;
 
             _inputHistory?.Clear();
-            _inputHistory = new History<INPUT>(world.tickRate * 5);
+            _inputHistory = world.isServer ? History<INPUT>.ForTickWindow(capacity) : new History<INPUT>(capacity);
         }
 
         internal override void ReleasePredictionStateForPool()
@@ -151,6 +152,11 @@ namespace PurrNet.Prediction
 
         internal override void PrepareInput(bool isServer, bool isLocal, ulong tick, bool extrapolate)
         {
+            // The server only writes inputs for its current tick. Retain the full
+            // protocol window plus its preceding anchor without geometric growth.
+            if (isServer)
+                _inputHistory.PruneByTickWindow(tick);
+
             if (isLocal)
             {
                 try
