@@ -278,6 +278,10 @@ namespace PurrNet.Prediction
 
         internal int verifiedStoreCount => _verifiedStores.Count;
 
+        // Server deltas cannot reference ticks outside the retained input/lifecycle
+        // transcript. Client stores also support delayed apply and view consumers.
+        private int verifiedStoreCapacity => isServer ? checked((int)verifiedHistoryWindowTicks) : tickRate * 10;
+
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, out bool created) where T : struct, IDisposable
         {
             return GetVerifiedHistory<T>(componentId, 0, out created);
@@ -297,7 +301,7 @@ namespace PurrNet.Prediction
                 return history;
             }
 
-            int capacity = tickRate * 10;
+            int capacity = verifiedStoreCapacity;
             var newStore = TakeRecycledVerifiedStore(typeHash, capacity) as VerifiedStateStore<T> ??
                            new VerifiedStateStore<T>(capacity);
             newStore.typeHash = typeHash;
@@ -426,7 +430,7 @@ namespace PurrNet.Prediction
             if (!_verifiedStoresByComponent.Remove(componentId, out var store))
                 return;
 
-            int capacity = tickRate * 10;
+            int capacity = verifiedStoreCapacity;
             while (store != null)
             {
                 var next = store.nextForComponent;
@@ -452,7 +456,7 @@ namespace PurrNet.Prediction
         {
             var recycled = RecycledVerifiedStores(Hasher<T>.stableHash);
             if (recycled.Count < RecycledVerifiedStoresPerType)
-                recycled.Push(new VerifiedStateStore<T>(tickRate * 10));
+                recycled.Push(new VerifiedStateStore<T>(verifiedStoreCapacity));
         }
 
         private Stack<VerifiedStore> RecycledVerifiedStores(uint typeHash)

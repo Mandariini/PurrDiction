@@ -193,6 +193,41 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(Backing(history), Is.EqualTo(1));
         }
 
+        [TestCase(20)]
+        [TestCase(60)]
+        [TestCase(240)]
+        public void ServerHistoryRetainsTheEntireProtocolWindowWithoutGrowing(int tickRate)
+        {
+            using var fixture = new Fixture(true);
+            Set(typeof(PredictionManager), fixture.manager, "<tickRate>k__BackingField", tickRate);
+            var history = fixture.Create(302, 0);
+            int window = (int)fixture.manager.verifiedHistoryWindowTicks;
+            Assert.That(history.Capacity, Is.EqualTo(window));
+            ulong end = (ulong)(window * 3);
+            for (ulong tick = 0; tick <= end; tick++)
+            {
+                history.PruneByTickWindow(tick);
+                history.Write(tick, new Value { number = (int)tick });
+                Assert.That(Backing(history), Is.EqualTo(window + 2));
+            }
+            Assert.That(history.Read(end - (ulong)window, out var baseline), Is.True);
+            Assert.That(baseline.number, Is.EqualTo((int)end - window));
+            Assert.That(history.Count, Is.EqualTo(window + 1));
+        }
+
+        [Test]
+        public void SparseServerHistoryRetainsThePrecedingAnchorAtTheProtocolCutoff()
+        {
+            using var fixture = new Fixture(true);
+            var history = fixture.Create(303, 0);
+            history.Write(10, new Value { number = 10 });
+            history.Write(48, new Value { number = 48 });
+            history.PruneByTickWindow(200);
+            history.Write(200, new Value { number = 200 });
+            Assert.That(history.ReadOrPrevious(104, out var baseline), Is.True);
+            Assert.That(baseline.number, Is.EqualTo(48));
+        }
+
         [Test]
         public void HostCompactsButNeverPrunesEntriesAtTheClientFloor()
         {
@@ -244,7 +279,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(created, Is.True);
             Assert.That(reused, Is.SameAs(state).Or.SameAs(module));
             Assert.That(reused.Count, Is.Zero);
-            Assert.That(Backing(reused), Is.EqualTo(602), "recycled stores keep their eager capacity");
+            Assert.That(Backing(reused), Is.EqualTo(98), "recycled server stores keep their protocol-sized capacity");
             Assert.That(fixture.manager.verifiedHistoryRecycledStoresTotal, Is.EqualTo(1));
         }
 
