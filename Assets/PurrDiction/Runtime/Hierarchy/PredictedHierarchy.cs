@@ -9,8 +9,8 @@ namespace PurrNet.Prediction
     public class PredictedHierarchy : PredictedIdentity<PredictedHierarchyState>
     {
         readonly List<InstanceDetails> _spawnedPrefabs = new ();
-        readonly Dictionary<PredictedObjectID, InstanceDetails> _recordsById = new ();
-        readonly Dictionary<PredictedObjectID, GameObject> _instanceMap = new ();
+        readonly Dictionary<PredictedObjectID, InstanceDetails> _recordsById = new (PredictionIdComparers.Objects);
+        readonly Dictionary<PredictedObjectID, GameObject> _instanceMap = new (PredictionIdComparers.Objects);
         readonly Dictionary<GameObject, PredictedObjectID> _goToId = new ();
         readonly HashSet<PredictedObjectID> _isSceneObject = new ();
         readonly List<PredictedObjectID> _reservedSceneObjects = new ();

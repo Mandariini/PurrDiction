@@ -28,6 +28,13 @@ namespace PurrNet.Prediction
             => new CompactIdentityState { owner = value.owner, wasOnSimulationStartCalled = value.wasOnSimulationStartCalled };
 
         public void Dispose() { }
+
+        // Both conversions and the owner setter produce canonical flags and a zero ID
+        // for an absent owner. Compare those fields without rebuilding nullable IDs.
+        public bool HasSameContents(in CompactIdentityState other)
+            => _ownerId == other._ownerId && _ownerFlags == other._ownerFlags &&
+               wasOnSimulationStartCalled == other.wasOnSimulationStartCalled;
+
         public override string ToString() => ((PredictedIdentityState)this).ToString();
     }
 

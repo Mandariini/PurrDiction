@@ -25,9 +25,7 @@ namespace PurrNet.Prediction
 
         public bool HasSameContents(ref FULL_STATE<T> other)
         {
-            PredictedIdentityState metadata = prediction;
-            PredictedIdentityState otherMetadata = other.prediction;
-            return Packer.AreEqualRef(ref metadata, ref otherMetadata) &&
+            return prediction.HasSameContents(other.prediction) &&
                    Packer.AreEqualRef(ref state, ref other.state);
         }
 

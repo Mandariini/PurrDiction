@@ -762,8 +762,8 @@ namespace PurrNet.Prediction
         sealed class HierarchyBaselineScratch
         {
             public bool hasBaseline;
-            public readonly HashSet<PredictedObjectID> roots = new();
-            public readonly HashSet<PredictedObjectID> pieces = new();
+            public readonly HashSet<PredictedObjectID> roots = new(PredictionIdComparers.Objects);
+            public readonly HashSet<PredictedObjectID> pieces = new(PredictionIdComparers.Objects);
         }
 
         readonly Dictionary<ulong, HierarchyBaselineScratch> _hierarchyBaselineScratchByTick = new();

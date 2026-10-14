@@ -90,6 +90,26 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void SnapshotEqualityMatchesPublicMetadataIncludingBotAndNullOwners()
+        {
+            foreach (var left in Cases())
+            foreach (var right in Cases())
+            {
+                var canonicalLeft = (PredictedIdentityState)(CompactIdentityState)left;
+                var canonicalRight = (PredictedIdentityState)(CompactIdentityState)right;
+                bool expected = Packer.AreEqualRef(ref canonicalLeft, ref canonicalRight);
+                var a = new FULL_STATE<CompactStateProbe> { prediction = left };
+                var b = new FULL_STATE<CompactStateProbe> { prediction = right };
+                Assert.That(a.HasSameContents(ref b), Is.EqualTo(expected));
+                b.state.a = 1;
+                Assert.That(a.HasSameContents(ref b), Is.False);
+            }
+            CompactIdentityState cleared = new PredictedIdentityState { owner = new PlayerID(ulong.MaxValue, true) };
+            cleared.owner = null;
+            Assert.That(cleared.HasSameContents(default), Is.True);
+        }
+
+        [Test]
         public void HistorySnapshotsUseSmallerStorageAndPreserveMetadataEncoding()
         {
             var compactHistory = History<FULL_STATE<CompactStateProbe>>.ForTickWindow(60);
