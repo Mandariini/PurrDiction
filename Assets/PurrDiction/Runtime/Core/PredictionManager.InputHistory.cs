@@ -59,7 +59,7 @@ namespace PurrNet.Prediction
 
         private CachedInputBlock[] _inputBlockCache;
         private CachedInputBlock _inputBlockScratch;
-        private readonly Dictionary<PredictedComponentID, int> _previousInputEntryIndex = new();
+        private readonly Dictionary<PredictedComponentID, int> _previousInputEntryIndex = new(PredictionIdComparers.Components);
         private ulong _latestCapturedInputTick;
         private bool _hasCapturedInputHistory;
 

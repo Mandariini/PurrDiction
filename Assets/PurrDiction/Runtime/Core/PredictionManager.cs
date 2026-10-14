@@ -249,7 +249,7 @@ namespace PurrNet.Prediction
         }
 
         readonly Dictionary<(uint, PredictedComponentID, int), VerifiedStore> _verifiedStores = new ();
-        readonly Dictionary<PredictedComponentID, VerifiedStore> _verifiedStoresByComponent = new ();
+        readonly Dictionary<PredictedComponentID, VerifiedStore> _verifiedStoresByComponent = new (PredictionIdComparers.Components);
         readonly List<VerifiedStore> _verifiedStoreMaintenance = new ();
         readonly Dictionary<uint, Stack<VerifiedStore>> _recycledVerifiedStores = new ();
         readonly List<PredictedComponentID> _retiredVerifiedComponents = new ();
@@ -874,7 +874,7 @@ namespace PurrNet.Prediction
             ListPool<PredictedIdentity>.Destroy(components);
         }
 
-        readonly Dictionary<PredictedComponentID, PredictedIdentity> _instanceMap = new ();
+        readonly Dictionary<PredictedComponentID, PredictedIdentity> _instanceMap = new (PredictionIdComparers.Components);
 
         public bool TryGetIdentity(PredictedComponentID id, out PredictedIdentity instance)
         {
@@ -1339,8 +1339,8 @@ namespace PurrNet.Prediction
         private bool _cachedInputFragmented;
         private double _lastInputSendTime;
 
-        private readonly Dictionary<PredictedComponentID, int> _uploadPreviousInputIndex = new();
-        private readonly Dictionary<PredictedComponentID, int> _receivePreviousInputIndex = new();
+        private readonly Dictionary<PredictedComponentID, int> _uploadPreviousInputIndex = new(PredictionIdComparers.Components);
+        private readonly Dictionary<PredictedComponentID, int> _receivePreviousInputIndex = new(PredictionIdComparers.Components);
 
         private static void IndexInputSpans(List<InputHistorySpan> spans, Dictionary<PredictedComponentID, int> indices)
         {

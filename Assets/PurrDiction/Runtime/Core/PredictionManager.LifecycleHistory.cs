@@ -40,13 +40,13 @@ namespace PurrNet.Prediction
         private LifecycleTick[] _lifecycleHistory;
         private LifecycleTick _lifecycleCaptureScratch;
         private ulong _latestLifecycleTick;
-        private readonly Dictionary<PredictedObjectID, InstanceDetails> _previousLifecyclePieces = new();
+        private readonly Dictionary<PredictedObjectID, InstanceDetails> _previousLifecyclePieces = new(PredictionIdComparers.Objects);
         private readonly HashSet<PredictedObjectID> _changedLifecyclePieces = new();
         private readonly Stack<LifecycleTick> _lifecycleReplayPool = new();
         private readonly Stack<LifecycleReplay> _lifecycleReplays = new();
         private LifecycleTick _readingLifecycleBatch;
         private AddressedPredictionRecords.ReadRecord _readLifecycleEntrant;
-        private readonly Dictionary<PredictedObjectID, int> _topologyCodecScratch = new();
+        private readonly Dictionary<PredictedObjectID, int> _topologyCodecScratch = new(PredictionIdComparers.Objects);
 
         private void EnsureLifecycleHistoryCapacity()
         {
