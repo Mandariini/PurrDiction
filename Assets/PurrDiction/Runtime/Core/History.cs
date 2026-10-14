@@ -17,6 +17,8 @@ namespace PurrNet.Prediction
 
         readonly int m_limitToCut;
 
+        readonly int m_eagerCapacity;
+
         bool m_contiguous = true;
 
         int Phys(int index)
@@ -85,15 +87,23 @@ namespace PurrNet.Prediction
         /// </summary>
         /// <param name="maxEntries">Number of entries you can have at once reliably,
         /// anything past this number can be cleaned at any time without your input. -1 means no limit thus no cleaning.</param>
-        public History(int maxEntries = -1)
+        public History(int maxEntries = -1) : this(maxEntries, -1) { }
+
+        // A tick window holds its cutoff anchor, the ticks inside the window and the
+        // next write. Keep the usual entry-count ceiling for out-of-order callers.
+        internal static History<T> ForTickWindow(int maxEntries)
+            => new History<T>(maxEntries, maxEntries > 0 ? maxEntries + 2 : -1);
+
+        private History(int maxEntries, int initialCapacity)
         {
             m_maxCount = maxEntries;
 
             if (m_maxCount > 0)
             {
                 m_limitToCut = Math.Max(m_maxCount + 10, m_maxCount + m_maxCount / 2);
-                m_ticks = new ulong[m_limitToCut + 1];
-                m_values = new T[m_limitToCut + 1];
+                m_eagerCapacity = initialCapacity > 0 ? Math.Min(initialCapacity, m_limitToCut + 1) : m_limitToCut + 1;
+                m_ticks = new ulong[m_eagerCapacity];
+                m_values = new T[m_eagerCapacity];
             }
             else
             {
@@ -139,13 +149,13 @@ namespace PurrNet.Prediction
         // Restore capacity before Setup to avoid deferring growth into later simulation.
         internal long RestoreEagerBackingStorage()
         {
-            if (m_maxCount <= 0 || m_ticks.Length >= m_limitToCut + 1)
+            if (m_maxCount <= 0 || m_ticks.Length >= m_eagerCapacity)
                 return 0;
-            ResizeBackingStorage(m_limitToCut + 1);
+            ResizeBackingStorage(Math.Max(m_count, m_eagerCapacity));
             return BackingStoragePayloadBytes;
         }
 
-        internal bool HasEagerBackingStorage => m_maxCount > 0 && m_ticks.Length >= m_limitToCut + 1;
+        internal bool HasEagerBackingStorage => m_maxCount > 0 && m_ticks.Length >= m_eagerCapacity;
 
         internal long BackingStoragePayloadBytes =>
             (long)m_ticks.Length * (Unsafe.SizeOf<T>() + sizeof(ulong));

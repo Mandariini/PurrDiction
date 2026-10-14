@@ -227,7 +227,7 @@ namespace PurrNet.Prediction
 
             public VerifiedStateStore(int capacity)
             {
-                history = new History<T>(capacity);
+                history = History<T>.ForTickWindow(capacity);
             }
 
             public override void Clear() => history.Clear();
@@ -1334,6 +1334,16 @@ namespace PurrNet.Prediction
         private bool _cachedInputFragmented;
         private double _lastInputSendTime;
 
+        private readonly Dictionary<PredictedComponentID, int> _uploadPreviousInputIndex = new();
+        private readonly Dictionary<PredictedComponentID, int> _receivePreviousInputIndex = new();
+
+        private static void IndexInputSpans(List<InputHistorySpan> spans, Dictionary<PredictedComponentID, int> indices)
+        {
+            indices.Clear();
+            for (int i = 0; i < spans.Count; i++)
+                indices.TryAdd(spans[i].id, i);
+        }
+
         private void CacheInputPayload(ulong firstTick, uint tickCount, BitPacker payload)
         {
             _cachedInputPayload?.Dispose();
@@ -1441,20 +1451,18 @@ namespace PurrNet.Prediction
                 RecordUploadedInputs(tick, curBlock, curSpans);
 
                 wireBlock.ResetPositionAndMode(false);
+                IndexInputSpans(prevSpans, _uploadPreviousInputIndex);
                 for (var s = 0; s < curSpans.Count; s++)
                 {
                     var span = curSpans[s];
                     Packer<PredictedComponentID>.Write(wireBlock, span.id);
 
                     bool repeat = false;
-                    for (var p = 0; p < prevSpans.Count; p++)
+                    if (_uploadPreviousInputIndex.TryGetValue(span.id, out int previousIndex))
                     {
-                        if (!prevSpans[p].id.Equals(span.id))
-                            continue;
-                        var prevSpan = prevSpans[p];
+                        var prevSpan = prevSpans[previousIndex];
                         repeat = new BitData(curBlock, span.bitOrigin, span.bitLength)
                             .Equals(new BitData(prevBlock, prevSpan.bitOrigin, prevSpan.bitLength));
-                        break;
                     }
 
                     Packer<bool>.Write(wireBlock, repeat);
@@ -3058,6 +3066,7 @@ namespace PurrNet.Prediction
 
                     curExpanded.ResetPositionAndMode(false);
                     curSpans.Clear();
+                    IndexInputSpans(prevSpans, _receivePreviousInputIndex);
 
                     for (uint e = 0; e < count.value; e++)
                     {
@@ -3072,11 +3081,9 @@ namespace PurrNet.Prediction
 
                         if (repeat)
                         {
-                            for (var p = 0; p < prevSpans.Count; p++)
+                            if (_receivePreviousInputIndex.TryGetValue(pid, out int previousIndex))
                             {
-                                if (!prevSpans[p].id.Equals(pid))
-                                    continue;
-                                var prevSpan = prevSpans[p];
+                                var prevSpan = prevSpans[previousIndex];
                                 origin = curExpanded.positionInBits;
                                 curExpanded.WriteBitDataWithoutConsumingIt(
                                     new BitData(prevExpanded, prevSpan.bitOrigin, prevSpan.bitLength));
@@ -3087,7 +3094,6 @@ namespace PurrNet.Prediction
                                     bitOrigin = origin,
                                     bitLength = payloadLength
                                 });
-                                break;
                             }
 
                             if (origin < 0)

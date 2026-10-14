@@ -149,7 +149,7 @@ namespace PurrNet.Prediction
 
             _stateHistory?.Clear();
             if (!HasStateHistoryFor(world))
-                _stateHistory = new History<FULL_STATE<STATE>>(world.tickRate * 10);
+                _stateHistory = History<FULL_STATE<STATE>>.ForTickWindow(world.tickRate * 10);
 
             _stateHistory.Write(0, fullPredictedState.DeepCopy());
 
@@ -179,7 +179,7 @@ namespace PurrNet.Prediction
             if (!HasStateHistoryFor(world))
             {
                 _stateHistory?.Clear();
-                _stateHistory = new History<FULL_STATE<STATE>>(world.tickRate * 10);
+                _stateHistory = History<FULL_STATE<STATE>>.ForTickWindow(world.tickRate * 10);
             }
 
             world.PrewarmVerifiedStore<FULL_STATE<STATE>>();

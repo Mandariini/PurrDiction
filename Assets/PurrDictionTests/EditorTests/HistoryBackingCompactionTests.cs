@@ -54,6 +54,44 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void TickWindowRetainsEveryTickWithoutGrowingItsBackingArrays()
+        {
+            var history = History<LargeValue>.ForTickWindow(600);
+            for (ulong tick = 0; tick < 1800; tick++)
+            {
+                history.PruneByTickWindow(tick);
+                history.Write(tick, new LargeValue { Number = (int)tick });
+                Assert.That(Backing(history), Is.EqualTo(602));
+                ulong cutoff = tick > 600 ? tick - 600 : 0;
+                Assert.That(history.Read(cutoff, out var oldest), Is.True);
+                Assert.That(oldest.Number, Is.EqualTo((int)cutoff));
+                Assert.That(history.MostRecentTick, Is.EqualTo(tick));
+            }
+            history.ClearPast(1790);
+            Assert.That(history.TryCompactBackingStorage(65536), Is.True);
+            history.RestoreEagerBackingStorage();
+            Assert.That(Backing(history), Is.EqualTo(602));
+            Assert.That(history.Read(1790, out var retained), Is.True);
+            Assert.That(retained.Number, Is.EqualTo(1790));
+            history.Clear();
+        }
+
+        [Test]
+        public void TickWindowStorageStillSupportsUnprunedOutOfOrderWritesAndDisposal()
+        {
+            var history = History<Value>.ForTickWindow(600);
+            var allocated = new List<Ticket>();
+            var expected = new SortedDictionary<ulong, Ticket>();
+            for (ulong tick = 0; tick < 880; tick += 2)
+                expected[tick] = Write(history, allocated, tick);
+            for (ulong tick = 1; tick < 400; tick += 2)
+                expected[tick] = Write(history, allocated, tick);
+            Assert.That(Backing(history), Is.EqualTo(901));
+            Check(history, expected, allocated);
+            history.Clear(); expected.Clear(); Check(history, expected, allocated);
+        }
+
+        [Test]
         public void WrappedCompactionAndEagerRebindPreserveEveryTickValueAndOwnership()
         {
             var history = new History<Value>(600);

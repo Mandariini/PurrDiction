@@ -272,6 +272,14 @@ namespace PurrNet.Prediction
 
             var target = state.spawnedPrefabs;
 
+            if (MatchesLiveTopology(target))
+            {
+                _nextInstanceId = state.nextInstanceId;
+                try { RunDecorationRestores(); }
+                finally { _isRollingBack = false; }
+                return;
+            }
+
             _targetIdsScratch.Clear();
             for (var i = 0; i < target.Count; i++)
                 _targetIdsScratch[target[i].instanceId] = i;
@@ -414,6 +422,19 @@ namespace PurrNet.Prediction
             _replacedEntrantsScratch.Clear();
             _isRollingBack = false;
             InvalidateVisibilityTopology();
+        }
+
+        private bool MatchesLiveTopology(DisposableList<InstanceDetails> target)
+        {
+            int count = target.Count;
+            if (count != _spawnedPrefabs.Count || count != _recordsById.Count || count != _instanceMap.Count)
+                return false;
+            for (int i = 0; i < count; i++)
+            {
+                if (!_spawnedPrefabs[i].Equals(target[i]))
+                    return false;
+            }
+            return true;
         }
 
         private sealed class CascadeGroupComparer : IComparer<PredictedObjectID>
