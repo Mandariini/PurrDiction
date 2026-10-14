@@ -700,6 +700,8 @@ namespace PurrNet.Prediction
             PlayerVisibilityTimeline timeline,
             PredictedIdentity system)
         {
+            if (timeline.isPassThrough)
+                return true;
             if (!system || system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return true;
 
@@ -712,6 +714,8 @@ namespace PurrNet.Prediction
             PredictedIdentity system,
             ulong tick)
         {
+            if (timeline.isPassThrough)
+                return true;
             if (!system || system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return true;
 
@@ -757,30 +761,33 @@ namespace PurrNet.Prediction
 
         sealed class HierarchyBaselineScratch
         {
-            public ulong baselineTick = ulong.MaxValue;
-            public ulong cachedAtLocalTick = ulong.MaxValue;
             public bool hasBaseline;
             public readonly HashSet<PredictedObjectID> roots = new();
             public readonly HashSet<PredictedObjectID> pieces = new();
         }
 
-        readonly Dictionary<PlayerID, HierarchyBaselineScratch> _hierarchyBaselineScratchByPlayer = new();
+        readonly Dictionary<ulong, HierarchyBaselineScratch> _hierarchyBaselineScratchByTick = new();
+        readonly List<HierarchyBaselineScratch> _hierarchyBaselineScratchPool = new();
+        ulong _hierarchyBaselineCacheTick = ulong.MaxValue;
 
-        // Share the baseline scan across state and event writes in one tick.
+        // Share the global baseline scan across receivers, state and event writes.
         // Invalidate each tick: a stalled ACK can outlive its retained baseline.
-        HierarchyBaselineScratch GetHierarchyBaselineScratch(PlayerID player, ulong baselineTick)
+        HierarchyBaselineScratch GetHierarchyBaselineScratch(ulong baselineTick)
         {
-            if (!_hierarchyBaselineScratchByPlayer.TryGetValue(player, out var scratch))
+            if (_hierarchyBaselineCacheTick != localTick)
             {
-                scratch = new HierarchyBaselineScratch();
-                _hierarchyBaselineScratchByPlayer[player] = scratch;
+                _hierarchyBaselineScratchByTick.Clear();
+                _hierarchyBaselineCacheTick = localTick;
             }
 
-            if (scratch.baselineTick == baselineTick && scratch.cachedAtLocalTick == localTick)
+            if (_hierarchyBaselineScratchByTick.TryGetValue(baselineTick, out var scratch))
                 return scratch;
 
-            scratch.baselineTick = baselineTick;
-            scratch.cachedAtLocalTick = localTick;
+            int index = _hierarchyBaselineScratchByTick.Count;
+            if (index == _hierarchyBaselineScratchPool.Count)
+                _hierarchyBaselineScratchPool.Add(new HierarchyBaselineScratch());
+            scratch = _hierarchyBaselineScratchPool[index];
+
             scratch.roots.Clear();
             scratch.pieces.Clear();
 
@@ -804,6 +811,7 @@ namespace PurrNet.Prediction
                 scratch.hasBaseline = false;
             }
 
+            _hierarchyBaselineScratchByTick.Add(baselineTick, scratch);
             return scratch;
         }
 
@@ -930,7 +938,7 @@ namespace PurrNet.Prediction
         {
             _addressedSystemScratch.Clear();
 
-            var baselineScratch = GetHierarchyBaselineScratch(player, baselineTick);
+            var baselineScratch = GetHierarchyBaselineScratch(baselineTick);
 
             for (var i = 0; i < _systemsCount; i++)
             {
@@ -1552,7 +1560,6 @@ namespace PurrNet.Prediction
             _visibilityDependencyRebuild.Remove(player);
             RemoveVisibilityAcquisitions(player);
             RemovePendingVisibilityDeletes(player);
-            _hierarchyBaselineScratchByPlayer.Remove(player);
             _hiddenPiecesScratchByPlayer.Remove(player);
             ClearDesyncTrackingForPlayer(player);
         }
@@ -1574,7 +1581,9 @@ namespace PurrNet.Prediction
             _hiddenDependencyScratch.Clear();
             _spawnedRootScratch.Clear();
             _ownedRootScratch.Clear();
-            _hierarchyBaselineScratchByPlayer.Clear();
+            _hierarchyBaselineScratchByTick.Clear();
+            _hierarchyBaselineScratchPool.Clear();
+            _hierarchyBaselineCacheTick = ulong.MaxValue;
             _hiddenPiecesScratchByPlayer.Clear();
             _visibilityRootScratch.Clear();
             ClearPendingVisibilityDeletes();
