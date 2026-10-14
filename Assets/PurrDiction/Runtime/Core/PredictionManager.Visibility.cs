@@ -1037,13 +1037,12 @@ namespace PurrNet.Prediction
                     if (ownBaseline)
                         Packer<PackedUInt>.Write(payload, checked((uint)(tick - recordBaseline)));
                 }
-                payload.WriteBitsWithoutConsumingIt(body, body.positionInBits);
-
-                AddressedPredictionRecords.WriteRecord(
-                    allowOmission ? records : destination,
+                AddressedPredictionRecords.WritePrefixedRecord(
                     system.id,
                     writeFull,
-                    payload);
+                    payload,
+                    body,
+                    allowOmission ? records : destination);
                 writtenCount++;
             }
 

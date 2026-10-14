@@ -39,6 +39,23 @@ namespace PurrNet.Prediction
             destination.WriteBitsWithoutConsumingIt(payload, payloadBits);
         }
 
+        // Keep the codec body at its original bit origin while avoiding a concatenation copy.
+        internal static void WritePrefixedRecord(
+            PredictedComponentID id,
+            bool isFullState,
+            BitPacker prefix,
+            BitPacker body,
+            BitPacker destination)
+        {
+            int prefixBits = prefix.positionInBits;
+            int bodyBits = body.positionInBits;
+            Packer<PredictedComponentID>.Write(destination, id);
+            Packer<bool>.Write(destination, isFullState);
+            Packer<PackedUInt>.Write(destination, checked((uint)(prefixBits + bodyBits)));
+            destination.WriteBitsWithoutConsumingIt(prefix, prefixBits);
+            destination.WriteBitsWithoutConsumingIt(body, bodyBits);
+        }
+
         internal static void ReadSection(ReadRecord readRecord, BitPacker source, RecordFailure onRecordFailure = null)
         {
             PackedUInt count = default;

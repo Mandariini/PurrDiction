@@ -453,8 +453,27 @@ namespace PurrNet.Prediction
                 return false;
             }
 
+            // Delta baselines usually address one of the newest sparse entries.
+            // Also resolve insertion points beyond or between those entries directly.
+            int lastIndex = m_count - 1;
+            ulong last = m_ticks[Phys(lastIndex)];
+            if (tick >= last)
+            {
+                result = tick == last ? lastIndex : m_count;
+                return tick == last;
+            }
+            if (lastIndex > 0)
+            {
+                ulong previous = m_ticks[Phys(lastIndex - 1)];
+                if (tick >= previous)
+                {
+                    result = tick == previous ? lastIndex - 1 : lastIndex;
+                    return tick == previous;
+                }
+            }
+
             int min = 0;
-            int max = m_count - 1;
+            int max = lastIndex - 2;
 
             while (min <= max)
             {
