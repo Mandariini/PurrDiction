@@ -156,7 +156,7 @@ namespace PurrNet.Prediction
 
             _stateHistory?.Clear();
             if (!HasStateHistoryFor(world))
-                _stateHistory = History<FULL_STATE<STATE>>.ForTickWindow(StateHistoryCapacity(world));
+                _stateHistory = CreateStateHistory(world);
 
             _stateHistory.Write(0, fullPredictedState.DeepCopy());
 
@@ -178,6 +178,10 @@ namespace PurrNet.Prediction
         private static int StateHistoryCapacity(PredictionManager world)
             => world.isServer ? checked((int)world.verifiedHistoryWindowTicks) : world.tickRate * 10;
 
+        private static History<FULL_STATE<STATE>> CreateStateHistory(PredictionManager world)
+            => History<FULL_STATE<STATE>>.ForTickWindow(StateHistoryCapacity(world),
+                checked((int)world.verifiedHistoryWindowTicks));
+
         internal override void PrewarmPredictionState(PredictionManager world)
         {
             base.PrewarmPredictionState(world);
@@ -194,7 +198,7 @@ namespace PurrNet.Prediction
             if (!HasStateHistoryFor(world))
             {
                 _stateHistory?.Clear();
-                _stateHistory = History<FULL_STATE<STATE>>.ForTickWindow(StateHistoryCapacity(world));
+                _stateHistory = CreateStateHistory(world);
             }
 
             world.PrewarmVerifiedStore<FULL_STATE<STATE>>();
@@ -251,7 +255,7 @@ namespace PurrNet.Prediction
             if (_stateHistory == null || _stateHistory.Count <= 0)
                 return false;
 
-            _stateHistory.PruneByTickWindow(tick);
+            PruneStateHistory(tick);
 
             int lastIndex = _stateHistory.Count - 1;
             if (_stateHistory.GetEntryTick(lastIndex) > tick)
@@ -263,7 +267,7 @@ namespace PurrNet.Prediction
 
         private void WriteOwnedAuthoritativeState(ulong tick, FULL_STATE<STATE> state)
         {
-            _stateHistory.PruneByTickWindow(tick);
+            PruneStateHistory(tick);
             // Persistent states can carry an earlier anchor through an unchanged tick.
             // Event batches still need an exact entry so their callbacks run at that tick.
             if (!isEventHandler && LatestHistoryMatches(tick, ref state))
@@ -272,6 +276,20 @@ namespace PurrNet.Prediction
                 return;
             }
             _stateHistory.Write(tick, state);
+        }
+
+        private void PruneStateHistory(ulong tick)
+        {
+            ulong floor = predictionManager?.acceptedHistoryBaselineFloor ?? 0;
+            if (floor > 0 && lastVerifiedTick.HasValue)
+            {
+                // Quarantined or omitted components can have an older verified view.
+                // Keep its anchor even after other components advance the global floor.
+                floor = Math.Min(Math.Min(floor, lastVerifiedTick.Value), tick);
+                if (_stateHistory.Count > 1 && _stateHistory.OldestTick < floor)
+                    _stateHistory.PruneBeforeBaseline(floor);
+            }
+            _stateHistory.PruneByTickWindow(tick);
         }
 
         FULL_STATE<STATE>? _viewState;

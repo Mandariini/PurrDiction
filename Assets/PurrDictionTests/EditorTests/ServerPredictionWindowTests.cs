@@ -22,7 +22,7 @@ namespace PurrNet.Prediction.Tests.Editor
         [TestCase(false, 20)]
         [TestCase(false, 60)]
         [TestCase(false, 240)]
-        public void RetainsTheRequiredWindowAndLatestVerifiedViewWithoutGrowth(bool server, int rate)
+        public void RetainsTheRequiredWindowAndLatestVerifiedViewAcrossPruningAndGrowth(bool server, int rate)
         {
             var networkObject = new GameObject("window network");
             var worldObject = new GameObject("window world");
@@ -80,6 +80,101 @@ namespace PurrNet.Prediction.Tests.Editor
             }
             finally
             {
+                Object.DestroyImmediate(probeObject);
+                Object.DestroyImmediate(worldObject);
+                Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        [TestCase(20, false)]
+        [TestCase(60, false)]
+        [TestCase(240, false)]
+        [TestCase(20, true)]
+        [TestCase(60, true)]
+        [TestCase(240, true)]
+        public void AcceptedClientBaselinesReleaseOldSnapshotsWithoutGrowingPrewarmedArrays(int rate, bool sparse)
+        {
+            using var f = new ClientFixture(rate);
+            int initialSlots = f.Slots;
+            for (ulong tick = 0; tick <= (ulong)(rate * 20); tick++)
+            {
+                ulong verified = tick > 8 ? tick - 8 : 0;
+                ulong floor = tick > 16 ? tick - 16 : 0;
+                f.Floor(floor);
+                f.probe.lastVerifiedTick = verified;
+                f.probe.currentState.a = Value(tick);
+                f.probe.SaveStateInHistory(tick);
+                Assert.That(f.history.ReadOrPrevious(floor, out var anchor), Is.True);
+                Assert.That(anchor.state.a, Is.EqualTo(Value(floor)));
+                Assert.That(f.probe.verifiedState.Value.a, Is.EqualTo(Value(verified)));
+                Assert.That(f.Slots, Is.EqualTo(initialSlots));
+                Assert.That(f.history.Count, Is.LessThanOrEqualTo(18));
+            }
+            ulong finalFloor = (ulong)(rate * 20 - 16);
+            f.probe.Rollback(finalFloor);
+            Assert.That(f.probe.currentState.a, Is.EqualTo(Value(finalFloor)));
+            Assert.That(f.history.Capacity, Is.EqualTo(rate * 10), "unacknowledged history keeps its original limit");
+            int Value(ulong tick) => (int)(sparse ? tick / 8 : tick);
+        }
+
+        [TestCase(20)]
+        [TestCase(60)]
+        [TestCase(240)]
+        public void StalledComponentKeepsItsVerifiedAnchorAsOtherComponentsAdvance(int rate)
+        {
+            using var f = new ClientFixture(rate);
+            int initialSlots = f.Slots;
+            ulong through = (ulong)(rate * 5 + 40);
+            for (ulong tick = 0; tick <= through; tick++)
+            {
+                f.Floor(tick > 20 ? tick - 4 : 0);
+                f.probe.lastVerifiedTick = tick > 10 ? 10UL : tick;
+                f.probe.currentState.a = (int)tick;
+                f.probe.SaveStateInHistory(tick);
+                Assert.That(f.probe.verifiedState.Value.a, Is.EqualTo((int)Math.Min(tick, 10)));
+            }
+            Assert.That(f.history.Read(10, out var anchor), Is.True);
+            Assert.That(anchor.state.a, Is.EqualTo(10));
+            Assert.That(f.Slots, Is.GreaterThan(initialSlots), "a stalled component grows to retain its unverified states");
+            Assert.That(f.Slots, Is.LessThanOrEqualTo(rate * 10 + 2));
+            f.probe.Rollback(10);
+            Assert.That(f.probe.currentState.a, Is.EqualTo(10));
+        }
+
+        sealed class ClientFixture : IDisposable
+        {
+            readonly GameObject networkObject = new("client history network");
+            readonly GameObject worldObject = new("client history world");
+            readonly GameObject probeObject = new("client history probe");
+            readonly NetworkManager network;
+            readonly PredictionManager world;
+            public readonly ServerPredictionWindowProbe probe;
+            public readonly History<FULL_STATE<CompactStateProbe>> history;
+
+            public ClientFixture(int rate)
+            {
+                network = networkObject.AddComponent<NetworkManager>();
+                world = worldObject.AddComponent<PredictionManager>();
+                probe = probeObject.AddComponent<ServerPredictionWindowProbe>();
+                Set(typeof(NetworkManager), network, "<isClient>k__BackingField", true);
+                Set(typeof(NetworkIdentity), world, "<networkManager>k__BackingField", network);
+                Set(typeof(NetworkIdentity), world, "_isSpawnedClient", true);
+                Set(typeof(PredictionManager), world, "<tickRate>k__BackingField", rate);
+                Set(typeof(PredictedIdentity), probe, "<predictionManager>k__BackingField", world);
+                probe.PrewarmPredictionState(world);
+                history = (History<FULL_STATE<CompactStateProbe>>)typeof(PredictedIdentity<CompactStateProbe>)
+                    .GetField("_stateHistory", Fields).GetValue(probe);
+            }
+
+            public int Slots => ((Array)typeof(History<FULL_STATE<CompactStateProbe>>)
+                .GetField("m_values", Fields).GetValue(history)).Length;
+
+            public void Floor(ulong tick) => Set(typeof(PredictionManager), world, "_verifiedHistoryBaselineFloor", tick);
+
+            public void Dispose()
+            {
+                Set(typeof(NetworkIdentity), world, "_isSpawnedClient", false);
+                Set(typeof(NetworkManager), network, "<isClient>k__BackingField", false);
                 Object.DestroyImmediate(probeObject);
                 Object.DestroyImmediate(worldObject);
                 Object.DestroyImmediate(networkObject);

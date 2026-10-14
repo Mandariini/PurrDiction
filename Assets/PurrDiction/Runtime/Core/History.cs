@@ -94,6 +94,9 @@ namespace PurrNet.Prediction
         internal static History<T> ForTickWindow(int maxEntries)
             => new History<T>(maxEntries, maxEntries > 0 ? maxEntries + 2 : -1);
 
+        internal static History<T> ForTickWindow(int maxEntries, int initialWindow)
+            => new History<T>(maxEntries, maxEntries > 0 ? Math.Min(maxEntries, initialWindow) + 2 : -1);
+
         private History(int maxEntries, int initialCapacity)
         {
             m_maxCount = maxEntries;
@@ -116,7 +119,12 @@ namespace PurrNet.Prediction
         {
             int newCapacity = m_ticks.Length * 2;
             if (m_maxCount > 0)
+            {
                 newCapacity = Math.Min(newCapacity, m_limitToCut + 1);
+                int tickWindowCapacity = m_maxCount + 2;
+                if (m_eagerCapacity < tickWindowCapacity && m_ticks.Length < tickWindowCapacity)
+                    newCapacity = Math.Min(newCapacity, tickWindowCapacity);
+            }
             ResizeBackingStorage(newCapacity);
         }
 

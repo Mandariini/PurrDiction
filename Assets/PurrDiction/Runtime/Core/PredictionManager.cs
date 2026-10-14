@@ -1307,6 +1307,8 @@ namespace PurrNet.Prediction
 
         internal ulong verifiedHistoryWindowTicks => VerifiedHistoryWindowTicks(tickRate);
 
+        internal ulong acceptedHistoryBaselineFloor => _verifiedHistoryBaselineFloor;
+
         private const double InputResendIntervalSeconds = 0.02;
         // Copies sent after the input slack window cannot beat the server simulation deadline.
         internal static ulong InputRedundancyTicks(int tickRate)
