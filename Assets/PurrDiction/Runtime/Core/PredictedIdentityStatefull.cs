@@ -344,7 +344,7 @@ namespace PurrNet.Prediction
             fullPredictedState.Dispose();
             fullPredictedState = state.DeepCopy();
 
-            ApplyVerifiedPredictionMetadata(in fullPredictedState.prediction);
+            ApplyVerifiedPredictionMetadata(fullPredictedState.prediction);
             SetUnityState(fullPredictedState.state);
         }
 
@@ -578,7 +578,9 @@ namespace PurrNet.Prediction
             if (changed)
             {
                 newState = default;
-                DeltaPacker<PredictedIdentityState>.Read(packer, baseline.prediction, ref newState.prediction);
+                PredictedIdentityState metadata = default;
+                DeltaPacker<PredictedIdentityState>.Read(packer, baseline.prediction, ref metadata);
+                newState.prediction = metadata;
                 ReadDeltaState(packer, in baseline.state, ref newState.state);
             }
             else
@@ -600,13 +602,13 @@ namespace PurrNet.Prediction
                 if (_stateHistory.ReadOrPrevious(tick, out var predictedAtTick))
                 {
                     OnVerifiedStateReceived(tick, in predictedAtTick.state, in newState.state);
-                    ApplyVerifiedPredictionMetadata(in newState.prediction);
+                    ApplyVerifiedPredictionMetadata(newState.prediction);
                 }
                 else
                 {
                     fullPredictedState.Dispose();
                     fullPredictedState = newState.DeepCopy();
-                    ApplyVerifiedPredictionMetadata(in fullPredictedState.prediction);
+                    ApplyVerifiedPredictionMetadata(fullPredictedState.prediction);
                     SetUnityState(fullPredictedState.state);
                     ResetInterpolation();
                 }
