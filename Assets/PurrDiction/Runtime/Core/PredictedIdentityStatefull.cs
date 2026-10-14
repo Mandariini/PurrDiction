@@ -246,9 +246,16 @@ namespace PurrNet.Prediction
             return last.HasSameContents(ref state);
         }
 
-        private void WriteOwnedAuthoritativeState(ulong tick, in FULL_STATE<STATE> state)
+        private void WriteOwnedAuthoritativeState(ulong tick, FULL_STATE<STATE> state)
         {
             _stateHistory.PruneByTickWindow(tick);
+            // Persistent states can carry an earlier anchor through an unchanged tick.
+            // Event batches still need an exact entry so their callbacks run at that tick.
+            if (!isEventHandler && LatestHistoryMatches(tick, ref state))
+            {
+                state.Dispose();
+                return;
+            }
             _stateHistory.Write(tick, state);
         }
 
