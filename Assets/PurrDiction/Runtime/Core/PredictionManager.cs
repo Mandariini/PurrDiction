@@ -1497,6 +1497,8 @@ namespace PurrNet.Prediction
             inputTicksSentTotal += tickCount;
         }
 
+        internal bool hasMultipleStateRecipients => _clientFrames.Count > 1;
+
         private void FinalizeTickOnServer(bool cachedIsClient)
         {
             if (cachedIsClient)

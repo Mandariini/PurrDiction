@@ -31,6 +31,46 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void StateDeltaReusePreservesWireBitsAndDetectsMutationWithinTheSameTick()
+        {
+            var managerObject = new GameObject("Delta reuse manager");
+            var identityObject = new GameObject("Delta reuse identity");
+            CachedOmittedStateIdentity identity = null;
+            try
+            {
+                var manager = CreateManager(managerObject);
+                identity = identityObject.AddComponent<CachedOmittedStateIdentity>();
+                var history = InitializeIdentity(identity, manager, new PredictedComponentID(new PredictedObjectID(400), 0), 200);
+                history.Write(10, FullState(100));
+                SetLocalTick(manager, 20);
+                var recipients = GetField<List<PlayerPacker>>(typeof(PredictionManager), manager, "_clientFrames");
+                using var first = BitPackerPool.Get();
+                using var second = BitPackerPool.Get();
+                identity.WriteCurrentState(default, first, 10);
+                Assert.That(GetField<StateDeltaCache<OmittedState>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache"), Is.Null,
+                    "a single receiver must bypass the cache");
+                recipients.Add(default); recipients.Add(default);
+                first.ResetPositionAndMode(false);
+                identity.WriteCurrentState(default, first, 10);
+                identity.WriteCurrentState(new PlayerID(2, false), second, 10);
+                Assert.That(identity.writes, Is.EqualTo(2), "the second receiver must reuse the first receiver's delta");
+                Assert.That(new BitData(first, 0, first.positionInBits).Equals(new BitData(second, 0, second.positionInBits)), Is.True);
+                identity.currentState.value = 201;
+                second.ResetPositionAndMode(false);
+                identity.WriteCurrentState(default, second, 10);
+                Assert.That(identity.writes, Is.EqualTo(3), "tick identity alone must not hide a live-state mutation");
+                Assert.That(new BitData(first, 0, first.positionInBits).Equals(new BitData(second, 0, second.positionInBits)), Is.False);
+            }
+            finally
+            {
+                if (identity)
+                    GetField<StateDeltaCache<OmittedState>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache")?.Dispose();
+                Object.DestroyImmediate(identityObject);
+                Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
         public void AddressedSectionOmitsStableRecordAndReceiverCarriesItForward()
         {
             var senderManagerObject = new GameObject("Sparse sender manager");
@@ -1530,6 +1570,17 @@ namespace PurrNet.Prediction.Tests.Editor
             predictionManager = manager;
             id = componentId;
             myType = GetType();
+        }
+    }
+
+    public sealed class CachedOmittedStateIdentity : OmittedStateIdentity
+    {
+        public int writes;
+        protected override bool SupportsStateDeltaCaching() => true;
+        protected override void WriteDeltaState(BitPacker packer, in OmittedState baseline, in OmittedState current)
+        {
+            writes++;
+            Packer<int>.Write(packer, current.value - baseline.value);
         }
     }
 

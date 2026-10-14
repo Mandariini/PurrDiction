@@ -25,6 +25,10 @@ namespace PurrNet.Prediction
         private ulong viewTeleportTick => predictionManager ? predictionManager.localTickInContext : 0;
         private History<FULL_STATE<STATE>> _stateHistory;
         private History<FULL_STATE<STATE>> _verifiedHistory;
+        private StateDeltaCache<STATE> _stateDeltaCache;
+
+        // Codegen enables this for ordinary value states; mutable containers stay uncached.
+        protected virtual bool SupportsStateDeltaCaching() => false;
 
         protected TickManager tickModule { get; private set; }
         private bool _firstViewUpdate = true;
@@ -45,6 +49,8 @@ namespace PurrNet.Prediction
         {
             base.OnDestroy();
             DisposeStateStorage();
+            _stateDeltaCache?.Dispose();
+            _stateDeltaCache = null;
         }
 
         internal override void ReleasePredictionStateForPool()
@@ -55,6 +61,7 @@ namespace PurrNet.Prediction
 
         private void DisposeStateStorage()
         {
+            _stateDeltaCache?.Reset();
             _viewState?.Dispose();
             _viewState = null;
             _viewAwaitsReplaySample = false;
@@ -168,6 +175,8 @@ namespace PurrNet.Prediction
         internal override void PrewarmPredictionState(PredictionManager world)
         {
             base.PrewarmPredictionState(world);
+            if (world.isServer && SupportsStateDeltaCaching() && !isEventHandler)
+                _stateDeltaCache ??= new StateDeltaCache<STATE>();
 
             if (!HasViewBufferFor(world))
             {
@@ -523,7 +532,20 @@ namespace PurrNet.Prediction
 
             Packer<bool>.Write(packer, true);
             DeltaPacker<PredictedIdentityState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
-            WriteDeltaState(packer, in baseline.state, in fullPredictedState.state);
+            if (predictionManager.hasMultipleStateRecipients && !isEventHandler && SupportsStateDeltaCaching())
+            {
+                _stateDeltaCache ??= new StateDeltaCache<STATE>();
+                if (!_stateDeltaCache.TryWrite(predictionManager.localTick, baselineTick, packer,
+                        ref baseline.state, ref fullPredictedState.state))
+                {
+                    int origin = packer.positionInBits;
+                    WriteDeltaState(packer, in baseline.state, in fullPredictedState.state);
+                    _stateDeltaCache.Store(predictionManager.localTick, baselineTick, origin, packer,
+                        baseline.state, fullPredictedState.state);
+                }
+            }
+            else
+                WriteDeltaState(packer, in baseline.state, in fullPredictedState.state);
 
             TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
             return true;

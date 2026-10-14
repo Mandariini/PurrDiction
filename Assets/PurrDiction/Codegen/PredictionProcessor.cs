@@ -87,6 +87,10 @@ namespace Purrdiction.Codegen
                         if (!PurrNet.Codegen.PostProcessor.InheritsFrom(type, typeof(PredictedIdentity).FullName))
                             continue;
 
+                        var stateType = StateDeltaCacheEligibility.FindStateType(type, typeof(PredictedIdentity<>).FullName);
+                        if (StateDeltaCacheEligibility.IsPlainValue(stateType))
+                            StateDeltaCacheEligibility.Enable(type, "SupportsStateDeltaCaching", typeof(PredictedIdentity<>).FullName);
+
                         var methods = type.Methods;
 
                         for (var i = 0; i < methods.Count; i++)
