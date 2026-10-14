@@ -19,6 +19,29 @@ namespace PurrNet.Prediction
 
         private PredictedNetworkMirror _networkMirror;
 
+        /// <summary>
+        /// Raised when a GameObject enters a prediction world, before its predicted identities run
+        /// setup: a prefab instance (freshly instantiated or taken from the prefab pool) or a scene
+        /// object being registered. The usual place to inject dependencies. Rollbacks that bring back
+        /// a GameObject the hierarchy is still holding do not raise it again.
+        /// </summary>
+        public static event System.Action<PredictedPreSpawn> onPreSpawn;
+
+        private void RaisePreSpawn(GameObject go, bool isSceneObject, bool fromPool)
+        {
+            if (onPreSpawn == null)
+                return;
+
+            try
+            {
+                onPreSpawn(new PredictedPreSpawn(go, predictionManager, isSceneObject, fromPool));
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogException(e, go);
+            }
+        }
+
         internal PredictedNetworkMirror networkMirror => _networkMirror ??= new PredictedNetworkMirror(predictionManager, this);
 
         internal bool TryGetRecord(PredictedObjectID id, out InstanceDetails record)
@@ -814,6 +837,7 @@ namespace PurrNet.Prediction
                     rootGo = predictionManager.InternalCreate(prefab, worldPosition, worldRotation, out var fromPool);
                     reset = fromPool;
                     removedFromPoolEvent = fromPool;
+                    RaisePreSpawn(rootGo, false, fromPool);
 
                     if (parentTrs)
                         ApplySpawnPose(rootGo.transform, parentTrs, rootRecord.spawnPosition, rootRecord.spawnRotation);
@@ -969,6 +993,9 @@ namespace PurrNet.Prediction
                 return;
             }
 
+            // The needed pieces leave the donor below, so anything injected here reaches them too.
+            RaisePreSpawn(donor, false, false);
+
             var donorPieces = ListPool<GameObject>.Instantiate();
             donorPieces.AddRange(_collectScratch);
 
@@ -1123,6 +1150,20 @@ namespace PurrNet.Prediction
 
             if (resolved.HasValue)
                 ValidateRuntimeParenting(go);
+        }
+
+        private bool KeepsMirroredPiecesForHost(List<InstanceDetails> group)
+        {
+            if (_networkMirror == null)
+                return false;
+
+            for (var i = 0; i < group.Count; i++)
+            {
+                if (_networkMirror.ShouldKeepForHost(group[i].instanceId))
+                    return true;
+            }
+
+            return false;
         }
 
         private bool _isCleaningUp;
@@ -1325,6 +1366,8 @@ namespace PurrNet.Prediction
 
                 uint baseId = _nextInstanceId;
                 _nextInstanceId += (uint)proto.pieceCount;
+
+                RaisePreSpawn(root, true, false);
 
                 var rootId = new PredictedObjectID(baseId);
                 root.transform.GetPositionAndRotation(out var rootPos, out var rootRot);
@@ -1560,7 +1603,7 @@ namespace PurrNet.Prediction
                 for (var g = 0; g < _cascadeGroupOrder.Count; g++)
                 {
                     var group = _cascadeGroups[_cascadeGroupOrder[g]];
-                    bool canPool = group[0].prefabId.value < 0 || !isVerified;
+                    bool canPool = group[0].prefabId.value < 0 || !isVerified || KeepsMirroredPiecesForHost(group);
 
                     _cascadeMemberScratch.Clear();
                     for (var i = 0; i < group.Count; i++)
@@ -1808,7 +1851,7 @@ namespace PurrNet.Prediction
                 var piece = _memberPiecesScratch[i];
 
                 CaptureDecoration(piece.id, piece.gameObject);
-                _networkMirror?.OnPieceUnmaterialized(piece.id);
+                _networkMirror?.OnPieceUnmaterialized(piece.id, canPool);
                 predictionManager.UnregisterInstance(piece.gameObject, false, triggerDestroyEvent);
 
                 _instanceMap.Remove(piece.id);

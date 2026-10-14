@@ -87,6 +87,7 @@ namespace PurrNet.Prediction
         private bool _bridgeResolved;
 
         private readonly Dictionary<PredictedObjectID, Entry> _spawned = new();
+        private readonly Dictionary<PredictedObjectID, Entry> _keptForHost = new();
         private readonly Dictionary<NetworkIdentity, PredictedObjectID> _pieceByIdentity = new();
         private readonly Dictionary<PlayerID, HashSet<PredictedObjectID>> _observed = new();
         private readonly List<NetworkIdentity> _identityScratch = new();
@@ -159,10 +160,57 @@ namespace PurrNet.Prediction
             Spawn(record, go, proto, owner);
         }
 
-        /// <summary>The piece's GameObject left the topology or went back to the pool.</summary>
-        internal void OnPieceUnmaterialized(PredictedObjectID pieceId)
+        /// <summary>
+        /// Server only: a deleted piece whose identities the host observes should stay in the
+        /// hierarchy pool for the rollback window rather than be destroyed right away; see
+        /// <see cref="TryKeepForHost"/>.
+        /// </summary>
+        internal bool ShouldKeepForHost(PredictedObjectID pieceId)
+            => isServer && _hostPlayer.HasValue && _spawned.ContainsKey(pieceId) && IsObserving(_hostPlayer.Value, pieceId);
+
+        /// <summary>
+        /// The piece's GameObject left the topology. <paramref name="keptInPool"/> means the
+        /// hierarchy holds on to the GameObject until <see cref="OnPieceReleased"/>.
+        /// </summary>
+        internal void OnPieceUnmaterialized(PredictedObjectID pieceId, bool keptInPool)
         {
+            if (keptInPool && TryKeepForHost(pieceId))
+                return;
+
             Despawn(pieceId);
+        }
+
+        /// <summary>The hierarchy let go of a pooled piece's GameObject.</summary>
+        internal void OnPieceReleased(PredictedObjectID pieceId)
+        {
+            if (_keptForHost.Remove(pieceId, out var entry))
+                DespawnIdentities(entry);
+        }
+
+        /// <summary>
+        /// Server only: an RPC the server sent the host's own client before deleting a piece (a reply
+        /// from a pickup, say) is handed over at the end of the frame, after the delete tick. Remote
+        /// clients still hold their copy until a verified frame removes it, so for parity the host
+        /// keeps the identities spawned, for itself only, while the hierarchy pools the GameObject.
+        /// Everyone else stops observing right away.
+        /// </summary>
+        private bool TryKeepForHost(PredictedObjectID pieceId)
+        {
+            if (!ShouldKeepForHost(pieceId) || !_spawned.Remove(pieceId, out var entry))
+                return false;
+
+            var target = bridge;
+            foreach (var (player, observed) in _observed)
+            {
+                if (!observed.Remove(pieceId) || player == _hostPlayer.Value || target == null)
+                    continue;
+
+                for (var i = 0; i < entry.identities.Length; i++)
+                    if (entry.identities[i]) target.RemoveObserver(entry.identities[i], player);
+            }
+
+            _keptForHost[pieceId] = entry;
+            return true;
         }
 
         /// <summary>
@@ -336,6 +384,10 @@ namespace PurrNet.Prediction
             _idScratch.Clear();
             _observed.Clear();
             _hostPlayer = null;
+
+            foreach (var entry in _keptForHost.Values)
+                DespawnIdentities(entry);
+            _keptForHost.Clear();
         }
 
         private void Spawn(in InstanceDetails record, GameObject go, PiecePrototype proto, PlayerID? owner)
@@ -422,12 +474,23 @@ namespace PurrNet.Prediction
 
         private void Despawn(PredictedObjectID pieceId)
         {
+            if (_keptForHost.Remove(pieceId, out var kept))
+            {
+                DespawnIdentities(kept);
+                return;
+            }
+
             if (!_spawned.Remove(pieceId, out var entry))
                 return;
 
             foreach (var observed in _observed.Values)
                 observed.Remove(pieceId);
 
+            DespawnIdentities(entry);
+        }
+
+        private void DespawnIdentities(Entry entry)
+        {
             var target = bridge;
             for (var i = 0; i < entry.identities.Length; i++)
             {

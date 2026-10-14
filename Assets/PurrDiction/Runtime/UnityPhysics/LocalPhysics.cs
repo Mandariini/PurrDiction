@@ -2,12 +2,43 @@ using UnityEngine;
 
 namespace PurrNet.Prediction
 {
+    /// <summary>
+    /// Local, non-networked rigidbodies (debris, ragdolls) under a PurrDiction world: they freeze
+    /// while a rollback replays, and bodies with interpolation enabled on their Rigidbody glide
+    /// between prediction ticks at the same presented tick as predicted objects.
+    /// </summary>
+    [DefaultExecutionOrder(-32000)]
     public class LocalPhysics : MonoBehaviour
     {
 #if UNITY_PHYSICS_3D
+        private struct Pose : System.IDisposable
+        {
+            public Vector3 position;
+            public Quaternion rotation;
+
+            public Pose(Rigidbody rb)
+            {
+                position = rb.position;
+                rotation = rb.rotation;
+            }
+
+            public void Dispose() { }
+
+            public static Pose Lerp(Pose from, Pose to, float t) => new()
+            {
+                position = Vector3.LerpUnclamped(from.position, to.position, t),
+                rotation = Quaternion.SlerpUnclamped(from.rotation, to.rotation, t)
+            };
+        }
+
+        private const int ViewCapacity = 16;
+
         private PredictionManager _manager;
         private Rigidbody[] _rigidbodies;
         private UnityRigidbodyState[] _state;
+        private PredictedViewBuffer<Pose>[] _views;
+        private bool[] _presented;
+        private bool _anyPresented;
 
         private void Awake()
         {
@@ -22,6 +53,9 @@ namespace PurrNet.Prediction
                 _manager = manager;
                 _manager.onStartingToRollback += OnStartingToRollback;
                 _manager.onRollbackFinished += OnRollbackFinished;
+                _manager.onBeforePhysicsPass += RestoreSimulatedPoses;
+                _manager.onAfterPhysicsPass += OnAfterPhysicsPass;
+                TakeOverInterpolation();
             }
         }
 
@@ -32,6 +66,27 @@ namespace PurrNet.Prediction
 
             _manager.onStartingToRollback -= OnStartingToRollback;
             _manager.onRollbackFinished -= OnRollbackFinished;
+            _manager.onBeforePhysicsPass -= RestoreSimulatedPoses;
+            _manager.onAfterPhysicsPass -= OnAfterPhysicsPass;
+        }
+
+        private void OnDisable() => RestoreSimulatedPoses();
+
+        // Unity's own interpolation restarts whenever a body turns kinematic, which happens on every
+        // rollback, so interpolated bodies are presented from the poses of the prediction ticks instead.
+        private void TakeOverInterpolation()
+        {
+            for (int i = 0; i < _rigidbodies.Length; i++)
+            {
+                var rb = _rigidbodies[i];
+                if (rb.interpolation == RigidbodyInterpolation.None)
+                    continue;
+
+                rb.interpolation = RigidbodyInterpolation.None;
+                _views ??= new PredictedViewBuffer<Pose>[_rigidbodies.Length];
+                _presented ??= new bool[_rigidbodies.Length];
+                _views[i] = new PredictedViewBuffer<Pose>(Pose.Lerp, _manager.localTick, new Pose(rb), ViewCapacity);
+            }
         }
 
         public void CacheCurrentState(bool overrideVelocities = false)
@@ -46,6 +101,8 @@ namespace PurrNet.Prediction
 
         private void OnStartingToRollback()
         {
+            RestoreSimulatedPoses();
+
             for (int i = 0; i < _rigidbodies.Length; i++)
             {
                 _state[i] = new UnityRigidbodyState(_rigidbodies[i]);
@@ -72,6 +129,72 @@ namespace PurrNet.Prediction
                 if (state.isSleeping)
                     rb.Sleep();
                 else rb.WakeUp();
+            }
+        }
+
+        private void OnAfterPhysicsPass()
+        {
+            if (_views == null || _manager.isReplaying)
+                return;
+
+            // Predicted views stamp the state after simulating tick T as T + 1, once the tick completes.
+            var tick = _manager.localTick + 1;
+            for (int i = 0; i < _views.Length; i++)
+            {
+                if (_views[i] != null && _rigidbodies[i])
+                    _views[i].Add(tick, new Pose(_rigidbodies[i]));
+            }
+        }
+
+        // Runs before anything else in the frame, so ticks, rollbacks and SyncTransforms only ever
+        // see the simulated poses; a presented pose synced into physics would teleport the body back.
+        private void Update() => RestoreSimulatedPoses();
+
+        private void RestoreSimulatedPoses()
+        {
+            if (!_anyPresented)
+                return;
+
+            _anyPresented = false;
+            for (int i = 0; i < _presented.Length; i++)
+            {
+                if (!_presented[i])
+                    continue;
+
+                _presented[i] = false;
+                var rb = _rigidbodies[i];
+                if (rb)
+                    rb.transform.SetPositionAndRotation(rb.position, rb.rotation);
+            }
+        }
+
+        private void LateUpdate()
+        {
+            if (_views == null || !_manager || !_manager.isClient)
+                return;
+
+            var viewTick = _manager.viewTick;
+            for (int i = 0; i < _views.Length; i++)
+            {
+                var view = _views[i];
+                var rb = _rigidbodies[i];
+                if (view == null || !rb || rb.isKinematic || rb.IsSleeping())
+                    continue;
+
+                var trs = rb.transform;
+                trs.GetPositionAndRotation(out var position, out var rotation);
+
+                // Moved by hand since the last restore: start the view over from there.
+                if (position != rb.position || rotation != rb.rotation)
+                {
+                    view.Teleport(_manager.localTick, new Pose { position = position, rotation = rotation });
+                    continue;
+                }
+
+                var pose = view.Sample(viewTick);
+                trs.SetPositionAndRotation(pose.position, pose.rotation);
+                _presented[i] = true;
+                _anyPresented = true;
             }
         }
 #endif

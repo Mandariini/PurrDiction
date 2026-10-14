@@ -3199,8 +3199,26 @@ namespace PurrNet.Prediction
             UpdateView();
         }
 
+        private readonly List<PredictedTransform> _detachedGraphicsToHide = new();
+
+        internal void HideDetachedGraphicsAtEndOfFrame(PredictedTransform predictedTransform)
+            => _detachedGraphicsToHide.Add(predictedTransform);
+
+        private void HidePendingDetachedGraphics()
+        {
+            for (var i = 0; i < _detachedGraphicsToHide.Count; i++)
+            {
+                var pending = _detachedGraphicsToHide[i];
+                if (pending)
+                    pending.HideDetachedGraphicsIfInactive();
+            }
+
+            _detachedGraphicsToHide.Clear();
+        }
+
         private void LateUpdate()
         {
+            HidePendingDetachedGraphics();
             MaintainVerifiedStoreStorage();
 
             if (_updateViewMode != UpdateViewMode.LateUpdate)

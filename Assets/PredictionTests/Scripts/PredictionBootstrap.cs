@@ -41,6 +41,7 @@ public class PredictionBootstrap : Scenario
     private ushort? _port;
     private bool _profileScenarios;
     private bool _useWebTransport;
+    private bool _useLocalTransport;
     private bool _autoStartRegression;
 
     private Scenario[] _scenarios;
@@ -214,6 +215,69 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-detachedGraphicsScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<DetachedGraphicsScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
+        if (CommandLineUtils.HasFlag("-mirroredTargetRpcScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<MirroredTargetRpcScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
+        if (CommandLineUtils.HasFlag("-localPhysicsScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<LocalPhysicsSmoothnessScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
+        if (CommandLineUtils.HasFlag("-preSpawnScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<PreSpawnHookScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
+        if (CommandLineUtils.HasFlag("-localPlayScenariosOnly"))
+        {
+            // Everything a single host with no remote clients can run (couch co-op on LocalTransport).
+            _scenarios = new Scenario[]
+            {
+                this,
+                // Initializes the timed spawner the digest gates of the following scenarios wait on.
+                GetComponentInChildren<DeterministicAlignmentScenario>(true) ?? gameObject.AddComponent<DeterministicAlignmentScenario>(),
+                GetComponentInChildren<PredictedPawnScenario>(true),
+                gameObject.AddComponent<DetachedGraphicsScenario>(),
+                gameObject.AddComponent<MirroredTargetRpcScenario>(),
+                gameObject.AddComponent<LocalPhysicsSmoothnessScenario>(),
+                gameObject.AddComponent<PreSpawnHookScenario>(),
+                GetComponentInChildren<DeterministicGauntletScenario>(true) ?? gameObject.AddComponent<DeterministicGauntletScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-immediateRpcRegressionScenarioOnly"))
         {
             _scenarios = new Scenario[]
@@ -248,6 +312,10 @@ public class PredictionBootstrap : Scenario
         gameObject.AddComponent<PieceLifecycleScenario>();
         gameObject.AddComponent<PieceReconnectScenario>();
         gameObject.AddComponent<MixedNetworkIdentityScenario>();
+        gameObject.AddComponent<DetachedGraphicsScenario>();
+        gameObject.AddComponent<MirroredTargetRpcScenario>();
+        gameObject.AddComponent<LocalPhysicsSmoothnessScenario>();
+        gameObject.AddComponent<PreSpawnHookScenario>();
         gameObject.AddComponent<TickAgreementScenario>();
         gameObject.AddComponent<DeterministicGauntletScenario>();
         gameObject.AddComponent<CliffRecoveryScenario>();
@@ -520,10 +588,23 @@ public class PredictionBootstrap : Scenario
 
         _profileScenarios = CommandLineUtils.HasFlag("-profileScenarios");
         _useWebTransport = CommandLineUtils.HasFlag("-webTransport");
+        _useLocalTransport = CommandLineUtils.HasFlag("-localTransport");
     }
 
     private void SelectTransport()
     {
+        if (_useLocalTransport)
+        {
+            // In-process loopback for single-machine play: one connection, the host is the only player.
+            var localTransport = _networkManager.GetComponent<LocalTransport>();
+            if (!localTransport)
+                localTransport = _networkManager.gameObject.AddComponent<LocalTransport>();
+
+            _networkManager.transport = localTransport;
+            Debug.Log("[PredictionTests] Selected LocalTransport from -localTransport");
+            return;
+        }
+
         if (!_useWebTransport || _networkManager.transport is WebTransport)
             return;
 

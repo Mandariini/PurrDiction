@@ -508,6 +508,39 @@ namespace PurrNet.Prediction
                 _graphics.SetParent(_originalGraphicsParent);
         }
 
+        private bool _detachedGraphicsHidden;
+
+        protected virtual void OnEnable()
+        {
+            if (!_detachedGraphicsHidden)
+                return;
+
+            _detachedGraphicsHidden = false;
+            if (_graphics)
+                _graphics.gameObject.SetActive(true);
+        }
+
+        protected virtual void OnDisable()
+        {
+            if (!_hasView || !_unparentGraphics || !_graphics)
+                return;
+
+            // Reconciles disable and re-enable roots within a frame; hiding right away would restart
+            // the graphics' animators and particles, so only a root still disabled at frame end hides them.
+            if (predictionManager)
+                predictionManager.HideDetachedGraphicsAtEndOfFrame(this);
+            else HideDetachedGraphicsIfInactive();
+        }
+
+        internal void HideDetachedGraphicsIfInactive()
+        {
+            if (gameObject.activeInHierarchy || _detachedGraphicsHidden || !_graphics || !_graphics.gameObject.activeSelf)
+                return;
+
+            _graphics.gameObject.SetActive(false);
+            _detachedGraphicsHidden = true;
+        }
+
         protected override void OnDestroy()
         {
             base.OnDestroy();

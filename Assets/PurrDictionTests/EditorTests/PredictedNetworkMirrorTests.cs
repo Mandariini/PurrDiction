@@ -278,6 +278,32 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void HostDeleteKeepsTheHostsIdentitiesUntilThePoolReleasesThePiece()
+        {
+            using var world = new World(this, asServer: true);
+            world.AddHostObserver(_host);
+            var id = world.Create(null);
+            world.mirror.SyncObservers(_viewer, new PlayerVisibilityTimeline(defaultVisible: true), world.manager.localTick + 1);
+            Assert.That(world.mirror.IsObserving(_viewer, id), Is.True);
+            Assert.That(world.hierarchy.TryGetGameObject(id, out var go), Is.True);
+            world.bridge.Reset();
+
+            world.DeleteNow(id);
+
+            Assert.That(world.bridge.despawned, Is.Empty, "an RPC already sent to the host's own client still needs its identities");
+            Assert.That(go, Is.Not.Null, "the hierarchy pools the deleted piece instead of destroying it");
+            Assert.That(world.bridge.removedObservers, Has.Count.EqualTo(3));
+            foreach (var (_, player) in world.bridge.removedObservers)
+                Assert.That(player, Is.EqualTo(_viewer), "remote players stop observing right away");
+            Assert.That(world.mirror.IsObserving(_viewer, id), Is.False);
+
+            var pool = typeof(PredictedHierarchy).GetField("_pool", Instance)!.GetValue(world.hierarchy);
+            pool.GetType().GetMethod("Clear")!.Invoke(pool, new object[] { world.manager });
+
+            Assert.That(world.bridge.despawned, Has.Count.EqualTo(3), "releasing the pooled piece despawns them");
+        }
+
+        [Test]
         public void PooledReuseForAnotherInstanceDespawnsTheStaleIdentitiesFirst()
         {
             using var world = new World(this, asServer: true, pooled: true);
