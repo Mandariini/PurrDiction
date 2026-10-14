@@ -38,6 +38,8 @@ namespace PurrNet.Prediction
         private UnityRigidbodyState[] _state;
         private PredictedViewBuffer<Pose>[] _views;
         private bool[] _presented;
+        private Pose[] _sampled;
+        private bool[] _toPresent;
         private bool _anyPresented;
 
         private void Awake()
@@ -174,8 +176,18 @@ namespace PurrNet.Prediction
                 return;
 
             var viewTick = _manager.viewTick;
+            if (_presented == null || _presented.Length != _views.Length)
+                _presented = new bool[_views.Length];
+            if (_sampled == null || _sampled.Length != _views.Length)
+                _sampled = new Pose[_views.Length];
+            if (_toPresent == null || _toPresent.Length != _views.Length)
+                _toPresent = new bool[_views.Length];
+
+            // Check and sample every body before moving any transform: 
+            // moving a parent transform also moves its child transforms
             for (int i = 0; i < _views.Length; i++)
             {
+                _toPresent[i] = false;
                 var view = _views[i];
                 var rb = _rigidbodies[i];
                 if (view == null || !rb || rb.isKinematic || rb.IsSleeping())
@@ -191,8 +203,16 @@ namespace PurrNet.Prediction
                     continue;
                 }
 
-                var pose = view.Sample(viewTick);
-                trs.SetPositionAndRotation(pose.position, pose.rotation);
+                _sampled[i] = view.Sample(viewTick);
+                _toPresent[i] = true;
+            }
+
+            for (int i = 0; i < _views.Length; i++)
+            {
+                if (!_toPresent[i])
+                    continue;
+
+                _rigidbodies[i].transform.SetPositionAndRotation(_sampled[i].position, _sampled[i].rotation);
                 _presented[i] = true;
                 _anyPresented = true;
             }
