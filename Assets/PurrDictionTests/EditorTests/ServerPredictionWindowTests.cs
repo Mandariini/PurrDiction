@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 using NUnit.Framework;
+using PurrNet.Packing;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -14,7 +15,13 @@ namespace PurrNet.Prediction.Tests.Editor
             => type.GetField(field, Fields).SetValue(target, value);
 
         [OneTimeSetUp]
-        public void Register() => NetworkManager.CallAllRegisters();
+        public void Register()
+        {
+            NetworkManager.CallAllRegisters();
+            Packer<ServerPredictionWindowInput>.RegisterWriter((p, v) => Packer<int>.Write(p, v.sequence));
+            Packer<ServerPredictionWindowInput>.RegisterReader((BitPacker p, ref ServerPredictionWindowInput v) =>
+                v.sequence = Packer<int>.Read(p));
+        }
 
         [TestCase(true, 20)]
         [TestCase(true, 60)]
@@ -96,6 +103,8 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             using var f = new ClientFixture(rate);
             int initialSlots = f.Slots;
+            int initialInputSlots = f.InputSlots;
+            using var receivedInput = BitPackerPool.Get();
             for (ulong tick = 0; tick <= (ulong)(rate * 20); tick++)
             {
                 ulong verified = tick > 8 ? tick - 8 : 0;
@@ -103,11 +112,24 @@ namespace PurrNet.Prediction.Tests.Editor
                 f.Floor(floor);
                 f.probe.lastVerifiedTick = verified;
                 f.probe.currentState.a = Value(tick);
+                if (sparse)
+                {
+                    // Verified input may keep arriving while local prediction is paused.
+                    receivedInput.ResetPositionAndMode(false);
+                    Packer<bool>.Write(receivedInput, true);
+                    Packer<int>.Write(receivedInput, Value(tick));
+                    receivedInput.ResetPositionAndMode(true);
+                    f.probe.ReadFirstInput(tick, receivedInput);
+                }
+                else f.probe.PrepareInput(false, true, tick, false);
                 f.probe.SaveStateInHistory(tick);
                 Assert.That(f.history.ReadOrPrevious(floor, out var anchor), Is.True);
                 Assert.That(anchor.state.a, Is.EqualTo(Value(floor)));
                 Assert.That(f.probe.verifiedState.Value.a, Is.EqualTo(Value(verified)));
                 Assert.That(f.Slots, Is.EqualTo(initialSlots));
+                Assert.That(f.InputSlots, Is.EqualTo(initialInputSlots));
+                Assert.That(f.inputs.Read(floor, out var input), Is.True);
+                Assert.That(input.sequence, Is.EqualTo(Value(floor)));
                 Assert.That(f.history.Count, Is.LessThanOrEqualTo(18));
             }
             ulong finalFloor = (ulong)(rate * 20 - 16);
@@ -130,11 +152,14 @@ namespace PurrNet.Prediction.Tests.Editor
                 f.Floor(tick > 20 ? tick - 4 : 0);
                 f.probe.lastVerifiedTick = tick > 10 ? 10UL : tick;
                 f.probe.currentState.a = (int)tick;
+                f.probe.PrepareInput(false, true, tick, false);
                 f.probe.SaveStateInHistory(tick);
                 Assert.That(f.probe.verifiedState.Value.a, Is.EqualTo((int)Math.Min(tick, 10)));
             }
             Assert.That(f.history.Read(10, out var anchor), Is.True);
             Assert.That(anchor.state.a, Is.EqualTo(10));
+            Assert.That(f.inputs.Read(10, out var inputAnchor), Is.True);
+            Assert.That(inputAnchor.sequence, Is.EqualTo(10));
             Assert.That(f.Slots, Is.GreaterThan(initialSlots), "a stalled component grows to retain its unverified states");
             Assert.That(f.Slots, Is.LessThanOrEqualTo(rate * 10 + 2));
             f.probe.Rollback(10);
@@ -150,6 +175,7 @@ namespace PurrNet.Prediction.Tests.Editor
             readonly PredictionManager world;
             public readonly ServerPredictionWindowProbe probe;
             public readonly History<FULL_STATE<CompactStateProbe>> history;
+            public readonly History<ServerPredictionWindowInput> inputs;
 
             public ClientFixture(int rate)
             {
@@ -164,10 +190,15 @@ namespace PurrNet.Prediction.Tests.Editor
                 probe.PrewarmPredictionState(world);
                 history = (History<FULL_STATE<CompactStateProbe>>)typeof(PredictedIdentity<CompactStateProbe>)
                     .GetField("_stateHistory", Fields).GetValue(probe);
+                inputs = (History<ServerPredictionWindowInput>)typeof(PredictedIdentity<ServerPredictionWindowInput, CompactStateProbe>)
+                    .GetField("_inputHistory", Fields).GetValue(probe);
             }
 
             public int Slots => ((Array)typeof(History<FULL_STATE<CompactStateProbe>>)
                 .GetField("m_values", Fields).GetValue(history)).Length;
+
+            public int InputSlots => ((Array)typeof(History<ServerPredictionWindowInput>)
+                .GetField("m_values", Fields).GetValue(inputs)).Length;
 
             public void Floor(ulong tick) => Set(typeof(PredictionManager), world, "_verifiedHistoryBaselineFloor", tick);
 

@@ -828,6 +828,14 @@ namespace PurrNet.Prediction
 
         internal abstract void SaveStateInHistory(ulong tick);
 
+        internal ulong GetAcceptedHistoryRetentionFloor(ulong tick)
+        {
+            ulong floor = predictionManager?.acceptedHistoryBaselineFloor ?? 0;
+            // A quarantined component can retain an older verified view than its peers.
+            return floor > 0 && lastVerifiedTick.HasValue
+                ? Math.Min(Math.Min(floor, lastVerifiedTick.Value), tick) : 0;
+        }
+
         internal abstract void Rollback(ulong tick);
 
         public abstract void UpdateRollbackInterpolationState(float delta, bool accumulateError);

@@ -61,7 +61,7 @@ namespace PurrNet.Prediction
                 return;
 
             _inputHistory?.Clear();
-            _inputHistory = world.isServer ? History<INPUT>.ForTickWindow(capacity) : new History<INPUT>(capacity);
+            _inputHistory = History<INPUT>.ForTickWindow(capacity, checked((int)world.verifiedHistoryWindowTicks));
         }
 
         internal override void ReleasePredictionStateForPool()
@@ -156,6 +156,8 @@ namespace PurrNet.Prediction
             // protocol window plus its preceding anchor without geometric growth.
             if (isServer)
                 _inputHistory.PruneByTickWindow(tick);
+            else
+                PruneAcceptedInputHistory(tick);
 
             if (isLocal)
             {
@@ -254,6 +256,7 @@ namespace PurrNet.Prediction
         public override void ReadFirstInput(ulong localTick, BitPacker packer)
         {
             var pos = packer.positionInBits;
+            PruneAcceptedInputHistory(localTick);
             if (Packer<bool>.Read(packer))
             {
                 var input = Packer<INPUT>.Read(packer);
@@ -262,6 +265,13 @@ namespace PurrNet.Prediction
             else _inputHistory.Remove(localTick);
 
             TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);
+        }
+
+        private void PruneAcceptedInputHistory(ulong tick)
+        {
+            ulong floor = GetAcceptedHistoryRetentionFloor(tick);
+            if (floor > 0 && _inputHistory.Count > 1 && _inputHistory.OldestTick < floor)
+                _inputHistory.PruneBeforeBaseline(floor);
         }
 
         private INPUT? _queuedInput;

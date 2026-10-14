@@ -280,15 +280,9 @@ namespace PurrNet.Prediction
 
         private void PruneStateHistory(ulong tick)
         {
-            ulong floor = predictionManager?.acceptedHistoryBaselineFloor ?? 0;
-            if (floor > 0 && lastVerifiedTick.HasValue)
-            {
-                // Quarantined or omitted components can have an older verified view.
-                // Keep its anchor even after other components advance the global floor.
-                floor = Math.Min(Math.Min(floor, lastVerifiedTick.Value), tick);
-                if (_stateHistory.Count > 1 && _stateHistory.OldestTick < floor)
-                    _stateHistory.PruneBeforeBaseline(floor);
-            }
+            ulong floor = GetAcceptedHistoryRetentionFloor(tick);
+            if (floor > 0 && _stateHistory.Count > 1 && _stateHistory.OldestTick < floor)
+                _stateHistory.PruneBeforeBaseline(floor);
             _stateHistory.PruneByTickWindow(tick);
         }
 
