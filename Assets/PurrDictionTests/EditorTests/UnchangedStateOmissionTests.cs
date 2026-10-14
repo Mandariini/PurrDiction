@@ -110,7 +110,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 using var first = BitPackerPool.Get();
                 using var second = BitPackerPool.Get();
                 identity.WriteCurrentState(default, first, 10);
-                Assert.That(GetField<StateDeltaCache<OmittedState>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache"), Is.Null,
+                Assert.That(GetField<StateDeltaCache<FULL_STATE<OmittedState>>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache"), Is.Null,
                     "a single receiver must bypass the cache");
                 recipients.Add(default); recipients.Add(default);
                 first.ResetPositionAndMode(false);
@@ -127,7 +127,61 @@ namespace PurrNet.Prediction.Tests.Editor
             finally
             {
                 if (identity)
-                    GetField<StateDeltaCache<OmittedState>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache")?.Dispose();
+                    GetField<StateDeltaCache<FULL_STATE<OmittedState>>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache")?.Dispose();
+                Object.DestroyImmediate(identityObject);
+                Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void CachedStateBodyMatchesUncachedMetadataAcrossOriginsAndSameTickChanges()
+        {
+            var managerObject = new GameObject("Metadata delta reuse manager");
+            var identityObject = new GameObject("Metadata delta reuse identity");
+            try
+            {
+                var manager = CreateManager(managerObject);
+                var identity = identityObject.AddComponent<CachedOmittedStateIdentity>();
+                var history = InitializeIdentity(identity, manager,
+                    new PredictedComponentID(new PredictedObjectID(402), 0), 200);
+                SetLocalTick(manager, 20);
+                var recipients = GetField<List<PlayerPacker>>(typeof(PredictionManager), manager, "_clientFrames");
+                recipients.Add(default); recipients.Add(default);
+                var owners = new PlayerID?[] { null, PlayerID.Server, new PlayerID(57, false),
+                    new PlayerID(57, true), new PlayerID(ulong.MaxValue, true) };
+                using var expected = BitPackerPool.Get();
+                using var first = BitPackerPool.Get();
+                using var reused = BitPackerPool.Get();
+                for (int origin = 0; origin < 8; origin++)
+                foreach (var owner in owners)
+                for (int phase = 0; phase < 3; phase++)
+                {
+                    var baseline = FullState(100);
+                    baseline.prediction.owner = phase == 2 ? owner : PlayerID.Server;
+                    baseline.prediction.wasOnSimulationStartCalled = phase == 2;
+                    history.Write(10, baseline);
+                    identity.fullPredictedState.prediction.owner = owner;
+                    identity.fullPredictedState.prediction.wasOnSimulationStartCalled = phase != 0;
+                    foreach (var packer in new[] { expected, first, reused })
+                    {
+                        packer.ResetPositionAndMode(false);
+                        for (int bit = 0; bit < origin; bit++) Packer<bool>.Write(packer, (bit & 1) != 0);
+                    }
+                    identity.allowCaching = false;
+                    identity.WriteCurrentState(default, expected, 10);
+                    identity.allowCaching = true;
+                    identity.WriteCurrentState(default, first, 10);
+                    int writes = identity.writes;
+                    identity.WriteCurrentState(new PlayerID(2, false), reused, 10);
+                    Assert.That(identity.writes, Is.EqualTo(writes), "identical metadata and states must reuse the whole body");
+                    var expectedBits = new BitData(expected, 0, expected.positionInBits);
+                    Assert.That(new BitData(first, 0, first.positionInBits).Equals(expectedBits), Is.True,
+                        $"origin {origin}, phase {phase}, owner {owner}: stale metadata was reused");
+                    Assert.That(new BitData(reused, 0, reused.positionInBits).Equals(expectedBits), Is.True);
+                }
+            }
+            finally
+            {
                 Object.DestroyImmediate(identityObject);
                 Object.DestroyImmediate(managerObject);
             }
@@ -1639,7 +1693,8 @@ namespace PurrNet.Prediction.Tests.Editor
     public sealed class CachedOmittedStateIdentity : OmittedStateIdentity
     {
         public int writes;
-        protected override bool SupportsStateDeltaCaching() => true;
+        public bool allowCaching = true;
+        protected override bool SupportsStateDeltaCaching() => allowCaching;
         protected override void WriteDeltaState(BitPacker packer, in OmittedState baseline, in OmittedState current)
         {
             writes++;
