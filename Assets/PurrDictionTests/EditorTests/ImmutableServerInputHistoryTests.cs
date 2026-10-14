@@ -35,6 +35,26 @@ namespace PurrNet.Prediction.Tests.Editor
                     input.value = Packer<int>.Read(packer));
         }
 
+        [TestCase(0UL, false)]
+        [TestCase(57UL, true)]
+        [TestCase(ulong.MaxValue, true)]
+        public void PackedTranscriptOwnershipPreservesNullableIdsAndRestorationRules(ulong id, bool bot)
+        {
+            var owner = new PlayerID(id, bot);
+            var uploaded = new PredictionManager.CachedInputEntry(default, default, 3, 7, false, 11, 13, owner, true);
+            Assert.That(uploaded.owner.HasValue, Is.True);
+            Assert.That(uploaded.owner.Value.id.value, Is.EqualTo(id));
+            Assert.That(uploaded.owner.Value.isBot, Is.EqualTo(bot));
+            Assert.That(uploaded.RestoredBy(new PlayerID(id, !bot)), Is.True,
+                "restoration uses PlayerID identity equality, which compares the numeric ID");
+            Assert.That(uploaded.RestoredBy(new PlayerID(id == 0 ? 1UL : 0UL, false)), Is.False);
+            var unowned = new PredictionManager.CachedInputEntry(default, default, 3, 7, false, 11, 13, null, true);
+            Assert.That(unowned.owner.HasValue, Is.False);
+            Assert.That(unowned.RestoredBy(PlayerID.Server), Is.False, "null ownership is distinct from server ID zero");
+            var generated = new PredictionManager.CachedInputEntry(default, default, 3, 7, false, 11, 13, owner, false);
+            Assert.That(generated.RestoredBy(owner), Is.False);
+        }
+
         [Test]
         public void RemovedIdentityRetainsOriginalInputBytesWithoutObservers()
         {

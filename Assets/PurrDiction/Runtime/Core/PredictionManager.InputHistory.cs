@@ -12,13 +12,17 @@ namespace PurrNet.Prediction
             public readonly PredictedObjectID rootId;
             public readonly int bitOrigin;
             public readonly int bitLength;
-            // The previous tick contains identical bits for this ID under the same root.
-            public readonly bool repeatsPrevious;
             public readonly int deltaOrigin;
             public readonly int deltaLength;
+            // The previous tick contains identical bits for this ID under the same root.
+            public readonly bool repeatsPrevious;
             // The owner uploaded exactly these bits for this tick, so it can restore them itself.
-            public readonly PlayerID? owner;
             public readonly bool asUploaded;
+            private readonly byte _ownerFlags;
+            private readonly ulong _ownerId;
+
+            public PlayerID? owner => (_ownerFlags & 1) != 0
+                ? new PlayerID(_ownerId, (_ownerFlags & 2) != 0) : (PlayerID?)null;
 
             public CachedInputEntry(
                 PredictedComponentID id,
@@ -38,11 +42,12 @@ namespace PurrNet.Prediction
                 this.repeatsPrevious = repeatsPrevious;
                 this.deltaOrigin = deltaOrigin;
                 this.deltaLength = deltaLength;
-                this.owner = owner;
                 this.asUploaded = asUploaded;
+                _ownerId = owner.HasValue ? owner.Value.id.value : 0;
+                _ownerFlags = owner.HasValue ? (byte)(1 | (owner.Value.isBot ? 2 : 0)) : (byte)0;
             }
 
-            public bool RestoredBy(PlayerID player) => asUploaded && owner.HasValue && owner.Value == player;
+            public bool RestoredBy(PlayerID player) => asUploaded && (_ownerFlags & 1) != 0 && _ownerId == player.id.value;
         }
 
         private struct CachedInputBlock
@@ -75,10 +80,14 @@ namespace PurrNet.Prediction
                     $"Cannot capture authoritative input tick {tick} after tick {_latestCapturedInputTick}.");
             }
 
+            CachedInputBlock previous = default;
+            bool hasPrevious = tick > 0 && TryGetInputBlockForTick(tick - 1, out previous);
             ref var scratch = ref _inputBlockScratch;
             scratch.packer ??= BitPackerPool.Get();
             scratch.deltas ??= BitPackerPool.Get();
-            scratch.entries ??= new List<CachedInputEntry>();
+            // Most captures have the same input roster. An exact initial capacity avoids
+            // doubling just past a power of two; existing buffers still grow normally.
+            scratch.entries ??= new List<CachedInputEntry>(hasPrevious ? previous.entries.Count : 0);
             scratch.captured = false;
             scratch.packer.ResetPositionAndMode(false);
             scratch.deltas.ResetPositionAndMode(false);
@@ -87,8 +96,6 @@ namespace PurrNet.Prediction
             CollectViewOffsets(tick, scratch.viewOffsets);
 
             _previousInputEntryIndex.Clear();
-            CachedInputBlock previous = default;
-            bool hasPrevious = tick > 0 && TryGetInputBlockForTick(tick - 1, out previous);
             if (hasPrevious)
             {
                 for (var i = 0; i < previous.entries.Count; i++)
