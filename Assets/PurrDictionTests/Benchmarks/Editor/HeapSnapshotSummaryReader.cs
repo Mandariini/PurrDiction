@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Reflection.Emit;
 using UnityEditor;
 using UnityEngine;
 
@@ -27,6 +28,13 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             public long objects, managedObjectBytes;
             public Row[] types;
             public ArrayOwner[] arrayOwners;
+            public HistoryEntries[] historyEntries;
+        }
+
+        [Serializable] private sealed class HistoryEntries
+        {
+            public string type;
+            public int[] counts;
         }
 
         [Serializable] private sealed class ArrayOwner
@@ -105,6 +113,8 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                         row.arraySizes = row.sizeCounts.Values.OrderByDescending(bucket => bucket.bytes).ToArray();
                 if (Environment.GetCommandLineArgs().Contains("-heapArrayOwners"))
                     report.arrayOwners = ReadArrayOwners(snapshot, data, names);
+                if (Environment.GetCommandLineArgs().Contains("-heapHistoryEntries"))
+                    report.historyEntries = ReadHistoryEntries(snapshot, data, names);
                 Directory.CreateDirectory(Path.GetDirectoryName(output));
                 File.WriteAllText(output, JsonUtility.ToJson(report, true));
                 Debug.Log($"HEAP_SUMMARY objects={report.objects}, bytes={report.managedObjectBytes}, types={report.types.Length}");
@@ -112,6 +122,49 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             catch (Exception error) { Debug.LogException(error); exitCode = 1; }
             finally { snapshot?.Dispose(); reader?.Dispose(); }
             EditorApplication.Exit(exitCode);
+        }
+
+        private static HistoryEntries[] ReadHistoryEntries(object snapshot, object data, string[] names)
+        {
+            // Counts describe capture time, including any post-measurement settle phase.
+            var fields = Get(snapshot, "FieldDescriptions");
+            var fieldNames = (string[])Get(fields, "FieldDescriptionName");
+            var offsets = Get(fields, "Offset");
+            // Mono cannot invoke a ref-returning indexer through MethodInfo.Invoke.
+            var getter = offsets.GetType().GetProperty("Item", Members).GetGetMethod(true);
+            var indexer = new DynamicMethod("ReadSnapshotFieldOffset", typeof(int),
+                new[] { typeof(object), typeof(long) }, typeof(HeapSnapshotSummaryReader).Module, true);
+            var il = indexer.GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Unbox, offsets.GetType());
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Call, getter);
+            il.Emit(OpCodes.Ldind_I4);
+            il.Emit(OpCodes.Ret);
+            var offsetAt = (Func<object, long, int>)indexer.CreateDelegate(typeof(Func<object, long, int>));
+            var instances = (int[][])Get(Get(snapshot, "TypeDescriptions"), "FieldIndicesInstance");
+            var groups = new Dictionary<string, List<int>>();
+            foreach (var item in (IEnumerable)Get(data, "m_ManagedObjects"))
+            {
+                int type = Convert.ToInt32(Get(item, "ITypeDescription"));
+                if (type < 0 || type >= names.Length ||
+                    !names[type].StartsWith("PurrNet.Prediction.History", StringComparison.Ordinal) ||
+                    !names[type].EndsWith(">", StringComparison.Ordinal)) continue;
+                int field = instances[type].Single(index => fieldNames[index] == "m_count");
+                int offset = offsetAt(offsets, field);
+                long size = Convert.ToInt64(Get(item, "Size"));
+                if (offset < 0 || offset + sizeof(int) > size)
+                    throw new InvalidDataException("History count is outside its snapshot object.");
+                var bytes = Get(item, "data");
+                var read = bytes.GetType().GetMethod("ReadInt32", Members, null, new[] { typeof(ulong) }, null);
+                int count = (int)read.Invoke(bytes, new object[] { (ulong)offset });
+                if (count < 0) throw new InvalidDataException("Negative history count in snapshot.");
+                if (!groups.TryGetValue(names[type], out var counts))
+                    groups.Add(names[type], counts = new List<int>());
+                counts.Add(count);
+            }
+            return groups.OrderBy(group => group.Key).Select(group => new HistoryEntries
+                { type = group.Key, counts = group.Value.OrderBy(count => count).ToArray() }).ToArray();
         }
 
         private static ArrayOwner[] ReadArrayOwners(object snapshot, object data, string[] names)
