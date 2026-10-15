@@ -746,8 +746,8 @@ namespace PurrNet.Prediction
             PredictedIdentity system,
             ulong baselineTick,
             bool hasHierarchyBaseline,
-            HashSet<PredictedObjectID> baselineRoots,
-            HashSet<PredictedObjectID> baselinePieces)
+            PredictionObjectSet baselineRoots,
+            PredictionObjectSet baselinePieces)
         {
             if (system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return false;
@@ -762,8 +762,10 @@ namespace PurrNet.Prediction
         sealed class HierarchyBaselineScratch
         {
             public bool hasBaseline;
-            public readonly HashSet<PredictedObjectID> roots = new(PredictionIdComparers.Objects);
-            public readonly HashSet<PredictedObjectID> pieces = new(PredictionIdComparers.Objects);
+            public readonly PredictionObjectSet roots = new();
+            public readonly PredictionObjectSet pieces = new();
+            // A non-owning lease copy detects disposal before a pooled list can be reused.
+            public DisposableList<InstanceDetails> sourcePieces;
         }
 
         readonly Dictionary<ulong, HierarchyBaselineScratch> _hierarchyBaselineScratchByTick = new();
@@ -771,7 +773,8 @@ namespace PurrNet.Prediction
         ulong _hierarchyBaselineCacheTick = ulong.MaxValue;
 
         // Share the global baseline scan across receivers, state and event writes.
-        // Invalidate each tick: a stalled ACK can outlive its retained baseline.
+        // Revalidate each tick: a stalled ACK can outlive its retained baseline.
+        // Membership can reuse the same immutable snapshot while its lease remains valid.
         HierarchyBaselineScratch GetHierarchyBaselineScratch(ulong baselineTick)
         {
             if (_hierarchyBaselineCacheTick != localTick)
@@ -788,27 +791,39 @@ namespace PurrNet.Prediction
                 _hierarchyBaselineScratchPool.Add(new HierarchyBaselineScratch());
             scratch = _hierarchyBaselineScratchPool[index];
 
-            scratch.roots.Clear();
-            scratch.pieces.Clear();
-
             if (hierarchy &&
                 hierarchy.TryGetVerifiedState(
                     baselineTick,
                     out _,
                     out PredictedHierarchyState hierarchyBaseline))
             {
-                scratch.hasBaseline = true;
-                PredictedHierarchy.CollectSpawnedRoots(hierarchyBaseline, scratch.roots);
-
-                if (!hierarchyBaseline.spawnedPrefabs.isDisposed)
+                var source = hierarchyBaseline.spawnedPrefabs;
+                var sourceList = source.list;
+                if (!scratch.hasBaseline || scratch.sourcePieces.isDisposed ||
+                    !ReferenceEquals(scratch.sourcePieces.list, sourceList) ||
+                    scratch.pieces.Count != (sourceList?.Count ?? 0))
                 {
-                    for (var i = 0; i < hierarchyBaseline.spawnedPrefabs.Count; i++)
-                        scratch.pieces.Add(hierarchyBaseline.spawnedPrefabs[i].instanceId);
+                    scratch.roots.Clear();
+                    scratch.pieces.Clear();
+                    if (sourceList != null)
+                    {
+                        for (var i = 0; i < sourceList.Count; i++)
+                        {
+                            var piece = sourceList[i];
+                            scratch.roots.Add(piece.rootId);
+                            scratch.pieces.Add(piece.instanceId);
+                        }
+                    }
                 }
+                scratch.sourcePieces = source;
+                scratch.hasBaseline = true;
             }
             else
             {
                 scratch.hasBaseline = false;
+                scratch.sourcePieces = default;
+                scratch.roots.Clear();
+                scratch.pieces.Clear();
             }
 
             _hierarchyBaselineScratchByTick.Add(baselineTick, scratch);

@@ -959,8 +959,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 var id = new PredictedComponentID(piece, 0);
                 InitializeIdentity(identity, manager, id, 100);
                 SetLocalTick(manager, 12);
-                var baselineRoots = new HashSet<PredictedObjectID> { root };
-                var baselinePieces = new HashSet<PredictedObjectID> { root };
+                var baselineRoots = new PredictionObjectSet();
+                baselineRoots.Add(root);
+                var baselinePieces = new PredictionObjectSet();
+                baselinePieces.Add(root);
 
                 var requiresFull = typeof(PredictionManager).GetMethod(
                     "RequiresFullEntryState",
