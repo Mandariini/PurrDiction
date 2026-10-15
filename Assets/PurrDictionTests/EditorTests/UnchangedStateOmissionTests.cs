@@ -4,6 +4,7 @@ using System.Reflection;
 using NUnit.Framework;
 using PurrNet.Modules;
 using PurrNet.Packing;
+using PurrNet.Prediction.Profiler;
 using PurrNet.Pooling;
 using PurrNet.Utils;
 using UnityEngine;
@@ -182,6 +183,9 @@ namespace PurrNet.Prediction.Tests.Editor
         [Test]
         public void CachedAddressedRecordsMatchFreshFramesAndRejectMutatedBaselinesOrModules()
         {
+            bool previousCapture = TickBandwidthProfiler.collectWithoutSubscribers;
+            TickBandwidthProfiler.MarkEndOfTick();
+            TickBandwidthProfiler.collectWithoutSubscribers = true;
             var managerObject = new GameObject("Addressed reuse manager");
             var identityObject = new GameObject("Addressed reuse identity");
             CachedOmittedStateIdentity identity = null;
@@ -212,6 +216,13 @@ namespace PurrNet.Prediction.Tests.Editor
                 identity.allowCaching = true;
                 Assert.That(new BitData(cached).Equals(new BitData(fresh)), Is.True);
                 Assert.That(new BitData(first).Equals(new BitData(cached, 7, cached.positionInBits - 7)), Is.True);
+                var samples = TickBandwidthProfiler.wroteStates;
+                Assert.That(samples.Count, Is.EqualTo(4), "cached recipients must still be visible in the bandwidth profiler");
+                foreach (var sample in samples)
+                {
+                    Assert.That(sample.reference, Is.SameAs(identity));
+                    Assert.That(sample.bitCount, Is.EqualTo(samples[0].bitCount));
+                }
 
                 cached.ResetPositionAndMode(false);
                 identity.currentState.value++;
@@ -229,6 +240,8 @@ namespace PurrNet.Prediction.Tests.Editor
             }
             finally
             {
+                TickBandwidthProfiler.MarkEndOfTick();
+                TickBandwidthProfiler.collectWithoutSubscribers = previousCapture;
                 if (identity)
                     GetField<StateDeltaCache<FULL_STATE<OmittedState>>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache")?.Dispose();
                 Object.DestroyImmediate(identityObject);

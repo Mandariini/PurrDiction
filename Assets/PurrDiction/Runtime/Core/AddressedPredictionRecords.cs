@@ -26,7 +26,7 @@ namespace PurrNet.Prediction
             if (_checkedHeaderWriters && ReferenceEquals(boolWriter, _lastBoolWriter) &&
                 ReferenceEquals(uintWriter, _lastUIntWriter) && ReferenceEquals(objectWriter, _lastObjectWriter) &&
                 ReferenceEquals(componentWriter, _lastComponentWriter))
-                return _standardHeaderWriters;
+                return _standardHeaderWriters && UsesGeneratedFieldWriters(objectWriter, uintWriter);
             _checkedHeaderWriters = true;
             _lastBoolWriter = boolWriter;
             _lastUIntWriter = uintWriter;
@@ -35,8 +35,13 @@ namespace PurrNet.Prediction
             _standardHeaderWriters = StandardBoolWriter.Equals(boolWriter) && StandardUIntWriter.Equals(uintWriter) &&
                 IsGeneratedIdWriter(objectWriter, "PurrNet_Prediction_PredictedObjectID_Serializer") &&
                 IsGeneratedIdWriter(componentWriter, "PurrNet_Prediction_PredictedComponentID_Serializer");
-            return _standardHeaderWriters;
+            return _standardHeaderWriters && UsesGeneratedFieldWriters(objectWriter, uintWriter);
         }
+
+        private static bool UsesGeneratedFieldWriters(WriteFunc<PredictedObjectID> objectWriter,
+            WriteFunc<PackedUInt> uintWriter)
+            => NativePacker<PredictedObjectID>.UsesGeneratedWriter(objectWriter) &&
+               NativePacker<PackedUInt>.UsesGeneratedWriter(uintWriter);
 
         private static bool IsGeneratedIdWriter(Delegate writer, string serializerName)
         {
