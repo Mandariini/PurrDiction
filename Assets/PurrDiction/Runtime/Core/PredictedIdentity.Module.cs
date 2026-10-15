@@ -181,6 +181,8 @@ namespace PurrNet.Prediction
             return _staticModuleCount >= 0 || (_moduleHistory != null && _moduleHistory.Count > 0);
         }
 
+        protected bool HasNoModulesOrHistory() => _modules.Count == 0 && !HasDynamicModulesOrHistory();
+
         internal void SaveDynamicModuleSnapshot(ulong tick)
         {
             if (!HasDynamicModulesOrHistory())

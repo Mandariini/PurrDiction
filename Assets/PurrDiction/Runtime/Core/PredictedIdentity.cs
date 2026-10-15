@@ -873,6 +873,10 @@ namespace PurrNet.Prediction
 
         internal abstract bool WriteCurrentState(PlayerID receiver, BitPacker packer, ulong baselineTick);
 
+        internal virtual bool TryWriteCachedAddressedState(BitPacker destination, ulong baselineTick) => false;
+
+        internal virtual void CacheAddressedState(BitPacker source, int recordOrigin, ulong baselineTick) { }
+
         internal abstract void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick);
 
         internal abstract void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick);

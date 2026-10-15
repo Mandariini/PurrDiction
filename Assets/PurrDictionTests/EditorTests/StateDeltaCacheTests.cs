@@ -10,6 +10,86 @@ namespace PurrNet.Prediction.Tests.Editor
         [OneTimeSetUp]
         public void RegisterPackers() => NetworkManager.CallAllRegisters();
 
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(2)]
+        [TestCase(3)]
+        [TestCase(4)]
+        [TestCase(5)]
+        [TestCase(6)]
+        [TestCase(7)]
+        public void AddressedRecordReuseMovesAcrossOriginsAndRetainsTheStateSuffix(int origin)
+        {
+            using var cache = new StateDeltaCache<State>();
+            using var body = BitPackerPool.Get();
+            using var prefix = BitPackerPool.Get();
+            using var record = BitPackerPool.Get();
+            using var destination = BitPackerPool.Get();
+            var baseline = new State { value = 3 };
+            var current = new State { value = 97 };
+            var id = new PredictedComponentID(new PredictedObjectID(400), 2);
+            body.WriteBit(false); // Empty module set.
+            body.WriteBit(true);
+            body.WriteBits(94, 32);
+            cache.Store(20, 10, 1, body, baseline, current);
+            prefix.WriteBit(false); // Shared frame baseline.
+            record.WriteBits(7, 3);
+            int recordOrigin = record.positionInBits;
+            AddressedPredictionRecords.WritePrefixedRecord(id, false, prefix, body, record);
+            cache.StoreAddressedRecord(20, 10, id, record, recordOrigin);
+            int length = record.positionInBits - recordOrigin;
+            if (origin > 0) destination.WriteBits(0x7f, (byte)origin);
+            Assert.That(cache.TryWriteAddressedRecord(20, 10, id, destination, ref baseline, ref current, out int stateBits), Is.True);
+            Assert.That(stateBits, Is.EqualTo(33));
+            Assert.That(new BitData(destination, origin, length).Equals(new BitData(record, recordOrigin, length)), Is.True);
+
+            destination.ResetPositionAndMode(false);
+            destination.WriteBit(false);
+            Assert.That(cache.TryWrite(20, 10, destination, ref baseline, ref current), Is.True);
+            destination.ResetPositionAndMode(true);
+            Assert.That(destination.ReadBit(), Is.False);
+            Assert.That(destination.ReadBit(), Is.True);
+            Assert.That(destination.ReadBits(32), Is.EqualTo(94UL));
+
+            destination.ResetPositionAndMode(false);
+            current.value++;
+            Assert.That(cache.TryWriteAddressedRecord(20, 10, id, destination, ref baseline, ref current, out _), Is.False);
+            current.value--;
+            baseline.value++;
+            Assert.That(cache.TryWriteAddressedRecord(20, 10, id, destination, ref baseline, ref current, out _), Is.False);
+            baseline.value--;
+            Assert.That(cache.TryWriteAddressedRecord(20, 11, id, destination, ref baseline, ref current, out _), Is.False);
+            Assert.That(cache.TryWriteAddressedRecord(20, 10, default, destination, ref baseline, ref current, out _), Is.False);
+            Assert.That(destination.positionInBits, Is.Zero);
+            cache.Reset();
+            Assert.That(cache.TryWriteAddressedRecord(20, 10, id, destination, ref baseline, ref current, out _), Is.False);
+        }
+
+        [Test]
+        public void CustomHeaderWriterDisablesRecordReuseUntilRestored()
+        {
+            Assert.That(AddressedPredictionRecords.UsesStandardHeaders(), Is.True,
+                Packer<PredictedComponentID>.WriteFunc.Method.DeclaringType.FullName);
+            var original = Packer<PackedUInt>.WriteFunc;
+            try
+            {
+                Packer<PackedUInt>.WriteFunc = (packer, value) => packer.WriteBits(value.value, 32);
+                Assert.That(AddressedPredictionRecords.UsesStandardHeaders(), Is.False);
+            }
+            finally { Packer<PackedUInt>.WriteFunc = original; }
+            Assert.That(AddressedPredictionRecords.UsesStandardHeaders(), Is.True);
+            var originalId = Packer<PredictedComponentID>.WriteFunc;
+            try
+            {
+                WriteFunc<PredictedComponentID> observer = (_, _) => { };
+                Packer<PredictedComponentID>.WriteFunc = observer + originalId;
+                Assert.That(AddressedPredictionRecords.UsesStandardHeaders(), Is.False,
+                    "a multicast codec ending in the standard writer still has custom behavior");
+            }
+            finally { Packer<PredictedComponentID>.WriteFunc = originalId; }
+            Assert.That(AddressedPredictionRecords.UsesStandardHeaders(), Is.True);
+        }
+
         [Test]
         public void UnalignedSuffixIsCopiedExactlyAndDoesNotBorrowTheSourceBuffer()
         {
