@@ -61,7 +61,8 @@ namespace PurrNet.Prediction
                 return;
 
             _inputHistory?.Clear();
-            _inputHistory = History<INPUT>.ForTickWindow(capacity, world.initialLocalHistoryWindowTicks);
+            _inputHistory = History<INPUT>.ForTickWindow(capacity, world.initialLocalHistoryWindowTicks,
+                checked((int)world.verifiedHistoryWindowTicks));
         }
 
         internal override void ReleasePredictionStateForPool()

@@ -19,6 +19,8 @@ namespace PurrNet.Prediction
 
         readonly int m_eagerCapacity;
 
+        readonly int m_growthBoundary;
+
         bool m_contiguous = true;
 
         int Phys(int index)
@@ -100,7 +102,12 @@ namespace PurrNet.Prediction
         internal static History<T> ForTickWindow(int maxEntries, int initialWindow)
             => new History<T>(maxEntries, maxEntries > 0 ? Math.Min(maxEntries, initialWindow) + 2 : -1);
 
-        private History(int maxEntries, int initialCapacity)
+        internal static History<T> ForTickWindow(int maxEntries, int initialWindow, int growthWindow)
+            => new History<T>(maxEntries,
+                maxEntries > 0 ? Math.Min(maxEntries, initialWindow) + 2 : -1,
+                maxEntries > 0 ? Math.Min(maxEntries, growthWindow) + 2 : 0);
+
+        private History(int maxEntries, int initialCapacity, int growthBoundary = 0)
         {
             m_maxCount = maxEntries;
 
@@ -108,6 +115,7 @@ namespace PurrNet.Prediction
             {
                 m_limitToCut = Math.Max(m_maxCount + 10, m_maxCount + m_maxCount / 2);
                 m_eagerCapacity = initialCapacity > 0 ? Math.Min(initialCapacity, m_limitToCut + 1) : m_limitToCut + 1;
+                m_growthBoundary = Math.Min(growthBoundary, m_limitToCut + 1);
                 m_ticks = new ulong[m_eagerCapacity];
                 m_values = new T[m_eagerCapacity];
             }
@@ -127,6 +135,10 @@ namespace PurrNet.Prediction
                 int tickWindowCapacity = m_maxCount + 2;
                 if (m_eagerCapacity < tickWindowCapacity && m_ticks.Length < tickWindowCapacity)
                     newCapacity = Math.Min(newCapacity, tickWindowCapacity);
+                // Reach the protocol window without doubling past it. Stalled local
+                // timelines can still grow beyond this boundary to their full limit.
+                if (m_ticks.Length < m_growthBoundary)
+                    newCapacity = Math.Min(newCapacity, m_growthBoundary);
             }
             ResizeBackingStorage(newCapacity);
         }

@@ -176,6 +176,8 @@ namespace PurrNet.Prediction.Tests.Editor
             }
             Assert.That(f.Slots, Is.GreaterThan(initialSlots));
             Assert.That(f.InputSlots, Is.GreaterThan(initialInputSlots));
+            Assert.That(f.Slots, Is.LessThanOrEqualTo(protocolWindow + 2));
+            Assert.That(f.InputSlots, Is.LessThanOrEqualTo(protocolWindow + 2));
             Assert.That(f.history.Capacity, Is.EqualTo(rate * 10));
             Assert.That(f.inputs.Capacity, Is.EqualTo(rate * 5));
             f.probe.Rollback(backlog * 2);

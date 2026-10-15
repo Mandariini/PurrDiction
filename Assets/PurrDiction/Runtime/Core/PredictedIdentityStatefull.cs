@@ -180,7 +180,7 @@ namespace PurrNet.Prediction
 
         private static History<FULL_STATE<STATE>> CreateStateHistory(PredictionManager world)
             => History<FULL_STATE<STATE>>.ForTickWindow(StateHistoryCapacity(world),
-                world.initialLocalHistoryWindowTicks);
+                world.initialLocalHistoryWindowTicks, checked((int)world.verifiedHistoryWindowTicks));
 
         internal override void PrewarmPredictionState(PredictionManager world)
         {
