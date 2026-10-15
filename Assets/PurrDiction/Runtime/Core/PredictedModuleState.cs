@@ -358,7 +358,7 @@ namespace PurrNet.Prediction
         }
 
         protected override bool HasUnchangedStateBaseline(ulong baselineTick)
-            => verifiedHistory.ReadOrPrevious(baselineTick, out _);
+            => verifiedHistory.HasAtOrBefore(baselineTick);
 
         protected override void ReadUnchangedState(
             ulong tick,

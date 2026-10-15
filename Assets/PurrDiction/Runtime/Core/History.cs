@@ -69,6 +69,9 @@ namespace PurrNet.Prediction
         /// </summary>
         public ulong OldestTick => m_count == 0 ? 0 : m_ticks[m_head];
 
+        // Availability checks need neither a search nor a copy of the retained value.
+        internal bool HasAtOrBefore(ulong tick) => m_count > 0 && m_ticks[m_head] <= tick;
+
         /// <summary>
         /// Gets the tick value for the index in the internal collection
         /// </summary>

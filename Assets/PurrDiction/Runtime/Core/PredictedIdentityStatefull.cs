@@ -642,7 +642,7 @@ namespace PurrNet.Prediction
 
         internal override bool HasUnchangedStateBaseline(ulong baselineTick)
             => _verifiedHistory != null &&
-               _verifiedHistory.ReadOrPrevious(baselineTick, out _);
+               _verifiedHistory.HasAtOrBefore(baselineTick);
 
         internal override bool TryGetFirstVerifiedTick(out ulong tick)
         {

@@ -651,7 +651,7 @@ namespace PurrNet.Prediction
         }
 
         internal bool HasPredictionMetadataBaseline(ulong baselineTick)
-            => metadataVerified.ReadOrPrevious(baselineTick, out _);
+            => metadataVerified.HasAtOrBefore(baselineTick);
 
         internal void ReadPredictionMetadata(BitPacker packer, ulong baselineTick, ulong serverTick, ref PredictedIdentityState metadata)
         {

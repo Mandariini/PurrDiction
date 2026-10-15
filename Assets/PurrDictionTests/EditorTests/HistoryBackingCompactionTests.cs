@@ -53,6 +53,18 @@ namespace PurrNet.Prediction.Tests.Editor
             }
             foreach (var ticket in allocated)
                 Assert.That(ticket.Disposals, Is.EqualTo(live.Contains(ticket) ? 0 : 1));
+
+            var queries = new HashSet<ulong> { 0, ulong.MaxValue };
+            foreach (ulong tick in expected.Keys)
+            {
+                queries.Add(tick);
+                if (tick > 0) queries.Add(tick - 1);
+                if (tick < ulong.MaxValue) queries.Add(tick + 1);
+            }
+            foreach (ulong tick in queries)
+                Assert.That(history.HasAtOrBefore(tick),
+                    Is.EqualTo(expected.Keys.Any(entryTick => entryTick <= tick)),
+                    $"Baseline availability at {tick}");
         }
 
         [Test]

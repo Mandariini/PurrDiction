@@ -883,7 +883,7 @@ namespace PurrNet.Prediction
         private bool HasUnchangedStateBaselineModules(ulong baselineTick)
         {
             if (HasDynamicModulesOrHistory() &&
-                !moduleSetVerified.ReadOrPrevious(baselineTick, out _))
+                !moduleSetVerified.HasAtOrBefore(baselineTick))
             {
                 return false;
             }
