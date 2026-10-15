@@ -68,6 +68,45 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.probe.deltaReads, Is.EqualTo(1), "the delta queued before the full was discarded unread");
         }
 
+        [TestCase(20, 12UL)]
+        [TestCase(60, 36UL)]
+        [TestCase(240, 144UL)]
+        public void DelayedFramesKeepAHealthyPredictionHeadAdvancing(int rate, ulong lead)
+        {
+            using var f = new Fixture(rate);
+            using var frame = f.Prepare(11, 110);
+            Set(f.client, "<localTick>k__BackingField", 11UL + lead);
+            Set(f.client, "<localTickInContext>k__BackingField", 11UL + lead);
+
+            f.Receive(frame);
+            f.Drain();
+
+            Assert.That(f.ClientVerified, Is.EqualTo(11));
+            Assert.That(f.Verified(11).state.value, Is.EqualTo(110));
+            Assert.That(f.client.localTick, Is.EqualTo(11UL + lead));
+            Assert.That(Get<ulong>(f.client, "_pauseAdvanceTicks"), Is.Zero,
+                "600 ms of round-trip lead fits the retained protocol window");
+            Assert.That(f.client.leadPausesTotal, Is.Zero);
+        }
+
+        [TestCase(20, 32UL)]
+        [TestCase(60, 96UL)]
+        [TestCase(240, 384UL)]
+        public void DelayedFramesStillPauseBeyondTheRetainedProtocolWindow(int rate, ulong lead)
+        {
+            using var f = new Fixture(rate);
+            using var frame = f.Prepare(11, 110);
+            Set(f.client, "<localTick>k__BackingField", 11UL + lead);
+            Set(f.client, "<localTickInContext>k__BackingField", 11UL + lead);
+
+            f.Receive(frame);
+            f.Drain();
+
+            Assert.That(f.ClientVerified, Is.EqualTo(11));
+            Assert.That(Get<ulong>(f.client, "_pauseAdvanceTicks"), Is.EqualTo(2UL));
+            Assert.That(f.client.leadPausesTotal, Is.EqualTo(1));
+        }
+
         [Test]
         public void FailedDeltaDropsLaterDeltasUntilTheNextFull()
         {
@@ -192,13 +231,15 @@ namespace PurrNet.Prediction.Tests.Editor
             private readonly List<PlayerPacker> _frames;
             private readonly PredictionManager.InputQueue _input;
             private readonly double _previousCadence;
+            private readonly int _rate;
             private ulong _lastPreparedTick = 8;
             private readonly PlayerID _player = default;
             public readonly PredictionManager client;
             public readonly FrameProbeIdentity probe;
 
-            public Fixture()
+            public Fixture(int rate = 60)
             {
+                _rate = rate;
                 _previousCadence = PredictionPerformanceTelemetry.reconcileIntervalSeconds;
                 PredictionPerformanceTelemetry.reconcileIntervalSeconds = 0;
                 _network = Create<NetworkManager>("Ordered frame client network");
@@ -308,8 +349,8 @@ namespace PurrNet.Prediction.Tests.Editor
             private PredictionManager CreateManager(string name)
             {
                 var manager = Create<PredictionManager>(name);
-                Set(manager, "<tickRate>k__BackingField", 60);
-                Set(manager, "<tickDelta>k__BackingField", 1f / 60);
+                Set(manager, "<tickRate>k__BackingField", _rate);
+                Set(manager, "<tickDelta>k__BackingField", 1f / _rate);
                 Set(manager, "<localTick>k__BackingField", 40UL);
                 Set(manager, "<localTickInContext>k__BackingField", 40UL);
                 Set(manager, "_physicsProvider", default(PredictionPhysicsProvider));

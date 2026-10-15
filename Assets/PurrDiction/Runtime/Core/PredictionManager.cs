@@ -2151,7 +2151,8 @@ namespace PurrNet.Prediction
 
         private const ulong MinLead = 2;
         private const ulong TargetLead = 3;
-        private const ulong AbsoluteMaxLead = MaxInputWindow - 2;
+        // Prediction lead spans the round trip and must scale with the retained replay window.
+        private ulong absoluteMaxLead => verifiedHistoryWindowTicks - 2;
 
         private const long InputMarginClamp = 64;
         private const long InputMarginLow = 1;
@@ -2637,9 +2638,9 @@ namespace PurrNet.Prediction
                         minLeadSnapsTotal++;
                         ResetSlackController();
                     }
-                    else if (curLead > AbsoluteMaxLead)
+                    else if (curLead > absoluteMaxLead)
                     {
-                        _pauseAdvanceTicks = curLead - AbsoluteMaxLead;
+                        _pauseAdvanceTicks = curLead - absoluteMaxLead;
                         leadPausesTotal++;
                     }
 
