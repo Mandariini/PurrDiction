@@ -836,6 +836,10 @@ namespace PurrNet.Prediction
                 ? Math.Min(Math.Min(floor, lastVerifiedTick.Value), tick) : 0;
         }
 
+        internal ulong GetAcceptedVerifiedHistoryRetentionFloor(ulong tick)
+            => predictionManager && predictionManager.isClient && !predictionManager.isServer
+                ? GetAcceptedHistoryRetentionFloor(tick) : 0;
+
         internal abstract void Rollback(ulong tick);
 
         public abstract void UpdateRollbackInterpolationState(float delta, bool accumulateError);

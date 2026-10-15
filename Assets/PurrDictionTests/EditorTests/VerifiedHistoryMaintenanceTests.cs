@@ -34,7 +34,7 @@ namespace PurrNet.Prediction.Tests.Editor
             readonly NetworkManager network;
             public readonly PredictionManager manager;
 
-            public Fixture(bool host = false)
+            public Fixture(bool host = false, int rate = 60)
             {
                 Hasher.PrepareType(typeof(Value));
                 network = networkObject.AddComponent<NetworkManager>();
@@ -44,7 +44,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(typeof(NetworkIdentity), manager, "<networkManager>k__BackingField", network);
                 Set(typeof(NetworkIdentity), manager, "_isSpawnedClient", true);
                 Set(typeof(NetworkIdentity), manager, "_isSpawnedServer", host);
-                Set(typeof(PredictionManager), manager, "<tickRate>k__BackingField", 60);
+                Set(typeof(PredictionManager), manager, "<tickRate>k__BackingField", rate);
             }
 
             public History<Value> Create(uint objectId, int entries, int subKey = 0)
@@ -52,8 +52,19 @@ namespace PurrNet.Prediction.Tests.Editor
                 var id = new PredictedComponentID(new PredictedObjectID(objectId), 0);
                 var history = manager.GetVerifiedHistory<Value>(id, subKey, out var created);
                 Assert.That(created, Is.True);
+                // Maintenance tests exercise already-warm, oversized storage. Cold
+                // receiver allocation is checked separately below.
+                for (int tick = 0; tick <= history.Capacity; tick++)
+                    history.Write((ulong)tick, new Value { number = tick });
+                history.Clear();
                 for (int tick = 0; tick < entries; tick++) history.Write((ulong)tick, new Value { number = tick });
                 return history;
+            }
+
+            public void BecomeHost()
+            {
+                Set(typeof(NetworkManager), network, "<isServer>k__BackingField", true);
+                Set(typeof(NetworkIdentity), manager, "_isSpawnedServer", true);
             }
 
             public void Register(uint objectId)
@@ -244,21 +255,63 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(fixture.manager.verifiedHistoryPrunedEntriesTotal, Is.Zero);
         }
 
-        [Test]
-        public void LogicalStoreRebindRestoresEagerCapacityAndRetainsTheSameHistory()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void LogicalStoreRebindRestoresEagerCapacityAndRetainsTheSameHistory(bool host)
         {
-            using var fixture = new Fixture();
+            using var fixture = new Fixture(host);
             var history = fixture.Create(401, 40, 8);
             fixture.Maintain();
             Assert.That(Backing(history), Is.EqualTo(40));
             var rebound = fixture.manager.GetVerifiedHistory<Value>(new PredictedComponentID(new PredictedObjectID(401), 0), 8, out var created);
             Assert.That(created, Is.False);
             Assert.That(rebound, Is.SameAs(history));
-            Assert.That(Backing(rebound), Is.EqualTo(98));
-            Assert.That(fixture.manager.verifiedHistoryRestoredArrayPayloadBytesTotal, Is.EqualTo(98 * 12));
+            Assert.That(Backing(rebound), Is.EqualTo(host ? 98 : 40));
+            Assert.That(fixture.manager.verifiedHistoryRestoredArrayPayloadBytesTotal, Is.EqualTo(host ? 98 * 12 : 0));
             for (ulong tick = 0; tick < 40; tick++)
             {
                 Assert.That(rebound.Read(tick, out var value), Is.True);
+                Assert.That(value.number, Is.EqualTo((int)tick));
+            }
+        }
+
+        [TestCase(20)]
+        [TestCase(60)]
+        [TestCase(240)]
+        public void ColdReceiverBuffersGrowThroughTheCompleteProtocolWindow(int rate)
+        {
+            using var fixture = new Fixture(rate: rate);
+            var id = new PredictedComponentID(new PredictedObjectID(901), 0);
+            var history = fixture.manager.GetVerifiedHistory<Value>(id, out bool created);
+            Assert.That(created, Is.True);
+            Assert.That(Backing(history), Is.LessThan(history.Capacity + 2));
+            int window = (int)fixture.manager.verifiedHistoryWindowTicks;
+            Assert.That(history.Capacity, Is.EqualTo(window));
+            for (int tick = 0; tick <= window; tick++)
+                history.Write((ulong)tick, new Value { number = tick });
+            for (int tick = 0; tick <= window; tick++)
+            {
+                Assert.That(history.Read((ulong)tick, out var value), Is.True);
+                Assert.That(value.number, Is.EqualTo(tick));
+            }
+            Assert.That(Backing(history), Is.EqualTo(window + 2));
+        }
+
+        [Test]
+        public void ServerRebindPrewarmsAFormerClientStoreWithoutLosingValues()
+        {
+            using var fixture = new Fixture();
+            var id = new PredictedComponentID(new PredictedObjectID(902), 0);
+            var history = fixture.manager.GetVerifiedHistory<Value>(id, out _);
+            for (ulong tick = 0; tick < 5; tick++) history.Write(tick, new Value { number = (int)tick });
+            fixture.BecomeHost();
+            var rebound = fixture.manager.GetVerifiedHistory<Value>(id, out bool created);
+            Assert.That(created, Is.False);
+            Assert.That(rebound, Is.SameAs(history));
+            Assert.That(Backing(history), Is.EqualTo((int)fixture.manager.verifiedHistoryWindowTicks + 2));
+            for (ulong tick = 0; tick < 5; tick++)
+            {
+                Assert.That(history.Read(tick, out var value), Is.True);
                 Assert.That(value.number, Is.EqualTo((int)tick));
             }
         }

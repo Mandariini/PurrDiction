@@ -226,8 +226,11 @@ namespace PurrNet.Prediction
             public readonly History<T> history;
 
             public VerifiedStateStore(int capacity)
+                : this(capacity, capacity) { }
+
+            public VerifiedStateStore(int capacity, int initialWindow)
             {
-                history = History<T>.ForTickWindow(capacity);
+                history = History<T>.ForTickWindow(capacity, initialWindow);
             }
 
             public override void Clear() => history.Clear();
@@ -278,8 +281,9 @@ namespace PurrNet.Prediction
 
         internal int verifiedStoreCount => _verifiedStores.Count;
 
-        // Both peers keep the complete input/lifecycle baseline window. Receiver stores
-        // advance on received server ticks, so delivery delay does not age their baselines.
+        // The protocol window remains the logical ceiling. Pure clients can discard
+        // states before an accepted baseline, and grow if that floor stops advancing.
+        // Receiver stores advance on server ticks; delivery delay does not age them.
         // Prediction, verified view sampling and deterministic replay use separate histories.
         private int verifiedStoreCapacity => checked((int)verifiedHistoryWindowTicks);
 
@@ -298,13 +302,16 @@ namespace PurrNet.Prediction
                 created = false;
                 var history = ((VerifiedStateStore<T>)store).history;
                 using (VerifiedHistoryRebindMarker.Auto())
-                    verifiedHistoryRestoredArrayPayloadBytesTotal += history.RestoreEagerBackingStorage();
+                    verifiedHistoryRestoredArrayPayloadBytesTotal += history.RestoreEagerBackingStorage(
+                        initialLocalHistoryWindowTicks + 2);
                 return history;
             }
 
             int capacity = verifiedStoreCapacity;
             var newStore = TakeRecycledVerifiedStore(typeHash, capacity) as VerifiedStateStore<T> ??
-                           new VerifiedStateStore<T>(capacity);
+                           new VerifiedStateStore<T>(capacity, initialLocalHistoryWindowTicks);
+            verifiedHistoryRestoredArrayPayloadBytesTotal += newStore.history.RestoreEagerBackingStorage(
+                initialLocalHistoryWindowTicks + 2);
             newStore.typeHash = typeHash;
             newStore.componentId = componentId;
             newStore.subKey = subKey;
@@ -457,7 +464,7 @@ namespace PurrNet.Prediction
         {
             var recycled = RecycledVerifiedStores(Hasher<T>.stableHash);
             if (recycled.Count < RecycledVerifiedStoresPerType)
-                recycled.Push(new VerifiedStateStore<T>(verifiedStoreCapacity));
+                recycled.Push(new VerifiedStateStore<T>(verifiedStoreCapacity, initialLocalHistoryWindowTicks));
         }
 
         private Stack<VerifiedStore> RecycledVerifiedStores(uint typeHash)
@@ -1310,7 +1317,7 @@ namespace PurrNet.Prediction
         internal ulong acceptedHistoryBaselineFloor => _verifiedHistoryBaselineFloor;
 
         // Local client timelines grow if ACKs stall or prediction runs further ahead.
-        // Verified network baselines keep their independently prewarmed protocol window.
+        // Clients also start receiver stores small; their full protocol ceiling is unchanged.
         internal int initialLocalHistoryWindowTicks => isServer
             ? checked((int)verifiedHistoryWindowTicks)
             : Math.Max(16, (tickRate + 3) / 4);

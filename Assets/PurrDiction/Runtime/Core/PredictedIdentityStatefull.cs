@@ -674,6 +674,9 @@ namespace PurrNet.Prediction
 
         private void PruneVerifiedHistory(ulong serverTick)
         {
+            ulong floor = GetAcceptedVerifiedHistoryRetentionFloor(serverTick);
+            if (floor > 0)
+                _verifiedHistory.PruneBeforeBaseline(floor);
             _verifiedHistory.PruneByTickWindow(serverTick);
             if (isEventHandler && serverTick > predictionManager.verifiedHistoryWindowTicks)
             {

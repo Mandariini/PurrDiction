@@ -131,6 +131,9 @@ namespace PurrNet.Prediction
             ulong? unchangedBaselineTick = null)
         {
             var store = verifiedHistory;
+            ulong floor = identity.GetAcceptedVerifiedHistoryRetentionFloor(serverTick);
+            if (floor > 0)
+                store.PruneBeforeBaseline(floor);
             store.PruneByTickWindow(serverTick);
             VerifiedStateStore<MODULE_STATE<TState>>.StoreReceived(store, serverTick, ref state, unchangedBaselineTick, true);
         }

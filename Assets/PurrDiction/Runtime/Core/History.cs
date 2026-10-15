@@ -170,11 +170,12 @@ namespace PurrNet.Prediction
         }
 
         // Restore capacity before Setup to avoid deferring growth into later simulation.
-        internal long RestoreEagerBackingStorage()
+        internal long RestoreEagerBackingStorage(int minimumCapacity = 0)
         {
-            if (m_maxCount <= 0 || m_ticks.Length >= m_eagerCapacity)
+            int capacity = Math.Min(m_limitToCut + 1, Math.Max(m_eagerCapacity, minimumCapacity));
+            if (m_maxCount <= 0 || m_ticks.Length >= capacity)
                 return 0;
-            ResizeBackingStorage(Math.Max(m_count, m_eagerCapacity));
+            ResizeBackingStorage(Math.Max(m_count, capacity));
             return BackingStoragePayloadBytes;
         }
 
