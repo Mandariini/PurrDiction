@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using PurrNet.Packing;
 
 namespace PurrNet.Prediction
@@ -117,6 +118,7 @@ namespace PurrNet.Prediction
             return (byte)source.ReadBits(8);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static byte PeekByte(in BitData data, int index, int length)
         {
             int position = (int)data.bitOrigin.value + index * 8;
