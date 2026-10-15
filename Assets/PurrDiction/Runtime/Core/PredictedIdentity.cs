@@ -399,9 +399,12 @@ namespace PurrNet.Prediction
             if (policy is PredictionPolicy.FullPrediction or PredictionPolicy.ServerRelay)
                 return policy;
 
+            if (policy == PredictionPolicy.PredictedIfOwned)
+                return IsOwner() ? PredictionPolicy.FullPrediction : PredictionPolicy.ServerRelay;
+
             return ResolveEffectivePolicy(
                 policy,
-                (policy is PredictionPolicy.PredictedIfOwned or PredictionPolicy.PredictedIfOwnedWithSoftFallback) && IsOwner(),
+                policy == PredictionPolicy.PredictedIfOwnedWithSoftFallback && IsOwner(),
                 !isDeterministic && supportsSoftCorrection);
         }
 
@@ -788,6 +791,7 @@ namespace PurrNet.Prediction
             }
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner()
         {
             if (predictionManager && predictionManager.isSpawned && owner == predictionManager.localPlayer)
@@ -795,16 +799,19 @@ namespace PurrNet.Prediction
             return false;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID player)
         {
             return owner == player;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID? player)
         {
             return owner == player;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID player, bool asServer)
         {
             if (owner.HasValue)
