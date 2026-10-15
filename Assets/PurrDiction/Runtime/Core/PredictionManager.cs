@@ -833,6 +833,7 @@ namespace PurrNet.Prediction
 
         internal uint spawnPass { get; private set; }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal PredictedComponentID? EnterSpawnCreator(PredictedComponentID creator)
         {
             var previous = spawnCreator;
@@ -840,6 +841,7 @@ namespace PurrNet.Prediction
             return previous;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal void ExitSpawnCreator(PredictedComponentID? previous) => spawnCreator = previous;
 
         public void UnregisterInstance(GameObject go, bool reset, bool destroyEvent)
