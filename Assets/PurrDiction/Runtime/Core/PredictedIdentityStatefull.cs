@@ -267,10 +267,11 @@ namespace PurrNet.Prediction
 
         private void WriteOwnedAuthoritativeState(ulong tick, FULL_STATE<STATE> state)
         {
-            PruneStateHistory(tick);
             // Persistent states can carry an earlier anchor through an unchanged tick.
             // Event batches still need an exact entry so their callbacks run at that tick.
-            if (!isEventHandler && LatestHistoryMatches(tick, ref state))
+            if (isEventHandler)
+                PruneStateHistory(tick);
+            else if (LatestHistoryMatches(tick, ref state))
             {
                 state.Dispose();
                 return;

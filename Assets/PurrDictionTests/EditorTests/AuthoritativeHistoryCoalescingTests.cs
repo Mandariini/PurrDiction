@@ -69,14 +69,16 @@ namespace PurrNet.Prediction.Tests.Editor
         public void EqualEventBatchesRetainAnExactEntryForEveryTick()
         {
             using var fixture = new Fixture(events: true);
-            for (ulong tick = 11; tick <= 13; tick++)
+            for (ulong tick = 11; tick <= 213; tick++)
             {
-                fixture.identity.ReadUnchangedState(tick, 10, tick);
+                fixture.identity.ReadUnchangedState(tick, tick - 1, tick);
                 Assert.That(fixture.predicted.Read(tick, out var batch), Is.True);
                 Assert.That(batch.state.spawnedPrefabs.isDisposed, Is.False);
                 Assert.That(fixture.identity.TryGetExactVerifiedState(tick, out _), Is.True);
             }
-            Assert.That(fixture.predicted.Count, Is.EqualTo(4));
+            Assert.That(fixture.predicted.Count, Is.EqualTo(201));
+            Assert.That(fixture.predicted.OldestTick, Is.EqualTo(13UL));
+            Assert.That(fixture.predicted.Read(12, out _), Is.False);
         }
 
         private static FULL_STATE<PredictedHierarchyState> State(uint nextInstanceId)
