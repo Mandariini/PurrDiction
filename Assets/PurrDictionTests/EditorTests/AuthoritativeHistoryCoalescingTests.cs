@@ -14,6 +14,61 @@ namespace PurrNet.Prediction.Tests.Editor
         public void RegisterPackers() => NetworkManager.CallAllRegisters();
 
         [Test]
+        public void PlayerRosterComparisonIgnoresStoragePadding()
+        {
+            var ids = new[] { new PlayerID(7, false), new PlayerID(7, false) };
+            SetPlayerPadding(ids);
+            ref var firstId = ref ids[0];
+            ref var secondId = ref ids[1];
+            using var firstBits = BitPackerPool.Get();
+            using var secondBits = BitPackerPool.Get();
+            Packer<PlayerID>.Write(firstBits, firstId);
+            Packer<PlayerID>.Write(secondBits, secondId);
+            Assert.That(new BitData(firstBits, 0, firstBits.positionInBits).Equals(
+                new BitData(secondBits, 0, secondBits.positionInBits)), Is.True);
+            Assert.That(Packer.AreEqualRef(ref firstId, ref secondId), Is.True,
+                "storage padding must not make identical player IDs look like changed wire state");
+
+            using var firstPlayers = DisposableList<PlayerID>.Create(1);
+            using var secondPlayers = DisposableList<PlayerID>.Create(1);
+            firstPlayers.Add(firstId);
+            secondPlayers.Add(secondId);
+            var first = new FULL_STATE<PredictedPlayersState>
+                { state = new PredictedPlayersState { players = firstPlayers } };
+            var second = new FULL_STATE<PredictedPlayersState>
+                { state = new PredictedPlayersState { players = secondPlayers } };
+            var history = History<FULL_STATE<PredictedPlayersState>>.ForTickWindow(32);
+            try
+            {
+                Assert.That(VerifiedStateStore<FULL_STATE<PredictedPlayersState>>.StoreLive(
+                    history, 1, ref first, true), Is.True);
+                Assert.That(VerifiedStateStore<FULL_STATE<PredictedPlayersState>>.StoreLive(
+                    history, 2, ref second, true), Is.False);
+                Assert.That(history.Count, Is.EqualTo(1));
+            }
+            finally { history.Clear(); }
+            Assert.That(firstPlayers.isDisposed || secondPlayers.isDisposed, Is.False);
+        }
+
+        private static void SetPlayerPadding(PlayerID[] values)
+        {
+            var pin = System.Runtime.InteropServices.GCHandle.Alloc(values,
+                System.Runtime.InteropServices.GCHandleType.Pinned);
+            try
+            {
+                var first = System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(values, 0);
+                var second = System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(values, 1);
+                int stride = checked((int)(second.ToInt64() - first.ToInt64()));
+                for (int i = sizeof(ulong) + sizeof(byte); i < stride; i++)
+                {
+                    System.Runtime.InteropServices.Marshal.WriteByte(first, i, 0x35);
+                    System.Runtime.InteropServices.Marshal.WriteByte(second, i, 0xa7);
+                }
+            }
+            finally { pin.Free(); }
+        }
+
+        [Test]
         public void EqualPersistentStateKeepsItsAnchorAndDisposesTheReceivedCopy()
         {
             using var fixture = new Fixture();

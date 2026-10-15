@@ -5,6 +5,7 @@ namespace PurrNet.Prediction
 {
     // History snapshots repeat ownership on every entry. Store the nullable ID without
     // Nullable<PlayerID>'s padding while retaining the public metadata and its wire codec.
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)]
     internal struct CompactIdentityState : IPackedAuto
     {
         private ulong _ownerId;
