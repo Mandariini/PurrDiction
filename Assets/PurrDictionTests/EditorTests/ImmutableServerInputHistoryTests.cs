@@ -56,6 +56,31 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void GrowingInputRosterSizesNewSlotsWithoutDoublingOrChangingEarlierTicks()
+        {
+            using var fixture = new Fixture();
+            var inputs = new List<ImmutableHistoryInputProbe>();
+            for (uint id = 810; id < 814; id++)
+            {
+                var input = fixture.Add(id);
+                inputs.Add(input);
+                fixture.Seed(input, 10, (int)id);
+            }
+            fixture.Capture(10);
+            var before = fixture.Snapshot(10);
+            inputs.Add(fixture.Add(814));
+            foreach (var input in inputs)
+                fixture.Seed(input, 11, (int)input.id.objectId.instanceId.value);
+            fixture.Capture(11);
+
+            var entries = Get<List<PredictionManager.CachedInputEntry>>(fixture.Block(11), "entries");
+            Assert.That(entries.Count, Is.EqualTo(5));
+            Assert.That(entries.Capacity, Is.EqualTo(5));
+            Assert.That(fixture.Snapshot(10), Is.EqualTo(before));
+            Assert.That(entries[4].id.objectId, Is.EqualTo(new PredictedObjectID(814)));
+        }
+
+        [Test]
         public void RemovedIdentityRetainsOriginalInputBytesWithoutObservers()
         {
             using var fixture = new Fixture();

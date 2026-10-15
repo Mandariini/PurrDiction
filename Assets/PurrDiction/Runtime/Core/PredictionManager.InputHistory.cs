@@ -87,9 +87,9 @@ namespace PurrNet.Prediction
             // Size new buffers from the adjacent snapshot, then retain them for reuse.
             scratch.packer ??= new BitPacker(hasPrevious ? Math.Max(32, previous.packer.positionInBytes + 8) : 32);
             scratch.deltas ??= new BitPacker(hasPrevious ? Math.Max(32, previous.deltas.positionInBytes + 8) : 32);
-            // Most captures have the same input roster. An exact initial capacity avoids
-            // doubling just past a power of two; existing buffers still grow normally.
-            scratch.entries ??= new List<CachedInputEntry>(hasPrevious ? previous.entries.Count : 0);
+            // Use the live roster count: spawning one input after the preceding tick
+            // must not double every newly allocated history slot's backing array.
+            scratch.entries ??= new List<CachedInputEntry>(_inputHistorySystems);
             scratch.captured = false;
             scratch.packer.ResetPositionAndMode(false);
             scratch.deltas.ResetPositionAndMode(false);
