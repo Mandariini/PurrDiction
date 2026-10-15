@@ -55,6 +55,52 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(generated.RestoredBy(owner), Is.False);
         }
 
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(7)]
+        public void IdentityRetainsCompactIndependentUploadedBits(int prefixBits)
+        {
+            using var fixture = new Fixture();
+            var identity = fixture.Add(815);
+            using var source = BitPackerPool.Get();
+            if (prefixBits > 0) source.WriteBits(5, (byte)prefixBits);
+            source.WriteBits(0x1abcd, 17);
+            var scratch = BitPackerPool.Get();
+            scratch.EnsureBitsExist(65536 * 8);
+            scratch.Dispose();
+            identity.RecordUploadedInputBits(source, prefixBits);
+            identity.ConsumeUploadedInputBits(10, true);
+            Assert.That(identity.TryGetUploadedInputBits(10, out var uploaded), Is.True);
+            Assert.That(uploaded.Equals(new BitData(source, prefixBits, 17)), Is.True);
+            var retained = (BitPacker)typeof(PredictedIdentity).GetField("_uploadedInputBits", Members).GetValue(identity);
+            Assert.That(retained.buffer.Length, Is.LessThan(64));
+            Assert.That(retained, Is.Not.SameAs(scratch));
+            source.ResetPositionAndMode(false);
+            source.WriteBits(0, 32);
+            retained.ResetPositionAndMode(true);
+            Assert.That(retained.ReadBits(17), Is.EqualTo(0x1abcdUL));
+            identity.ConsumeUploadedInputBits(11, false);
+            Assert.That(identity.TryGetUploadedInputBits(11, out _), Is.False);
+        }
+
+        [Test]
+        public void IdentityUploadedBufferGrowsAndIsReusedForLargerInputs()
+        {
+            using var fixture = new Fixture();
+            var identity = fixture.Add(816);
+            using var source = BitPackerPool.Get();
+            source.WriteBits(1, 1);
+            identity.RecordUploadedInputBits(source, 0);
+            var retained = typeof(PredictedIdentity).GetField("_uploadedInputBits", Members).GetValue(identity);
+            source.ResetPositionAndMode(false);
+            for (int i = 0; i < 32; i++) source.WriteBits((ulong)i, 32);
+            identity.RecordUploadedInputBits(source, 0);
+            identity.ConsumeUploadedInputBits(12, true);
+            Assert.That(typeof(PredictedIdentity).GetField("_uploadedInputBits", Members).GetValue(identity), Is.SameAs(retained));
+            Assert.That(identity.TryGetUploadedInputBits(12, out var uploaded), Is.True);
+            Assert.That(uploaded.Equals(new BitData(source, 0, source.positionInBits)), Is.True);
+        }
+
         [Test]
         public void GrowingInputRosterSizesNewSlotsWithoutDoublingOrChangingEarlierTicks()
         {

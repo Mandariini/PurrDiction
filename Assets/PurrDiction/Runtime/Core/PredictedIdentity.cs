@@ -910,7 +910,9 @@ namespace PurrNet.Prediction
 
         internal void RecordUploadedInputBits(BitPacker packer, int origin)
         {
-            _uploadedInputBits ??= BitPackerPool.Get();
+            // This identity retains one input, not a whole packet. Keep its storage out
+            // of the shared scratch pool, whose buffers can be much larger than the input.
+            _uploadedInputBits ??= new BitPacker(((packer.positionInBits - origin + 7) >> 3) + 8);
             _uploadedInputBits.ResetPositionAndMode(false);
             _uploadedInputBits.WriteBitDataWithoutConsumingIt(new BitData(packer, origin, packer.positionInBits - origin));
             _uploadedInputPending = true;
@@ -934,7 +936,6 @@ namespace PurrNet.Prediction
 
         private void DisposeUploadedInputBits()
         {
-            _uploadedInputBits?.Dispose();
             _uploadedInputBits = null;
             _uploadedInputPending = false;
             _hasUploadedInputBits = false;
