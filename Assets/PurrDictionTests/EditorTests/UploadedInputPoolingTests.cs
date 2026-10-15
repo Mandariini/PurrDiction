@@ -14,6 +14,38 @@ namespace PurrNet.Prediction.Tests.Editor
     public sealed class UploadedInputPoolingTests
     {
         [Test]
+        public void UploadStorageDoesNotBorrowOversizedPacketScratch()
+        {
+            using var fixture = new Fixture();
+            var scratch = BitPackerPool.Get();
+            scratch.EnsureBitsExist(65536 * 8);
+            scratch.Dispose();
+            fixture.manager.RecordUploadedInputs(10, fixture.bits, fixture.spans);
+            var entry = fixture.Entry(10);
+            Assert.That(entry.bits.buffer.Length, Is.LessThan(64));
+            Assert.That(entry.bits.buffer[0], Is.EqualTo(7));
+            Assert.That(entry.bits, Is.Not.SameAs(scratch));
+        }
+
+        [Test]
+        public void ExpiredUploadBufferIsReusedWithoutChangingLiveUploads()
+        {
+            using var fixture = new Fixture();
+            fixture.manager.RecordUploadedInputs(1, fixture.bits, fixture.spans);
+            var first = fixture.Entry(1).bits;
+            typeof(PredictionManager).GetField("_verifiedServerTick", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(fixture.manager, 1000UL);
+            fixture.manager.RecordUploadedInputs(1000, fixture.bits, fixture.spans);
+            var live = fixture.Entry(1000).bits;
+            fixture.bits.ResetPositionAndMode(false);
+            fixture.bits.WriteBits(99, 8);
+            fixture.manager.RecordUploadedInputs(1001, fixture.bits, fixture.spans);
+            Assert.That(fixture.Entry(1001).bits, Is.SameAs(first));
+            Assert.That(fixture.Entry(1001).bits.buffer[0], Is.EqualTo(99));
+            Assert.That(live.buffer[0], Is.EqualTo(7));
+        }
+
+        [Test]
         public void UploadKeepsAnIndependentCopyAndTheFirstUploadWins()
         {
             using var fixture = new Fixture();
