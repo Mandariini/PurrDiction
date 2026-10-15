@@ -80,6 +80,51 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(entries[4].id.objectId, Is.EqualTo(new PredictedObjectID(814)));
         }
 
+        [TestCase(20, 32)]
+        [TestCase(20, 128)]
+        [TestCase(60, 32)]
+        [TestCase(60, 128)]
+        public void GrowingRosterReusesExpiredEntryTablesWithoutDoublingOrChangingRetainedTicks(int rate, int count)
+        {
+            using var fixture = new Fixture(rate);
+            var inputs = new List<ImmutableHistoryInputProbe>();
+            for (int i = 0; i < count; i++)
+                inputs.Add(fixture.Add((uint)(1000 + i)));
+            fixture.CaptureSeeded(10, inputs);
+            int window = fixture.Capacity;
+            ulong retainedTick = 10 + (ulong)window;
+            for (ulong tick = 11; tick <= retainedTick; tick++)
+                fixture.CaptureSeeded(tick, inputs);
+            var retained = fixture.Snapshot(retainedTick);
+            var scratch = Get<object>(fixture.manager, "_inputBlockScratch");
+            var reused = Get<List<PredictionManager.CachedInputEntry>>(scratch, "entries");
+            int oldCapacity = reused.Capacity;
+            Assert.That(oldCapacity, Is.EqualTo(count));
+
+            inputs.Add(fixture.Add((uint)(1000 + count)));
+            ulong changedTick = retainedTick + 1;
+            fixture.CaptureSeeded(changedTick, inputs);
+            var block = fixture.Block(changedTick);
+            var entries = Get<List<PredictionManager.CachedInputEntry>>(block, "entries");
+            Assert.That(entries, Is.SameAs(reused));
+            Assert.That(entries.Count, Is.EqualTo(count + 1));
+            Assert.That(entries.Capacity, Is.InRange(count + 1, oldCapacity * 2 - 1));
+            Assert.That(fixture.Snapshot(retainedTick), Is.EqualTo(retained));
+            var bytes = Get<BitPacker>(block, "packer");
+            using var reader = BitPackerPool.Get();
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var entry = entries[i];
+                Assert.That(entry.id, Is.EqualTo(inputs[i].id));
+                reader.ResetPositionAndMode(false);
+                reader.WriteBitDataWithoutConsumingIt(new BitData(bytes, entry.bitOrigin, entry.bitLength));
+                reader.ResetPositionAndMode(true);
+                Assert.That(Packer<bool>.Read(reader), Is.True);
+                Assert.That(Packer<ImmutableHistoryInput>.Read(reader).value, Is.EqualTo((int)changedTick + i));
+                Assert.That(reader.positionInBits, Is.EqualTo(entry.bitLength));
+            }
+        }
+
         [Test]
         public void RemovedIdentityRetainsOriginalInputBytesWithoutObservers()
         {
@@ -296,6 +341,12 @@ namespace PurrNet.Prediction.Tests.Editor
             }
 
             internal void Capture(ulong tick) => Invoke(manager, "CaptureInputHistory", tick);
+            internal void CaptureSeeded(ulong tick, List<ImmutableHistoryInputProbe> inputs)
+            {
+                for (int i = 0; i < inputs.Count; i++)
+                    Seed(inputs[i], tick, (int)tick + i);
+                Capture(tick);
+            }
             internal object Block(ulong tick) => Invoke(manager, "GetInputBlockForTick", tick);
             internal int Capacity => ((Array)Get<object>(manager, "_inputBlockCache")).Length;
             internal int EntryCount(ulong tick) => Get<IList>(Block(tick), "entries").Count;

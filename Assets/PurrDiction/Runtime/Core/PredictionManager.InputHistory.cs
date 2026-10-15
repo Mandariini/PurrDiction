@@ -90,6 +90,11 @@ namespace PurrNet.Prediction
             // Use the live roster count: spawning one input after the preceding tick
             // must not double every newly allocated history slot's backing array.
             scratch.entries ??= new List<CachedInputEntry>(_inputHistorySystems);
+            // Reused slots can predate roster growth too. Reserve before adding;
+            // one extra input must not double every retained slot's entry table.
+            if (scratch.entries.Capacity < _inputHistorySystems)
+                scratch.entries.Capacity = Math.Max(_inputHistorySystems,
+                    Math.Max(4, checked(scratch.entries.Capacity + scratch.entries.Capacity / 4)));
             scratch.captured = false;
             scratch.packer.ResetPositionAndMode(false);
             scratch.deltas.ResetPositionAndMode(false);
