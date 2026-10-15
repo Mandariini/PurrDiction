@@ -23,6 +23,7 @@ namespace PurrNet.Prediction
 
         bool m_contiguous = true;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         int Phys(int index)
         {
             int phys = m_head + index;
@@ -57,14 +58,22 @@ namespace PurrNet.Prediction
         /// <summary>
         /// Number of entries
         /// </summary>
-        public int Count => m_count;
+        public int Count
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => m_count;
+        }
 
         public int Capacity => m_maxCount;
 
         /// <summary>
         /// Value of the most recent received tick
         /// </summary>
-        public ulong MostRecentTick => m_count == 0 ? 0 : m_ticks[Phys(m_count - 1)];
+        public ulong MostRecentTick
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => m_count == 0 ? 0 : m_ticks[Phys(m_count - 1)];
+        }
 
         // Read only the newest entry, and reject it if it is ahead of the caller.
         // Keep the ordinary value copy so equality callbacks cannot change history slots.
@@ -87,9 +96,14 @@ namespace PurrNet.Prediction
         /// <summary>
         /// Oldest tick we have in the set (this will vary as older entries are purged)
         /// </summary>
-        public ulong OldestTick => m_count == 0 ? 0 : m_ticks[m_head];
+        public ulong OldestTick
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => m_count == 0 ? 0 : m_ticks[m_head];
+        }
 
         // Availability checks need neither a search nor a copy of the retained value.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal bool HasAtOrBefore(ulong tick) => m_count > 0 && m_ticks[m_head] <= tick;
 
         /// <summary>
