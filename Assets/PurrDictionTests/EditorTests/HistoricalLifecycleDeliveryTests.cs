@@ -110,6 +110,58 @@ namespace PurrNet.Prediction.Tests.Editor
             return (PredictedHierarchyState)entry.GetType().GetField("topology").GetValue(entry);
         }
 
+        private static T CapturedCollection<T>(PredictionManager world, ulong tick, string name)
+        {
+            var entry = Invoke(world, "GetLifecycleTick", tick);
+            Assert.That(entry, Is.Not.Null);
+            return (T)entry.GetType().GetField(name).GetValue(entry);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void StableLifecycleCollectionsShareStorageAcrossChurnAndExpiry(bool parented)
+        {
+            using var f = new Fixture(false, parented, world => world.CreateServerIdentity(100));
+            var original = CapturedCollection<HashSet<PredictedComponentID>>(f.server, Baseline, "roster");
+            var originalParents = CapturedCollection<Dictionary<PredictedComponentID, PredictedComponentID?>>(
+                f.server, Baseline, "parents");
+            var originalIds = new HashSet<PredictedComponentID>(original);
+            ulong tick = Baseline;
+            for (int i = 0; i < 4; i++)
+            {
+                using var packet = f.StepServer(++tick);
+                Assert.That(CapturedCollection<object>(f.server, tick, "roster"), Is.SameAs(original));
+                Assert.That(CapturedCollection<object>(f.server, tick, "parents"), Is.SameAs(originalParents));
+            }
+            var born = f.CreateServerIdentity(200);
+            using (var packet = f.StepServer(++tick)) { }
+            var expanded = CapturedCollection<HashSet<PredictedComponentID>>(f.server, tick, "roster");
+            Assert.That(expanded, Is.Not.SameAs(original));
+            Assert.That(expanded.Count, Is.GreaterThan(original.Count));
+            Assert.That(original, Is.EquivalentTo(originalIds));
+            f.server.hierarchy.Delete(born);
+            using (var packet = f.StepServer(++tick)) { }
+            using (var packet = f.StepServer(++tick)) { }
+            var current = CapturedCollection<HashSet<PredictedComponentID>>(f.server, tick, "roster");
+            var currentParents = CapturedCollection<Dictionary<PredictedComponentID, PredictedComponentID?>>(
+                f.server, tick, "parents");
+            Assert.That(current, Is.EquivalentTo(originalIds));
+            ulong end = tick + f.server.verifiedHistoryWindowTicks * 3 + 1;
+            while (tick < end)
+            {
+                using var packet = f.StepServer(++tick);
+                Assert.That(CapturedCollection<object>(f.server, tick, "roster"), Is.SameAs(current));
+                Assert.That(CapturedCollection<object>(f.server, tick, "parents"), Is.SameAs(currentParents));
+                Assert.That(current, Is.EquivalentTo(originalIds), "expired borrowers must not clear shared collections");
+            }
+            Assert.That(Get<Stack<HashSet<PredictedComponentID>>>(f.server, "_lifecycleRosterBuilders").Count,
+                Is.InRange(1, checked((int)f.server.verifiedHistoryWindowTicks + 1)));
+            Invoke(f.server, "DisposeLifecycleHistory");
+            Assert.That(Get<Stack<HashSet<PredictedComponentID>>>(f.server, "_lifecycleRosterBuilders"), Is.Empty);
+            Assert.That(Get<Stack<Dictionary<PredictedComponentID, PredictedComponentID?>>>(
+                f.server, "_lifecycleParentBuilders"), Is.Empty);
+        }
+
         [Test]
         public void StableTopologySharesStorageUntilTheLastBorrowedTickExpires()
         {
@@ -151,16 +203,24 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             using var f = new Fixture(false, beforeBaseline: world => world.CreateServerIdentity(100));
             var original = CapturedTopology(f.server, Baseline);
+            var originalRoster = CapturedCollection<HashSet<PredictedComponentID>>(f.server, Baseline, "roster");
+            var originalIds = new HashSet<PredictedComponentID>(originalRoster);
+            var originalParents = CapturedCollection<object>(f.server, Baseline, "parents");
             var failure = f.server.RegisterSystem<FailingLifecycleGlobal>();
             failure.fail = true;
             Set(f.server, "<localTick>k__BackingField", Baseline + 1);
             Assert.Throws<InvalidOperationException>(() => Invoke(f.server, "CaptureLifecycleHistory", Baseline + 1));
             Assert.That(original.spawnedPrefabs.isDisposed, Is.False);
             Assert.That(original.spawnedPrefabs.Count, Is.EqualTo(1));
+            Assert.That(originalRoster, Is.EquivalentTo(originalIds));
+            Assert.That(CapturedCollection<object>(f.server, Baseline, "parents"), Is.SameAs(originalParents));
             failure.fail = false;
             Invoke(f.server, "CaptureLifecycleHistory", Baseline + 1);
             Assert.That(CapturedTopology(f.server, Baseline + 1).spawnedPrefabs.list,
                 Is.SameAs(original.spawnedPrefabs.list));
+            Assert.That(originalRoster, Is.EquivalentTo(originalIds));
+            Assert.That(CapturedCollection<HashSet<PredictedComponentID>>(f.server, Baseline + 1, "roster"),
+                Does.Contain(failure.id));
         }
 
         [TestCase(false)]
@@ -621,6 +681,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 secondParent = world.CreateServerIdentity(2000);
                 child = world.CreateServerIdentity(700, firstParent);
             });
+            var originalRoster = CapturedCollection<object>(f.server, Baseline, "roster");
+            var originalParents = CapturedCollection<Dictionary<PredictedComponentID, PredictedComponentID?>>(
+                f.server, Baseline, "parents");
             for (ulong tick = 11; tick <= FinalTick; tick++)
             {
                 if (tick == 13)
@@ -638,6 +701,13 @@ namespace PurrNet.Prediction.Tests.Editor
                         Is.EqualTo(new PredictedComponentID(secondParent, 0)),
                         "the server must capture the new parent before writing the lost frame") : null);
                 Assert.That(packet.full, Is.False);
+                Assert.That(CapturedCollection<object>(f.server, tick, "roster"), Is.SameAs(originalRoster));
+                var parents = CapturedCollection<Dictionary<PredictedComponentID, PredictedComponentID?>>(
+                    f.server, tick, "parents");
+                var parentId = f.ServerProbe(child).GetComponent<PredictedParent>().id;
+                Assert.That(originalParents[parentId], Is.EqualTo(new PredictedComponentID(firstParent, 0)));
+                Assert.That(parents[parentId], Is.EqualTo(new PredictedComponentID(tick < 13 ? firstParent : secondParent, 0)));
+                Assert.That(parents, tick < 13 ? Is.SameAs(originalParents) : Is.Not.SameAs(originalParents));
                 if (tick == FinalTick)
                     f.Deliver(packet);
             }

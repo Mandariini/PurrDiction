@@ -13,8 +13,10 @@ namespace PurrNet.Prediction
             public bool ownsTopology;
             public BitPacker topologyDelta;
             public bool hasPreviousTopology;
-            public readonly HashSet<PredictedComponentID> roster = new();
-            public readonly Dictionary<PredictedComponentID, PredictedComponentID?> parents = new();
+            public HashSet<PredictedComponentID> roster;
+            public Dictionary<PredictedComponentID, PredictedComponentID?> parents;
+            public bool ownsRoster;
+            public bool ownsParents;
             public readonly List<LifecycleEntry> entrants = new();
             public BitPacker payload;
 
@@ -22,6 +24,10 @@ namespace PurrNet.Prediction
             {
                 if (ownsTopology)
                     topology.Dispose();
+                ownsTopology = false;
+                roster = null;
+                parents = null;
+                ownsRoster = ownsParents = false;
                 topologyDelta?.Dispose();
                 payload?.Dispose();
                 payload = null;
@@ -39,6 +45,10 @@ namespace PurrNet.Prediction
 
         private LifecycleTick[] _lifecycleHistory;
         private LifecycleTick _lifecycleCaptureScratch;
+        // Stable scenes need only a shared snapshot and a builder. Busy scenes
+        // retain their high-water storage for reuse, bounded by the history window.
+        private readonly Stack<HashSet<PredictedComponentID>> _lifecycleRosterBuilders = new();
+        private readonly Stack<Dictionary<PredictedComponentID, PredictedComponentID?>> _lifecycleParentBuilders = new();
         private ulong _latestLifecycleTick;
         private readonly Dictionary<PredictedObjectID, InstanceDetails> _previousLifecyclePieces = new(PredictionIdComparers.Objects);
         private readonly HashSet<PredictedObjectID> _changedLifecyclePieces = new();
@@ -65,7 +75,7 @@ namespace PurrNet.Prediction
                     _latestLifecycleTick - entry.tick <= verifiedHistoryWindowTicks)
                     _lifecycleHistory[(int)(entry.tick % (ulong)capacity)] = entry;
                 else
-                    entry.Dispose();
+                    ReleaseLifecycleTick(entry);
             }
         }
 
@@ -110,8 +120,22 @@ namespace PurrNet.Prediction
             // Borrow while preparing: a failed entrant writer must leave the old owner intact.
             captured.ownsTopology = !sharesPreviousTopology;
             captured.tick = tick;
+            if (!captured.ownsRoster)
+            {
+                captured.roster = _lifecycleRosterBuilders.Count > 0
+                    ? _lifecycleRosterBuilders.Pop() : new HashSet<PredictedComponentID>();
+                captured.ownsRoster = true;
+            }
+            if (!captured.ownsParents)
+            {
+                captured.parents = _lifecycleParentBuilders.Count > 0
+                    ? _lifecycleParentBuilders.Pop() : new Dictionary<PredictedComponentID, PredictedComponentID?>();
+                captured.ownsParents = true;
+            }
             captured.roster.Clear();
             captured.parents.Clear();
+            bool sameRoster = previous != null;
+            bool sameParents = previous != null;
             captured.entrants.Clear();
             captured.payload?.ResetPositionAndMode(false);
             try
@@ -143,16 +167,19 @@ namespace PurrNet.Prediction
                     if (system == hierarchy || system.isEventHandler)
                         continue;
                     captured.roster.Add(system.id);
-                    bool lifecycleChanged = previous == null || !previous.roster.Contains(system.id) ||
-                                changed.Contains(system.id.objectId);
+                    bool existed = previous != null && previous.roster.Contains(system.id);
+                    sameRoster &= existed;
+                    bool lifecycleChanged = !existed || changed.Contains(system.id.objectId);
                     // InstanceDetails stores authored attachments; PredictedParent stores runtime parenting.
                     if (system is PredictedParent parent)
                     {
                         parent.GetLatestUnityState();
                         var link = parent.currentState.parent;
                         captured.parents.Add(system.id, link);
-                        lifecycleChanged |= previous == null || !previous.parents.TryGetValue(system.id, out var oldLink) ||
-                                !Nullable.Equals(oldLink, link);
+                        bool sameLink = previous != null && previous.parents.TryGetValue(system.id, out var oldLink) &&
+                                Nullable.Equals(oldLink, link);
+                        sameParents &= sameLink;
+                        lifecycleChanged |= !sameLink;
                     }
                     bool entered = false;
                     if (!lifecycleChanged)
@@ -182,11 +209,25 @@ namespace PurrNet.Prediction
             }
             catch
             {
-                captured.Dispose();
+                ReleaseLifecycleTick(captured);
                 throw;
             }
 
             int index = (int)(tick % (ulong)_lifecycleHistory.Length);
+            // Publish sharing only after all user state writers succeeded. As with
+            // topology, the newest tick outlives every earlier borrower.
+            if (sameRoster && captured.roster.Count == previous.roster.Count)
+            {
+                CacheLifecycleRoster(captured.roster);
+                captured.roster = previous.roster;
+                previous.ownsRoster = false;
+            }
+            if (sameParents && captured.parents.Count == previous.parents.Count)
+            {
+                CacheLifecycleParents(captured.parents);
+                captured.parents = previous.parents;
+                previous.ownsParents = false;
+            }
             if (sharesPreviousTopology)
             {
                 // Capture and expiry are chronological. The newest user outlives every
@@ -203,10 +244,33 @@ namespace PurrNet.Prediction
                 var old = _lifecycleHistory[i];
                 if (old != null && tick - old.tick > verifiedHistoryWindowTicks)
                 {
-                    old.Dispose();
+                    ReleaseLifecycleTick(old);
                     _lifecycleHistory[i] = null;
                 }
             }
+        }
+
+        private void CacheLifecycleRoster(HashSet<PredictedComponentID> roster)
+        {
+            roster.Clear();
+            if (_lifecycleRosterBuilders.Count < (_lifecycleHistory?.Length ?? 1))
+                _lifecycleRosterBuilders.Push(roster);
+        }
+
+        private void CacheLifecycleParents(Dictionary<PredictedComponentID, PredictedComponentID?> parents)
+        {
+            parents.Clear();
+            if (_lifecycleParentBuilders.Count < (_lifecycleHistory?.Length ?? 1))
+                _lifecycleParentBuilders.Push(parents);
+        }
+
+        private void ReleaseLifecycleTick(LifecycleTick entry)
+        {
+            var roster = entry.ownsRoster ? entry.roster : null;
+            var parents = entry.ownsParents ? entry.parents : null;
+            entry.Dispose();
+            if (roster != null) CacheLifecycleRoster(roster);
+            if (parents != null) CacheLifecycleParents(parents);
         }
 
         private static bool SameTopologySnapshot(in PredictedHierarchyState a, in PredictedHierarchyState b)
@@ -252,6 +316,8 @@ namespace PurrNet.Prediction
             _lifecycleHistory = null;
             _lifecycleCaptureScratch?.Dispose();
             _lifecycleCaptureScratch = null;
+            _lifecycleRosterBuilders.Clear();
+            _lifecycleParentBuilders.Clear();
             _latestLifecycleTick = 0;
             _previousLifecyclePieces.Clear();
             _changedLifecyclePieces.Clear();
@@ -377,7 +443,7 @@ namespace PurrNet.Prediction
                     tick.topology = default;
                     tick.ownsTopology = false;
                     tick.roster.Clear();
-                    tick.parents.Clear();
+                    tick.parents?.Clear();
                     tick.entrants.Clear();
                     tick.payload?.ResetPositionAndMode(false);
                     owner._lifecycleReplayPool.Push(tick);
@@ -415,6 +481,7 @@ namespace PurrNet.Prediction
                 for (uint i = 0; i < count; i++)
                 {
                     var batch = _lifecycleReplayPool.Count > 0 ? _lifecycleReplayPool.Pop() : new LifecycleTick();
+                    batch.roster ??= new HashSet<PredictedComponentID>();
                     batch.tick = baselineTick + 1 + i;
                     result.ticks.Add(batch);
                     bool repeat = Packer<bool>.Read(frame);
