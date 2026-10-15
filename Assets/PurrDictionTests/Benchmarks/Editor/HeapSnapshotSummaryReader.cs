@@ -29,6 +29,14 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             public Row[] types;
             public ArrayOwner[] arrayOwners;
             public HistoryEntries[] historyEntries;
+            public NativeMemoryLabel[] nativeMemoryLabels;
+            public long nativeMemoryLabelBytes;
+        }
+
+        [Serializable] private sealed class NativeMemoryLabel
+        {
+            public string name;
+            public long bytes;
         }
 
         [Serializable] private sealed class HistoryEntries
@@ -115,6 +123,11 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     report.arrayOwners = ReadArrayOwners(snapshot, data, names);
                 if (Environment.GetCommandLineArgs().Contains("-heapHistoryEntries"))
                     report.historyEntries = ReadHistoryEntries(snapshot, data, names);
+                if (Environment.GetCommandLineArgs().Contains("-heapNativeLabels"))
+                {
+                    report.nativeMemoryLabels = ReadNativeMemoryLabels(snapshot);
+                    report.nativeMemoryLabelBytes = report.nativeMemoryLabels.Sum(label => label.bytes);
+                }
                 Directory.CreateDirectory(Path.GetDirectoryName(output));
                 File.WriteAllText(output, JsonUtility.ToJson(report, true));
                 Debug.Log($"HEAP_SUMMARY objects={report.objects}, bytes={report.managedObjectBytes}, types={report.types.Length}");
@@ -122,6 +135,24 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             catch (Exception error) { Debug.LogException(error); exitCode = 1; }
             finally { snapshot?.Dispose(); reader?.Dispose(); }
             EditorApplication.Exit(exitCode);
+        }
+
+        private static NativeMemoryLabel[] ReadNativeMemoryLabels(object snapshot)
+        {
+            // Unity allocation totals are not resident pages and must not be labeled RSS.
+            if (!(bool)Get(snapshot, "HasMemoryLabelSizesAndGCHeapTypes"))
+                return Array.Empty<NativeMemoryLabel>();
+            var cache = Get(snapshot, "NativeMemoryLabels");
+            var names = (string[])Get(cache, "MemoryLabelName");
+            if (names.Distinct(StringComparer.Ordinal).Count() != names.Length)
+                throw new InvalidDataException("Native memory labels are ambiguous.");
+            var getSize = cache.GetType().GetMethod("GetLabelSize", Members, null,
+                new[] { typeof(string) }, null);
+            return names.Select(name => new NativeMemoryLabel
+            {
+                name = name,
+                bytes = checked((long)(ulong)getSize.Invoke(cache, new object[] { name }))
+            }).OrderByDescending(label => label.bytes).ToArray();
         }
 
         private static HistoryEntries[] ReadHistoryEntries(object snapshot, object data, string[] names)
