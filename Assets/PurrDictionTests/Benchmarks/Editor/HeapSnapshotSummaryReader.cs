@@ -13,7 +13,14 @@ namespace PurrNet.Prediction.Benchmarks.Editor
     // Memory Profiler package's internal assembly references and player builds.
     public static class HeapSnapshotSummaryReader
     {
-        [Serializable] private sealed class Row { public string type; public long count, bytes; }
+        [Serializable] private sealed class SizeBucket { public long objectBytes, count, bytes; }
+        [Serializable] private sealed class Row
+        {
+            public string type;
+            public long count, bytes;
+            public SizeBucket[] arraySizes;
+            [NonSerialized] public Dictionary<long, SizeBucket> sizeCounts;
+        }
         [Serializable] private sealed class Report
         {
             public string snapshot;
@@ -44,6 +51,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         public static void RunFromCommandLine()
         {
             IDisposable reader = null, snapshot = null;
+            int exitCode = 0;
             try
             {
                 string input = Arg("-heapSnapshot");
@@ -69,16 +77,26 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     if (index < 0 || index >= names.Length || size <= 0) continue;
                     if (!rows.TryGetValue(index, out var row)) rows.Add(index, row = new Row { type = names[index] });
                     row.count++; row.bytes += size;
+                    if (row.type.EndsWith("[]", StringComparison.Ordinal))
+                    {
+                        row.sizeCounts ??= new Dictionary<long, SizeBucket>();
+                        if (!row.sizeCounts.TryGetValue(size, out var bucket))
+                            row.sizeCounts.Add(size, bucket = new SizeBucket { objectBytes = size });
+                        bucket.count++; bucket.bytes += size;
+                    }
                     report.objects++; report.managedObjectBytes += size;
                 }
                 report.types = rows.Values.OrderByDescending(row => row.bytes).ToArray();
+                foreach (var row in report.types)
+                    if (row.sizeCounts != null)
+                        row.arraySizes = row.sizeCounts.Values.OrderByDescending(bucket => bucket.bytes).ToArray();
                 Directory.CreateDirectory(Path.GetDirectoryName(output));
                 File.WriteAllText(output, JsonUtility.ToJson(report, true));
                 Debug.Log($"HEAP_SUMMARY objects={report.objects}, bytes={report.managedObjectBytes}, types={report.types.Length}");
-                EditorApplication.Exit(0);
             }
-            catch (Exception error) { Debug.LogException(error); EditorApplication.Exit(1); }
+            catch (Exception error) { Debug.LogException(error); exitCode = 1; }
             finally { snapshot?.Dispose(); reader?.Dispose(); }
+            EditorApplication.Exit(exitCode);
         }
     }
 }
