@@ -4,7 +4,6 @@ using System.Reflection;
 using NUnit.Framework;
 using PurrNet.Modules;
 using PurrNet.Packing;
-using PurrNet.Prediction.Profiler;
 using PurrNet.Pooling;
 using PurrNet.Utils;
 using UnityEngine;
@@ -173,75 +172,6 @@ namespace PurrNet.Prediction.Tests.Editor
             }
             finally
             {
-                if (identity)
-                    GetField<StateDeltaCache<FULL_STATE<OmittedState>>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache")?.Dispose();
-                Object.DestroyImmediate(identityObject);
-                Object.DestroyImmediate(managerObject);
-            }
-        }
-
-        [Test]
-        public void CachedAddressedRecordsMatchFreshFramesAndRejectMutatedBaselinesOrModules()
-        {
-            bool previousCapture = TickBandwidthProfiler.collectWithoutSubscribers;
-            TickBandwidthProfiler.MarkEndOfTick();
-            TickBandwidthProfiler.collectWithoutSubscribers = true;
-            var managerObject = new GameObject("Addressed reuse manager");
-            var identityObject = new GameObject("Addressed reuse identity");
-            CachedOmittedStateIdentity identity = null;
-            try
-            {
-                var manager = CreateManager(managerObject);
-                identity = identityObject.AddComponent<CachedOmittedStateIdentity>();
-                var history = InitializeIdentity(identity, manager,
-                    new PredictedComponentID(new PredictedObjectID(403), 0), 200);
-                history.Write(10, FullState(100));
-                SetLocalTick(manager, 20);
-                RegisterSystem(manager, identity);
-                var recipients = GetField<List<PlayerPacker>>(typeof(PredictionManager), manager, "_clientFrames");
-                recipients.Add(default); recipients.Add(default);
-                using var first = BitPackerPool.Get();
-                using var cached = BitPackerPool.Get();
-                using var fresh = BitPackerPool.Get();
-                var timeline = new PlayerVisibilityTimeline();
-                WriteAddressedStateSection(manager, timeline, first, 20, 10, false);
-                Assert.That(identity.TryWriteCachedAddressedState(cached, 10), Is.True,
-                    "the first frame must have retained a complete record");
-                cached.ResetPositionAndMode(false);
-                cached.WriteBits(0x7f, 7);
-                WriteAddressedStateSection(manager, timeline, cached, 20, 10, false);
-                identity.allowCaching = false;
-                fresh.WriteBits(0x7f, 7);
-                WriteAddressedStateSection(manager, timeline, fresh, 20, 10, false);
-                identity.allowCaching = true;
-                Assert.That(new BitData(cached).Equals(new BitData(fresh)), Is.True);
-                Assert.That(new BitData(first).Equals(new BitData(cached, 7, cached.positionInBits - 7)), Is.True);
-                var samples = TickBandwidthProfiler.wroteStates;
-                Assert.That(samples.Count, Is.EqualTo(4), "cached recipients must still be visible in the bandwidth profiler");
-                foreach (var sample in samples)
-                {
-                    Assert.That(sample.reference, Is.SameAs(identity));
-                    Assert.That(sample.bitCount, Is.EqualTo(samples[0].bitCount));
-                }
-
-                cached.ResetPositionAndMode(false);
-                identity.currentState.value++;
-                Assert.That(identity.TryWriteCachedAddressedState(cached, 10), Is.False);
-                identity.currentState.value--;
-                history.Write(10, FullState(101));
-                Assert.That(identity.TryWriteCachedAddressedState(cached, 10), Is.False);
-                history.Write(10, FullState(100));
-                Assert.That(identity.TryWriteCachedAddressedState(cached, 10), Is.True);
-                cached.ResetPositionAndMode(false);
-                MarkAllModulesDynamic(identity);
-                Assert.That(identity.TryWriteCachedAddressedState(cached, 10), Is.False,
-                    "dynamic topology, even after removing its last module, needs its own writer");
-                Assert.That(cached.positionInBits, Is.Zero);
-            }
-            finally
-            {
-                TickBandwidthProfiler.MarkEndOfTick();
-                TickBandwidthProfiler.collectWithoutSubscribers = previousCapture;
                 if (identity)
                     GetField<StateDeltaCache<FULL_STATE<OmittedState>>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache")?.Dispose();
                 Object.DestroyImmediate(identityObject);

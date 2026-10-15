@@ -967,7 +967,6 @@ namespace PurrNet.Prediction
             }
 
             bool allowOmission = !fullFrame && baselineTick > 0;
-            bool cacheStateRecords = !eventHandlers && hasMultipleStateRecipients;
             int sectionOrigin = destination.positionInBits;
             AddressedPredictionRecords.WriteSectionCount(_addressedSystemScratch.Count, destination);
             int recordsOrigin = destination.positionInBits;
@@ -1006,13 +1005,6 @@ namespace PurrNet.Prediction
                         recordBaseline = enteringTick;
                     }
                     bool changed;
-
-                    if (cacheStateRecords && !writeFull && !ownBaseline && !heal &&
-                        system.TryWriteCachedAddressedState(destination, recordBaseline))
-                    {
-                        writtenCount++;
-                        continue;
-                    }
 
                     body.ResetPositionAndMode(false);
                     if (!TryWriteAggregateVisibilityState(
@@ -1057,15 +1049,12 @@ namespace PurrNet.Prediction
                         if (ownBaseline)
                             Packer<PackedUInt>.Write(payload, checked((uint)(tick - recordBaseline)));
                     }
-                    int recordOrigin = destination.positionInBits;
                     AddressedPredictionRecords.WritePrefixedRecord(
                         system.id,
                         writeFull,
                         payload,
                         body,
                         destination);
-                    if (cacheStateRecords && !writeFull && !ownBaseline && !heal && changed)
-                        system.CacheAddressedState(destination, recordOrigin, recordBaseline);
                     writtenCount++;
                 }
 

@@ -7,51 +7,6 @@ namespace PurrNet.Prediction
     // skip unknown records without byte-aligning their payloads.
     internal static class AddressedPredictionRecords
     {
-        private static readonly WriteFunc<bool> StandardBoolWriter = PackIntegers.Write;
-        private static readonly WriteFunc<PackedUInt> StandardUIntWriter = PackingIntegers.Write;
-        private static WriteFunc<bool> _lastBoolWriter;
-        private static WriteFunc<PackedUInt> _lastUIntWriter;
-        private static WriteFunc<PredictedObjectID> _lastObjectWriter;
-        private static WriteFunc<PredictedComponentID> _lastComponentWriter;
-        private static bool _checkedHeaderWriters, _standardHeaderWriters;
-
-        // Standard headers depend only on their values, so cached records can move between
-        // bit origins. Custom codecs retain the normal path, including position-aware codecs.
-        internal static bool UsesStandardHeaders()
-        {
-            var boolWriter = Packer<bool>.WriteFunc;
-            var uintWriter = Packer<PackedUInt>.WriteFunc;
-            var objectWriter = Packer<PredictedObjectID>.WriteFunc;
-            var componentWriter = Packer<PredictedComponentID>.WriteFunc;
-            if (_checkedHeaderWriters && ReferenceEquals(boolWriter, _lastBoolWriter) &&
-                ReferenceEquals(uintWriter, _lastUIntWriter) && ReferenceEquals(objectWriter, _lastObjectWriter) &&
-                ReferenceEquals(componentWriter, _lastComponentWriter))
-                return _standardHeaderWriters && UsesGeneratedFieldWriters(objectWriter, uintWriter);
-            _checkedHeaderWriters = true;
-            _lastBoolWriter = boolWriter;
-            _lastUIntWriter = uintWriter;
-            _lastObjectWriter = objectWriter;
-            _lastComponentWriter = componentWriter;
-            _standardHeaderWriters = StandardBoolWriter.Equals(boolWriter) && StandardUIntWriter.Equals(uintWriter) &&
-                IsGeneratedIdWriter(objectWriter, "PurrNet_Prediction_PredictedObjectID_Serializer") &&
-                IsGeneratedIdWriter(componentWriter, "PurrNet_Prediction_PredictedComponentID_Serializer");
-            return _standardHeaderWriters && UsesGeneratedFieldWriters(objectWriter, uintWriter);
-        }
-
-        private static bool UsesGeneratedFieldWriters(WriteFunc<PredictedObjectID> objectWriter,
-            WriteFunc<PackedUInt> uintWriter)
-            => NativePacker<PredictedObjectID>.UsesGeneratedWriter(objectWriter) &&
-               NativePacker<PackedUInt>.UsesGeneratedWriter(uintWriter);
-
-        private static bool IsGeneratedIdWriter(Delegate writer, string serializerName)
-        {
-            var type = writer?.Method.DeclaringType;
-            return writer?.Target == null && type != null &&
-                type.Assembly == typeof(PredictedComponentID).Assembly && type.Name == serializerName &&
-                type.Namespace == "PurrNet.Prediction.PurrNet.CodeGen.Serializers" && writer.Method.Name == "Write" &&
-                writer.GetInvocationList().Length == 1;
-        }
-
         internal delegate void ReadRecord(
             PredictedComponentID id,
             bool isFullState,

@@ -569,30 +569,6 @@ namespace PurrNet.Prediction
             return true;
         }
 
-        private bool CanCacheAddressedState()
-            => predictionManager.hasMultipleStateRecipients && !isEventHandler && SupportsStateDeltaCaching() &&
-               HasNoModulesOrHistory() && AddressedPredictionRecords.UsesStandardHeaders();
-
-        internal override bool TryWriteCachedAddressedState(BitPacker destination, ulong baselineTick)
-        {
-            if (_stateDeltaCache == null) return false;
-            ulong tick = predictionManager.localTick;
-            int index = _stateDeltaCache.FindAddressedRecord(tick, baselineTick, id);
-            if (index < 0 || !CanCacheAddressedState()) return false;
-            RefreshVerifiedFromLive(tick);
-            if (!_verifiedHistory.ReadOrPrevious(baselineTick, out var baseline)) return false;
-            if (!_stateDeltaCache.TryWriteAddressedRecordAt(tick, index,
-                    destination, ref baseline, ref fullPredictedState, out int stateBits)) return false;
-            TickBandwidthProfiler.OnWroteState(myType, stateBits, this);
-            return true;
-        }
-
-        internal override void CacheAddressedState(BitPacker source, int recordOrigin, ulong baselineTick)
-        {
-            if (_stateDeltaCache != null && CanCacheAddressedState())
-                _stateDeltaCache.StoreAddressedRecord(predictionManager.localTick, baselineTick, id, source, recordOrigin);
-        }
-
         /// <summary>
         /// Serializes the current state as a delta against the receiver's acknowledged baseline.
         /// Must be a pure function of the two states: ReadDeltaState must reconstruct the exact
