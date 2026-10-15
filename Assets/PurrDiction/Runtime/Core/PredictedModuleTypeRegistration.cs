@@ -25,7 +25,11 @@ namespace PurrNet.Prediction
             {
                 if (!candidates.Contains(assemblies[a])) continue;
                 Type[] types;
-                try { types = assemblies[a].GetTypes(); }
+                try
+                {
+                    types = DerivedTypeDiscovery.ReadIndex(assemblies[a],
+                                "PurrNet.Prediction.Generated.ModuleTypeIndexV1") ?? assemblies[a].GetTypes();
+                }
                 catch { continue; }
 
                 for (int t = 0; t < types.Length; t++)

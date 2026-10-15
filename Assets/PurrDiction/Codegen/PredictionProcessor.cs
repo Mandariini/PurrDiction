@@ -123,6 +123,10 @@ namespace Purrdiction.Codegen
                     }
                 }
 
+                if (HasPurrDictionAsReference(compiledAssembly.Name, assemblyDefinition.MainModule))
+                    PurrNet.Codegen.GenerateDerivedTypeIndex.Generate(assemblyDefinition, typeof(PredictedModule),
+                        "PurrNet.Prediction.Generated.ModuleTypeIndexV1");
+
                 var pe = new MemoryStream();
                 var pdb = new MemoryStream();
 
