@@ -1309,6 +1309,12 @@ namespace PurrNet.Prediction
 
         internal ulong acceptedHistoryBaselineFloor => _verifiedHistoryBaselineFloor;
 
+        // Local client timelines grow if ACKs stall or prediction runs further ahead.
+        // Verified network baselines keep their independently prewarmed protocol window.
+        internal int initialLocalHistoryWindowTicks => isServer
+            ? checked((int)verifiedHistoryWindowTicks)
+            : Math.Max(16, (tickRate + 3) / 4);
+
         private const double InputResendIntervalSeconds = 0.02;
         // Copies sent after the input slack window cannot beat the server simulation deadline.
         internal static ulong InputRedundancyTicks(int tickRate)

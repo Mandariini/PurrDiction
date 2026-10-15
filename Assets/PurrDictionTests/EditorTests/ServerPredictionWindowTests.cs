@@ -142,6 +142,49 @@ namespace PurrNet.Prediction.Tests.Editor
         [TestCase(20)]
         [TestCase(60)]
         [TestCase(240)]
+        public void DelayedBaselinesGrowClientStorageAndRetainEveryRequiredStateAndInput(int rate)
+        {
+            using var f = new ClientFixture(rate);
+            int initialSlots = f.Slots;
+            int initialInputSlots = f.InputSlots;
+            int protocolWindow = (int)PredictionManager.VerifiedHistoryWindowTicks(rate);
+            Assert.That(initialSlots, Is.LessThan(protocolWindow + 2));
+            Assert.That(initialInputSlots, Is.LessThan(protocolWindow + 2));
+            ulong backlog = (ulong)protocolWindow - 8;
+            for (ulong tick = 0; tick <= backlog * 3; tick++)
+            {
+                ulong floor = tick > backlog ? tick - backlog : 0;
+                ulong verified = tick > backlog - 4 ? tick - (backlog - 4) : 0;
+                f.Floor(floor);
+                f.probe.lastVerifiedTick = verified;
+                f.probe.currentState.a = (int)tick;
+                f.probe.PrepareInput(false, true, tick, false);
+                f.probe.SaveStateInHistory(tick);
+
+                Assert.That(f.history.Read(floor, out var anchor), Is.True);
+                Assert.That(anchor.state.a, Is.EqualTo((int)floor));
+                Assert.That(f.inputs.Read(floor, out var input), Is.True);
+                Assert.That(input.sequence, Is.EqualTo((int)floor));
+                Assert.That(f.probe.verifiedState.Value.a, Is.EqualTo((int)verified));
+                Assert.That(f.history.Read(tick, out var latest), Is.True);
+                Assert.That(latest.state.a, Is.EqualTo((int)tick));
+                if (floor > 0)
+                {
+                    Assert.That(f.history.Read(floor - 1, out _), Is.False);
+                    Assert.That(f.inputs.Read(floor - 1, out _), Is.False);
+                }
+            }
+            Assert.That(f.Slots, Is.GreaterThan(initialSlots));
+            Assert.That(f.InputSlots, Is.GreaterThan(initialInputSlots));
+            Assert.That(f.history.Capacity, Is.EqualTo(rate * 10));
+            Assert.That(f.inputs.Capacity, Is.EqualTo(rate * 5));
+            f.probe.Rollback(backlog * 2);
+            Assert.That(f.probe.currentState.a, Is.EqualTo((int)(backlog * 2)));
+        }
+
+        [TestCase(20)]
+        [TestCase(60)]
+        [TestCase(240)]
         public void StalledComponentKeepsItsVerifiedAnchorAsOtherComponentsAdvance(int rate)
         {
             using var f = new ClientFixture(rate);
