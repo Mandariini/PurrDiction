@@ -66,6 +66,24 @@ namespace PurrNet.Prediction
         /// </summary>
         public ulong MostRecentTick => m_count == 0 ? 0 : m_ticks[Phys(m_count - 1)];
 
+        // Read only the newest entry, and reject it if it is ahead of the caller.
+        // Keep the ordinary value copy so equality callbacks cannot change history slots.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal bool TryReadLatest(ulong maximumTick, out T result)
+        {
+            if (m_count > 0)
+            {
+                int phys = Phys(m_count - 1);
+                if (m_ticks[phys] <= maximumTick)
+                {
+                    result = m_values[phys];
+                    return true;
+                }
+            }
+            result = default;
+            return false;
+        }
+
         /// <summary>
         /// Oldest tick we have in the set (this will vary as older entries are purged)
         /// </summary>

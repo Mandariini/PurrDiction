@@ -62,9 +62,40 @@ namespace PurrNet.Prediction.Tests.Editor
                 if (tick < ulong.MaxValue) queries.Add(tick + 1);
             }
             foreach (ulong tick in queries)
+            {
                 Assert.That(history.HasAtOrBefore(tick),
                     Is.EqualTo(expected.Keys.Any(entryTick => entryTick <= tick)),
                     $"Baseline availability at {tick}");
+                bool canReadLatest = expected.Count > 0 && expected.Last().Key <= tick;
+                Assert.That(history.TryReadLatest(tick, out var latest), Is.EqualTo(canReadLatest),
+                    $"Newest entry at {tick}");
+                Assert.That(latest.Ticket, Is.SameAs(canReadLatest ? expected.Last().Value : null));
+            }
+        }
+
+        [Test]
+        public void NewestReadRejectsFutureEntriesAndReturnsAnIndependentValueCopy()
+        {
+            var history = new History<Value>();
+            var first = new Ticket();
+            var last = new Ticket();
+            history.Write(3, new Value { Ticket = first });
+            history.Write(7, new Value { Ticket = last });
+            Assert.That(history.TryReadLatest(6, out var value), Is.False,
+                "coalescing must not substitute an older entry when a future one exists");
+            Assert.That(value.Ticket, Is.Null);
+            Assert.That(history.TryReadLatest(7, out value), Is.True);
+            value.Ticket = null;
+            Assert.That(history[1].Ticket, Is.SameAs(last));
+            Assert.That(first.Disposals + last.Disposals, Is.Zero);
+            history.ClearFuture(6);
+            Assert.That(history.TryReadLatest(6, out value), Is.True);
+            Assert.That(value.Ticket, Is.SameAs(first));
+            Assert.That(last.Disposals, Is.EqualTo(1));
+            history.Clear();
+            Assert.That(history.TryReadLatest(ulong.MaxValue, out value), Is.False);
+            Assert.That(value.Ticket, Is.Null);
+            Assert.That(first.Disposals, Is.EqualTo(1));
         }
 
         [Test]

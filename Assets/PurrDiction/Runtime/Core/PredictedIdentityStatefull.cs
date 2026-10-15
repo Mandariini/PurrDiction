@@ -257,12 +257,7 @@ namespace PurrNet.Prediction
 
             PruneStateHistory(tick);
 
-            int lastIndex = _stateHistory.Count - 1;
-            if (_stateHistory.GetEntryTick(lastIndex) > tick)
-                return false;
-
-            var last = _stateHistory[lastIndex];
-            return last.HasSameContents(ref state);
+            return _stateHistory.TryReadLatest(tick, out var last) && last.HasSameContents(ref state);
         }
 
         private void WriteOwnedAuthoritativeState(ulong tick, FULL_STATE<STATE> state)

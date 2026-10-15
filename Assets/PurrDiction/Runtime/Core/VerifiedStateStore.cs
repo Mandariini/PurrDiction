@@ -15,13 +15,9 @@ namespace PurrNet.Prediction
         // Equal persistent states can share an anchor; event batches require their own tick.
         public static bool StoreLive(History<T> history, ulong serverTick, ref T state, bool coalesceEqualAdjacent)
         {
-            int lastIndex = history.Count - 1;
-            if (coalesceEqualAdjacent && lastIndex >= 0 && history.GetEntryTick(lastIndex) <= serverTick)
-            {
-                var latest = history[lastIndex];
-                if (latest.HasSameContents(ref state))
-                    return false;
-            }
+            if (coalesceEqualAdjacent && history.TryReadLatest(serverTick, out var latest) &&
+                latest.HasSameContents(ref state))
+                return false;
 
             history.Write(serverTick, state.DeepCopy());
             return true;

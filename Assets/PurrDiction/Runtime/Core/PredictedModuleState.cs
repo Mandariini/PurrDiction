@@ -273,12 +273,7 @@ namespace PurrNet.Prediction
 
             _history.PruneByTickWindow(tick);
 
-            int lastIndex = _history.Count - 1;
-            if (_history.GetEntryTick(lastIndex) > tick)
-                return false;
-
-            var last = _history[lastIndex];
-            return last.HasSameContents(ref state);
+            return _history.TryReadLatest(tick, out var last) && last.HasSameContents(ref state);
         }
 
         protected override bool WriteState(PlayerID receiver, BitPacker packer, ulong baselineTick)

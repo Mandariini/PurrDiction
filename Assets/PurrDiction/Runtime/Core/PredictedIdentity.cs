@@ -605,10 +605,8 @@ namespace PurrNet.Prediction
             var store = metadataVerified;
             store.PruneByTickWindow(serverTick);
 
-            int lastIndex = store.Count - 1;
-            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            if (store.TryReadLatest(serverTick, out var latest))
             {
-                var latest = store[lastIndex];
                 var current = metadata;
                 if (Packer.AreEqualRef(ref latest, ref current))
                     return;
