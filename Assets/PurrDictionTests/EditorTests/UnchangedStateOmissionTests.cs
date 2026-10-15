@@ -94,6 +94,52 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void FailingStateWriterRestoresTheDeltaSectionBeforeRetry()
+        {
+            var managerObject = new GameObject("Failing section manager");
+            var firstObject = new GameObject("First section state");
+            var failingObject = new GameObject("Failing section state");
+            try
+            {
+                var manager = CreateManager(managerObject);
+                var first = firstObject.AddComponent<CachedOmittedStateIdentity>();
+                var failing = failingObject.AddComponent<FailingOmittedStateIdentity>();
+                InitializeIdentity(first, manager, new PredictedComponentID(new PredictedObjectID(801), 0), 100)
+                    .Write(10, FullState(100));
+                InitializeIdentity(failing, manager, new PredictedComponentID(new PredictedObjectID(802), 0), 100)
+                    .Write(10, FullState(100));
+                first.fullPredictedState = FullState(200);
+                failing.fullPredictedState = FullState(300);
+                SetLocalTick(manager, 12);
+                RegisterSystem(manager, first);
+                RegisterSystem(manager, failing);
+                using var frame = BitPackerPool.Get();
+                using var prefix = BitPackerPool.Get();
+                frame.WriteBits(0x5178BA32, 31);
+                prefix.WriteBits(0x5178BA32, 31);
+                var timeline = new PlayerVisibilityTimeline();
+                var error = Assert.Throws<TargetInvocationException>(() =>
+                    WriteAddressedStateSection(manager, timeline, frame, 12, 10, false));
+                Assert.That(error.InnerException, Is.TypeOf<InvalidOperationException>());
+                Assert.That(first.writes, Is.EqualTo(1), "a preceding record was already written");
+                Assert.That(frame.positionInBits, Is.EqualTo(31));
+                Assert.That(new BitData(frame, 0, 31).Equals(new BitData(prefix, 0, 31)), Is.True);
+
+                failing.shouldThrow = false;
+                WriteAddressedStateSection(manager, timeline, frame, 12, 10, false);
+                frame.ResetPositionAndMode(true);
+                frame.SetBitPosition(31);
+                Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(2));
+            }
+            finally
+            {
+                Object.DestroyImmediate(firstObject);
+                Object.DestroyImmediate(failingObject);
+                Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
         public void StateDeltaReusePreservesWireBitsAndDetectsMutationWithinTheSameTick()
         {
             var managerObject = new GameObject("Delta reuse manager");
@@ -1699,6 +1745,16 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             writes++;
             Packer<int>.Write(packer, current.value - baseline.value);
+        }
+    }
+
+    public sealed class FailingOmittedStateIdentity : OmittedStateIdentity
+    {
+        public bool shouldThrow = true;
+        protected override void WriteDeltaState(BitPacker packer, in OmittedState baseline, in OmittedState current)
+        {
+            Packer<int>.Write(packer, current.value - baseline.value);
+            if (shouldThrow) throw new InvalidOperationException("Test state writer failure");
         }
     }
 

@@ -952,104 +952,106 @@ namespace PurrNet.Prediction
             }
 
             bool allowOmission = !fullFrame && baselineTick > 0;
-            if (!allowOmission)
-            {
-                AddressedPredictionRecords.WriteSectionCount(
-                    _addressedSystemScratch.Count,
-                    destination);
-            }
-
-            using var records = allowOmission ? BitPackerPool.Get() : null;
+            int sectionOrigin = destination.positionInBits;
+            AddressedPredictionRecords.WriteSectionCount(_addressedSystemScratch.Count, destination);
+            int recordsOrigin = destination.positionInBits;
             using var payload = BitPackerPool.Get();
             using var body = BitPackerPool.Get();
             int writtenCount = 0;
 
-            for (var i = 0; i < _addressedSystemScratch.Count; i++)
+            try
             {
-                var system = _addressedSystemScratch[i];
-                payload.ResetPositionAndMode(false);
-
-                bool writeFull = fullFrame ||
-                                 (baselineTick > 0 && !system.HasUnchangedStateBaseline(baselineTick)) ||
-                                 RequiresFullEntryState(
-                                     timeline,
-                                     system,
-                                     baselineTick,
-                                     baselineScratch.hasBaseline,
-                                     baselineScratch.roots,
-                                     baselineScratch.pieces);
-                // A prepared continuation may be discarded for size; consume the request only when sent.
-                bool heal = PrepareDesyncHeal(player, system.id);
-                if (heal)
-                    writeFull = true;
-
-                ulong recordBaseline = baselineTick;
-                bool ownBaseline = false;
-                if (writeFull && !fullFrame && !heal && baselineTick > 0 &&
-                    TryGetEnteringBaseline(system, timeline, baselineTick, tick, out var enteringTick))
+                for (var i = 0; i < _addressedSystemScratch.Count; i++)
                 {
-                    writeFull = false;
-                    ownBaseline = true;
-                    recordBaseline = enteringTick;
-                }
-                bool changed;
+                    var system = _addressedSystemScratch[i];
+                    payload.ResetPositionAndMode(false);
 
-                body.ResetPositionAndMode(false);
-                if (!TryWriteAggregateVisibilityState(
-                        system,
-                        player,
-                        timeline,
-                        body,
-                        tick,
-                        recordBaseline,
-                        ref writeFull,
-                        out changed))
-                {
-                    if (writeFull)
+                    bool writeFull = fullFrame ||
+                                     (baselineTick > 0 && !system.HasUnchangedStateBaseline(baselineTick)) ||
+                                     RequiresFullEntryState(
+                                         timeline,
+                                         system,
+                                         baselineTick,
+                                         baselineScratch.hasBaseline,
+                                         baselineScratch.roots,
+                                         baselineScratch.pieces);
+                    // A prepared continuation may be discarded for size; consume the request only when sent.
+                    bool heal = PrepareDesyncHeal(player, system.id);
+                    if (heal)
+                        writeFull = true;
+
+                    ulong recordBaseline = baselineTick;
+                    bool ownBaseline = false;
+                    if (writeFull && !fullFrame && !heal && baselineTick > 0 &&
+                        TryGetEnteringBaseline(system, timeline, baselineTick, tick, out var enteringTick))
                     {
-                        system.RunWriteFirstState(tick, body);
-                        changed = true;
+                        writeFull = false;
+                        ownBaseline = true;
+                        recordBaseline = enteringTick;
                     }
-                    else
-                    {
-                        changed = system.RunWriteCurrentState(
+                    bool changed;
+
+                    body.ResetPositionAndMode(false);
+                    if (!TryWriteAggregateVisibilityState(
+                            system,
                             player,
+                            timeline,
                             body,
-                            recordBaseline);
+                            tick,
+                            recordBaseline,
+                            ref writeFull,
+                            out changed))
+                    {
+                        if (writeFull)
+                        {
+                            system.RunWriteFirstState(tick, body);
+                            changed = true;
+                        }
+                        else
+                        {
+                            changed = system.RunWriteCurrentState(
+                                player,
+                                body,
+                                recordBaseline);
+                        }
                     }
-                }
-                ownBaseline &= !writeFull;
-                if (ownBaseline)
-                    spawnBaselineRecordsTotal++;
-
-                bool canOmit = allowOmission &&
-                               !writeFull &&
-                               !ownBaseline &&
-                               !changed &&
-                               system.RunCanOmitUnchangedState(baselineTick);
-                if (canOmit)
-                    continue;
-
-                payload.ResetPositionAndMode(false);
-                if (!writeFull)
-                {
-                    Packer<bool>.Write(payload, ownBaseline);
+                    ownBaseline &= !writeFull;
                     if (ownBaseline)
-                        Packer<PackedUInt>.Write(payload, checked((uint)(tick - recordBaseline)));
-                }
-                AddressedPredictionRecords.WritePrefixedRecord(
-                    system.id,
-                    writeFull,
-                    payload,
-                    body,
-                    allowOmission ? records : destination);
-                writtenCount++;
-            }
+                        spawnBaselineRecordsTotal++;
 
-            if (allowOmission)
+                    bool canOmit = allowOmission &&
+                                   !writeFull &&
+                                   !ownBaseline &&
+                                   !changed &&
+                                   system.RunCanOmitUnchangedState(baselineTick);
+                    if (canOmit)
+                        continue;
+
+                    payload.ResetPositionAndMode(false);
+                    if (!writeFull)
+                    {
+                        Packer<bool>.Write(payload, ownBaseline);
+                        if (ownBaseline)
+                            Packer<PackedUInt>.Write(payload, checked((uint)(tick - recordBaseline)));
+                    }
+                    AddressedPredictionRecords.WritePrefixedRecord(
+                        system.id,
+                        writeFull,
+                        payload,
+                        body,
+                        destination);
+                    writtenCount++;
+                }
+
+                if (allowOmission)
+                    AddressedPredictionRecords.CompleteSection(writtenCount, sectionOrigin, recordsOrigin, destination);
+            }
+            catch
             {
-                AddressedPredictionRecords.WriteSectionCount(writtenCount, destination);
-                destination.WriteBitsWithoutConsumingIt(records, records.positionInBits);
+                // A failing user codec must not publish a partial delta section.
+                if (allowOmission)
+                    destination.SetBitPosition(sectionOrigin);
+                throw;
             }
         }
         void WriteAddressedFirstInputSection(
