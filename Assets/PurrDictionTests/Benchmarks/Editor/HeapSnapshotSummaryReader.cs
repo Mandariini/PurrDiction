@@ -149,7 +149,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             {
                 int type = Convert.ToInt32(Get(objects[i], "ITypeDescription"));
                 long size = Convert.ToInt64(Get(objects[i], "Size"));
-                if (type < 0 || type >= names.Length || names[type] != "System.Byte[]" || size < 4096) continue;
+                if (type < 0 || type >= names.Length || names[type] != "System.Byte[]" || size <= 0) continue;
                 var paths = new HashSet<string>();
                 var visited = new HashSet<int>();
                 void Trace(int index, string path, int depth)
@@ -158,7 +158,8 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     if (!visited.Add(index)) { paths.Add("[cycle] -> " + path); return; }
                     foreach (var owner in owners)
                     {
-                        string field = FieldName(owner.field) + FieldName(owner.nestedField);
+                        string field = FieldName(owner.field);
+                        if (owner.nestedField != owner.field) field += FieldName(owner.nestedField);
                         if (owner.arrayIndex >= 0) field = "[]" + field;
                         if (owner.source >= 0)
                             Trace(owner.source, ObjectType(owner.source) + field + " -> " + path, depth - 1);
