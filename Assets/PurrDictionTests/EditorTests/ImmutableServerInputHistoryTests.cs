@@ -126,6 +126,49 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void ReorderingRemovingAndAddingInputsPreservesIdBasedRepeatDetection()
+        {
+            using var fixture = new Fixture();
+            var first = fixture.Add(710);
+            var middle = fixture.Add(720);
+            var last = fixture.Add(730);
+            fixture.Seed(first, 10, 111);
+            fixture.Seed(middle, 10, 222);
+            fixture.Seed(last, 10, 333);
+            fixture.Capture(10);
+            var original = fixture.Snapshot(10);
+
+            Get<List<PredictedIdentity>>(fixture.manager, "_systems").Reverse();
+            fixture.Seed(first, 11, 111);
+            fixture.Seed(middle, 11, 222);
+            fixture.Seed(last, 11, 333);
+            fixture.Capture(11);
+            var reordered = Get<List<PredictionManager.CachedInputEntry>>(fixture.Block(11), "entries");
+            Assert.That(reordered[0].id, Is.EqualTo(last.id));
+            Assert.That(reordered[1].id, Is.EqualTo(middle.id));
+            Assert.That(reordered[2].id, Is.EqualTo(first.id));
+            Assert.That(reordered.TrueForAll(entry => entry.repeatsPrevious), Is.True,
+                "both matching ordinals and lookup fallbacks must find each ID's own bits");
+            var previous = fixture.Snapshot(11);
+
+            fixture.manager.UnregisterInstance(middle);
+            middle.ReleasePredictionStateForPool();
+            var born = fixture.Add(740);
+            fixture.Seed(first, 12, 444);
+            fixture.Seed(last, 12, 333);
+            fixture.Seed(born, 12, 222);
+            fixture.Capture(12);
+            var changed = Get<List<PredictionManager.CachedInputEntry>>(fixture.Block(12), "entries");
+            Assert.That(changed.Count, Is.EqualTo(3));
+            Assert.That(changed.Find(entry => entry.id.Equals(last.id)).repeatsPrevious, Is.True);
+            Assert.That(changed.Find(entry => entry.id.Equals(first.id)).repeatsPrevious, Is.False);
+            Assert.That(changed.Find(entry => entry.id.Equals(born.id)).repeatsPrevious, Is.False,
+                "a new ID cannot repeat the removed input even when its bytes match");
+            Assert.That(fixture.Snapshot(10), Is.EqualTo(original));
+            Assert.That(fixture.Snapshot(11), Is.EqualTo(previous));
+        }
+
+        [Test]
         public void RemovedIdentityRetainsOriginalInputBytesWithoutObservers()
         {
             using var fixture = new Fixture();

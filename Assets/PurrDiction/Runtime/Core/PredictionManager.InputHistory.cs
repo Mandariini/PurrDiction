@@ -103,11 +103,7 @@ namespace PurrNet.Prediction
             CollectViewOffsets(tick, scratch.viewOffsets);
 
             _previousInputEntryIndex.Clear();
-            if (hasPrevious)
-            {
-                for (var i = 0; i < previous.entries.Count; i++)
-                    _previousInputEntryIndex[previous.entries[i].id] = i;
-            }
+            bool indexedPrevious = false;
 
             for (var i = 0; i < _systemsCount; i++)
             {
@@ -127,7 +123,27 @@ namespace PurrNet.Prediction
                 bool repeats = false;
                 int deltaOrigin = scratch.deltas.positionInBits;
                 int deltaLength = 0;
-                if (hasPrevious && _previousInputEntryIndex.TryGetValue(id, out int previousIndex))
+                int previousIndex = -1;
+                if (hasPrevious)
+                {
+                    // Unchanged ordering already supplies the lookup: avoid rebuilding
+                    // and probing a hash table for every input on every stable tick.
+                    int ordinal = scratch.entries.Count;
+                    if (ordinal < previous.entries.Count && previous.entries[ordinal].id.Equals(id))
+                        previousIndex = ordinal;
+                    else
+                    {
+                        if (!indexedPrevious)
+                        {
+                            for (int j = 0; j < previous.entries.Count; j++)
+                                _previousInputEntryIndex[previous.entries[j].id] = j;
+                            indexedPrevious = true;
+                        }
+                        if (!_previousInputEntryIndex.TryGetValue(id, out previousIndex))
+                            previousIndex = -1;
+                    }
+                }
+                if (previousIndex >= 0)
                 {
                     var previousEntry = previous.entries[previousIndex];
                     if (previousEntry.rootId.Equals(rootId))
