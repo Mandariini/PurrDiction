@@ -120,6 +120,11 @@ namespace PurrNet.Prediction.Tests.Editor
                 using var packet = f.StepServer(tick);
                 var stored = CapturedTopology(f.server, tick);
                 Assert.That(stored.spawnedPrefabs.list, Is.SameAs(original.spawnedPrefabs.list));
+                var entry = Invoke(f.server, "GetLifecycleTick", tick);
+                Assert.That(entry.GetType().GetField("topologyDelta").GetValue(entry), Is.Null,
+                    "an unchanged global topology does not need a retained patch buffer");
+                Assert.That(entry.GetType().GetField("payload").GetValue(entry), Is.Null,
+                    "ticks without entrants do not need a retained state buffer");
                 Assert.That(original.spawnedPrefabs.isDisposed, Is.False);
             }
             f.CreateServerIdentity(200);

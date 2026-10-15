@@ -83,8 +83,10 @@ namespace PurrNet.Prediction
             CachedInputBlock previous = default;
             bool hasPrevious = tick > 0 && TryGetInputBlockForTick(tick - 1, out previous);
             ref var scratch = ref _inputBlockScratch;
-            scratch.packer ??= BitPackerPool.Get();
-            scratch.deltas ??= BitPackerPool.Get();
+            // Retained snapshots must not absorb oversized transient frame buffers.
+            // Size new buffers from the adjacent snapshot, then retain them for reuse.
+            scratch.packer ??= new BitPacker(hasPrevious ? Math.Max(32, previous.packer.positionInBytes + 8) : 32);
+            scratch.deltas ??= new BitPacker(hasPrevious ? Math.Max(32, previous.deltas.positionInBytes + 8) : 32);
             // Most captures have the same input roster. An exact initial capacity avoids
             // doubling just past a power of two; existing buffers still grow normally.
             scratch.entries ??= new List<CachedInputEntry>(hasPrevious ? previous.entries.Count : 0);

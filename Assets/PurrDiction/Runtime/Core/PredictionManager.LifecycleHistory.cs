@@ -16,7 +16,7 @@ namespace PurrNet.Prediction
             public readonly HashSet<PredictedComponentID> roster = new();
             public readonly Dictionary<PredictedComponentID, PredictedComponentID?> parents = new();
             public readonly List<LifecycleEntry> entrants = new();
-            public BitPacker payload = BitPackerPool.Get();
+            public BitPacker payload;
 
             public void Dispose()
             {
@@ -97,16 +97,15 @@ namespace PurrNet.Prediction
             hierarchy.RefreshVerifiedFromLive(tick);
             var previous = tick > 0 ? GetLifecycleTick(tick - 1) : null;
             _previousLifecyclePieces.Clear();
-            if (previous != null)
-                foreach (var record in previous.topology.spawnedPrefabs.list)
-                    _previousLifecyclePieces[record.instanceId] = record;
-
             var captured = _lifecycleCaptureScratch ?? new LifecycleTick();
             _lifecycleCaptureScratch = null;
             if (captured.ownsTopology)
                 captured.topology.Dispose();
             bool sharesPreviousTopology = previous != null &&
                 SameTopologySnapshot(previous.topology, hierarchy.currentState);
+            if (previous != null && !sharesPreviousTopology)
+                foreach (var record in previous.topology.spawnedPrefabs.list)
+                    _previousLifecyclePieces[record.instanceId] = record;
             captured.topology = sharesPreviousTopology ? previous.topology : hierarchy.currentState.Duplicate();
             // Borrow while preparing: a failed entrant writer must leave the old owner intact.
             captured.ownsTopology = !sharesPreviousTopology;
@@ -114,23 +113,28 @@ namespace PurrNet.Prediction
             captured.roster.Clear();
             captured.parents.Clear();
             captured.entrants.Clear();
-            captured.payload.ResetPositionAndMode(false);
+            captured.payload?.ResetPositionAndMode(false);
             try
             {
-                captured.topologyDelta ??= BitPackerPool.Get();
-                captured.topologyDelta.ResetPositionAndMode(false);
+                captured.topologyDelta?.ResetPositionAndMode(false);
                 captured.hasPreviousTopology = previous != null;
-                if (previous != null)
+                if (previous != null && !sharesPreviousTopology)
+                {
+                    captured.topologyDelta ??= new BitPacker(32);
                     HistoricalTopologyCodec.Write(previous.topology, captured.topology,
                         captured.topologyDelta, _topologyCodecScratch);
+                }
                 var changed = _changedLifecyclePieces;
                 changed.Clear();
-                foreach (var record in captured.topology.spawnedPrefabs.list)
+                if (!sharesPreviousTopology)
                 {
-                    if (!_previousLifecyclePieces.TryGetValue(record.instanceId, out var old) ||
-                        old.prefabId != record.prefabId || old.pieceIndex.value != record.pieceIndex.value ||
-                        old.owner != record.owner || !Nullable.Equals(old.parent, record.parent))
-                        changed.Add(record.instanceId);
+                    foreach (var record in captured.topology.spawnedPrefabs.list)
+                    {
+                        if (!_previousLifecyclePieces.TryGetValue(record.instanceId, out var old) ||
+                            old.prefabId != record.prefabId || old.pieceIndex.value != record.pieceIndex.value ||
+                            old.owner != record.owner || !Nullable.Equals(old.parent, record.parent))
+                            changed.Add(record.instanceId);
+                    }
                 }
 
                 for (int i = 0; i < _systemsCount; i++)
@@ -166,6 +170,7 @@ namespace PurrNet.Prediction
                     }
                     if (!lifecycleChanged && !entered)
                         continue;
+                    captured.payload ??= new BitPacker(32);
                     int origin = captured.payload.positionInBits;
                     system.RunWriteFirstState(tick, captured.payload);
                     captured.entrants.Add(new LifecycleEntry
@@ -374,7 +379,7 @@ namespace PurrNet.Prediction
                     tick.roster.Clear();
                     tick.parents.Clear();
                     tick.entrants.Clear();
-                    tick.payload.ResetPositionAndMode(false);
+                    tick.payload?.ResetPositionAndMode(false);
                     owner._lifecycleReplayPool.Push(tick);
                 }
                 ticks.Clear();
@@ -463,6 +468,7 @@ namespace PurrNet.Prediction
             var batch = _readingLifecycleBatch;
             if (!full || !batch.roster.Add(id) || bits == 0)
                 throw new MissingPredictionBaselineException("Invalid lifecycle entrant state.");
+            batch.payload ??= new BitPacker(32);
             int origin = batch.payload.positionInBits;
             batch.payload.WriteBitDataWithoutConsumingIt(new BitData(payload, 0, bits));
             batch.entrants.Add(new LifecycleEntry { id = id, origin = origin, bits = bits });
