@@ -26,6 +26,19 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             public string snapshot;
             public long objects, managedObjectBytes;
             public Row[] types;
+            public ArrayOwner[] arrayOwners;
+        }
+
+        [Serializable] private sealed class ArrayOwner
+        {
+            public string type, path;
+            public long objectBytes, count, bytes;
+        }
+
+        private sealed class Incoming
+        {
+            public int source, staticType, field, nestedField;
+            public long arrayIndex;
         }
 
         private const BindingFlags Members = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
@@ -90,6 +103,8 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 foreach (var row in report.types)
                     if (row.sizeCounts != null)
                         row.arraySizes = row.sizeCounts.Values.OrderByDescending(bucket => bucket.bytes).ToArray();
+                if (Environment.GetCommandLineArgs().Contains("-heapArrayOwners"))
+                    report.arrayOwners = ReadArrayOwners(snapshot, data, names);
                 Directory.CreateDirectory(Path.GetDirectoryName(output));
                 File.WriteAllText(output, JsonUtility.ToJson(report, true));
                 Debug.Log($"HEAP_SUMMARY objects={report.objects}, bytes={report.managedObjectBytes}, types={report.types.Length}");
@@ -97,6 +112,73 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             catch (Exception error) { Debug.LogException(error); exitCode = 1; }
             finally { snapshot?.Dispose(); reader?.Dispose(); }
             EditorApplication.Exit(exitCode);
+        }
+
+        private static ArrayOwner[] ReadArrayOwners(object snapshot, object data, string[] names)
+        {
+            var objects = ((IEnumerable)Get(data, "m_ManagedObjects")).Cast<object>().ToArray();
+            var fields = (string[])Get(Get(snapshot, "FieldDescriptions"), "FieldDescriptionName");
+            var incoming = new Dictionary<int, List<Incoming>>();
+            object connections = Get(data, "Connections");
+            var connectionItem = connections.GetType().GetProperty("Item", Members);
+            long connectionCount = Convert.ToInt64(Get(connections, "Count"));
+            for (long c = 0; c < connectionCount; c++)
+            {
+                object connection = connectionItem.GetValue(connections, new object[] { c });
+                int target = Convert.ToInt32(Get(connection, "ToManagedObjectIndex"));
+                if (target < 0) continue;
+                if (!incoming.TryGetValue(target, out var list)) incoming.Add(target, list = new List<Incoming>());
+                list.Add(new Incoming
+                {
+                    source = Convert.ToInt32(Get(connection, "FromManagedObjectIndex")),
+                    staticType = Convert.ToInt32(Get(connection, "FromManagedType")),
+                    field = Convert.ToInt32(Get(connection, "FieldFrom")),
+                    nestedField = Convert.ToInt32(Get(connection, "ValueTypeFieldFrom")),
+                    arrayIndex = Convert.ToInt64(Get(connection, "ArrayIndexFrom"))
+                });
+            }
+
+            string ObjectType(int index)
+            {
+                int type = Convert.ToInt32(Get(objects[index], "ITypeDescription"));
+                return type >= 0 && type < names.Length ? names[type] : "[unknown managed type]";
+            }
+            string FieldName(int index) => index >= 0 && index < fields.Length ? "." + fields[index] : "";
+            var totals = new Dictionary<string, ArrayOwner>();
+            for (int i = 0; i < objects.Length; i++)
+            {
+                int type = Convert.ToInt32(Get(objects[i], "ITypeDescription"));
+                long size = Convert.ToInt64(Get(objects[i], "Size"));
+                if (type < 0 || type >= names.Length || names[type] != "System.Byte[]" || size < 4096) continue;
+                var paths = new HashSet<string>();
+                var visited = new HashSet<int>();
+                void Trace(int index, string path, int depth)
+                {
+                    if (depth == 0 || !incoming.TryGetValue(index, out var owners)) { paths.Add(path); return; }
+                    if (!visited.Add(index)) { paths.Add("[cycle] -> " + path); return; }
+                    foreach (var owner in owners)
+                    {
+                        string field = FieldName(owner.field) + FieldName(owner.nestedField);
+                        if (owner.arrayIndex >= 0) field = "[]" + field;
+                        if (owner.source >= 0)
+                            Trace(owner.source, ObjectType(owner.source) + field + " -> " + path, depth - 1);
+                        else if (owner.staticType >= 0)
+                            paths.Add("static " + names[owner.staticType] + field + " -> " + path);
+                        else paths.Add("[native/root] -> " + path);
+                    }
+                    visited.Remove(index);
+                }
+                Trace(i, names[type], 6);
+                foreach (string path in paths)
+                {
+                    string key = size + ":" + path;
+                    if (!totals.TryGetValue(key, out var row))
+                        totals.Add(key, row = new ArrayOwner { type = names[type], objectBytes = size, path = path });
+                    row.count++; row.bytes += size;
+                }
+            }
+            // A buffer can have multiple owners; these rows describe references and are not additive heap totals.
+            return totals.Values.OrderByDescending(row => row.bytes).ToArray();
         }
     }
 }
