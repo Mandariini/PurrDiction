@@ -246,6 +246,14 @@ namespace PurrNet.Prediction
 
         internal override void SaveStateInHistory(ulong tick)
         {
+            // A server never rewinds its own state, and its verified store already keeps the
+            // entering state that frames and verifiedState read, so a second copy is redundant.
+            if (KeepsOnlyVerifiedHistory)
+            {
+                RefreshVerifiedFromLive(tick);
+                return;
+            }
+
             if (LatestHistoryMatches(tick, ref fullPredictedState))
                 return;
 
@@ -784,11 +792,15 @@ namespace PurrNet.Prediction
         {
             get
             {
-                if (lastVerifiedTick.HasValue && _stateHistory.ReadOrPrevious(lastVerifiedTick.Value, out var state))
+                var history = KeepsOnlyVerifiedHistory ? _verifiedHistory : _stateHistory;
+                if (lastVerifiedTick.HasValue && history != null &&
+                    history.ReadOrPrevious(lastVerifiedTick.Value, out var state))
                     return state.state;
                 return null;
             }
         }
+
+        private bool KeepsOnlyVerifiedHistory => !isEventHandler && predictionManager is { cachedIsServer: true };
 
         internal override void LateUpdateView(float deltaTime)
         {
