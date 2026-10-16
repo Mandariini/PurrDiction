@@ -28,6 +28,8 @@ namespace PurrNet.Prediction
         internal static byte OwnerFlags(PlayerID? owner)
             => owner.HasValue ? (byte)(1 | (owner.GetValueOrDefault().isBot ? 2 : 0)) : (byte)0;
 
+        internal bool HasOwner(ulong ownerId, byte ownerFlags) => _ownerId == ownerId && _ownerFlags == ownerFlags;
+
         // Takes an owner already encoded by OwnerId and OwnerFlags.
         internal void SetOwner(ulong ownerId, byte ownerFlags)
         {

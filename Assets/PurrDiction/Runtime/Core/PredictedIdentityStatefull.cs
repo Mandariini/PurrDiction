@@ -366,10 +366,17 @@ namespace PurrNet.Prediction
 
         private void PruneStateHistory(ulong tick)
         {
-            ulong floor = GetAcceptedHistoryRetentionFloor(tick);
-            if (floor > 0 && _stateHistory.Count > 1 && _stateHistory.OldestTick < floor)
+            // Pruning to two baselines in turn keeps what pruning to the later one keeps.
+            ulong floor = Math.Max(GetAcceptedHistoryRetentionFloor(tick), TickWindowFloor(_stateHistory, tick));
+            if (floor > 0)
                 _stateHistory.PruneBeforeBaseline(floor);
-            _stateHistory.PruneByTickWindow(tick);
+        }
+
+        // The baseline History.PruneByTickWindow prunes to, or 0 when it would keep everything.
+        private static ulong TickWindowFloor(History<FULL_STATE<STATE>> history, ulong tick)
+        {
+            ulong window = (ulong)Math.Max(0, history.Capacity);
+            return window > 0 && tick > window ? tick - window : 0;
         }
 
         FULL_STATE<STATE>? _viewState;
@@ -454,8 +461,18 @@ namespace PurrNet.Prediction
 
         protected virtual void SetUnityState(STATE state) {}
 
-        private void ApplyVerifiedPredictionMetadata(in PredictedIdentityState prediction)
+        private void ApplyVerifiedPredictionMetadata(in CompactIdentityState prediction)
         {
+            // Every applied record restores its owner, which is almost always the current one. Then
+            // SetOwner would only store the same owner again and resynchronize the policy, unless
+            // the type adds its own OnOwnerAssigned.
+            if ((viewHooks & OwnerHookCustom) == 0 && prediction.HasOwner(ownerIdValue, ownerFlags))
+            {
+                fullPredictedState.prediction.SetOwner(ownerIdValue, ownerFlags);
+                SynchronizeEffectivePredictionPolicy();
+                return;
+            }
+
             SetOwner(prediction.owner);
         }
 
@@ -780,10 +797,10 @@ namespace PurrNet.Prediction
 
         private void PruneVerifiedHistory(ulong serverTick)
         {
-            ulong floor = GetAcceptedVerifiedHistoryRetentionFloor(serverTick);
+            ulong floor = Math.Max(GetAcceptedVerifiedHistoryRetentionFloor(serverTick),
+                TickWindowFloor(_verifiedHistory, serverTick));
             if (floor > 0)
                 _verifiedHistory.PruneBeforeBaseline(floor);
-            _verifiedHistory.PruneByTickWindow(serverTick);
             if (isEventHandler && serverTick > predictionManager.verifiedHistoryWindowTicks)
             {
                 // Retain the oldest usable baseline until event deltas require a full frame.
@@ -921,6 +938,8 @@ namespace PurrNet.Prediction
         private const int ViewHookUpdate = 2;
         private const int ViewHookLate = 4;
         private const int ViewHookStart = 8;
+        // Not a view hook: the type replaces OnOwnerAssigned, resolved with them once per type.
+        private const int OwnerHookCustom = 16;
         private static readonly Dictionary<Type, int> s_viewHooks = new ();
 
         private int viewHooks => _viewHooks != 0 ? _viewHooks : _viewHooks = ResolveViewHooks(GetType());
@@ -938,6 +957,10 @@ namespace PurrNet.Prediction
                 hooks |= ViewHookLate;
             if (OverridesViewHook(type, nameof(ViewStart), args))
                 hooks |= ViewHookStart;
+            var ownerHook = type.GetMethod(nameof(OnOwnerAssigned), BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                null, new[] { typeof(PlayerID?) }, null);
+            if (ownerHook == null || ownerHook.DeclaringType != typeof(PredictedIdentity<STATE>))
+                hooks |= OwnerHookCustom;
             s_viewHooks[type] = hooks;
             return hooks;
         }
