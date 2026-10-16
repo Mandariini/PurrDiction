@@ -11,6 +11,8 @@ namespace PurrNet.Prediction.Tests.Editor
     // Artifact-only: these tests exercise storage and ownership without Unity APIs.
     public sealed class HistoryBackingCompactionTests
     {
+        const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
+
         sealed class Ticket { public int Disposals; }
         struct Value : IDisposable
         {
@@ -51,6 +53,87 @@ namespace PurrNet.Prediction.Tests.Editor
             }
             foreach (var ticket in allocated)
                 Assert.That(ticket.Disposals, Is.EqualTo(live.Contains(ticket) ? 0 : 1));
+
+            var queries = new HashSet<ulong> { 0, ulong.MaxValue };
+            foreach (ulong tick in expected.Keys)
+            {
+                queries.Add(tick);
+                if (tick > 0) queries.Add(tick - 1);
+                if (tick < ulong.MaxValue) queries.Add(tick + 1);
+            }
+            foreach (ulong tick in queries)
+            {
+                Assert.That(history.HasAtOrBefore(tick),
+                    Is.EqualTo(expected.Keys.Any(entryTick => entryTick <= tick)),
+                    $"Baseline availability at {tick}");
+                bool canReadLatest = expected.Count > 0 && expected.Last().Key <= tick;
+                Assert.That(history.TryReadLatest(tick, out var latest), Is.EqualTo(canReadLatest),
+                    $"Newest entry at {tick}");
+                Assert.That(latest.Ticket, Is.SameAs(canReadLatest ? expected.Last().Value : null));
+            }
+        }
+
+        [Test]
+        public void NewestReadRejectsFutureEntriesAndReturnsAnIndependentValueCopy()
+        {
+            var history = new History<Value>();
+            var first = new Ticket();
+            var last = new Ticket();
+            history.Write(3, new Value { Ticket = first });
+            history.Write(7, new Value { Ticket = last });
+            Assert.That(history.TryReadLatest(6, out var value), Is.False,
+                "coalescing must not substitute an older entry when a future one exists");
+            Assert.That(value.Ticket, Is.Null);
+            Assert.That(history.TryReadLatest(7, out value), Is.True);
+            value.Ticket = null;
+            Assert.That(history[1].Ticket, Is.SameAs(last));
+            Assert.That(first.Disposals + last.Disposals, Is.Zero);
+            history.ClearFuture(6);
+            Assert.That(history.TryReadLatest(6, out value), Is.True);
+            Assert.That(value.Ticket, Is.SameAs(first));
+            Assert.That(last.Disposals, Is.EqualTo(1));
+            history.Clear();
+            Assert.That(history.TryReadLatest(ulong.MaxValue, out value), Is.False);
+            Assert.That(value.Ticket, Is.Null);
+            Assert.That(first.Disposals, Is.EqualTo(1));
+        }
+
+        [Test]
+        public void TickWindowRetainsEveryTickWithoutGrowingItsBackingArrays()
+        {
+            var history = History<LargeValue>.ForTickWindow(600);
+            for (ulong tick = 0; tick < 1800; tick++)
+            {
+                history.PruneByTickWindow(tick);
+                history.Write(tick, new LargeValue { Number = (int)tick });
+                Assert.That(Backing(history), Is.EqualTo(602));
+                ulong cutoff = tick > 600 ? tick - 600 : 0;
+                Assert.That(history.Read(cutoff, out var oldest), Is.True);
+                Assert.That(oldest.Number, Is.EqualTo((int)cutoff));
+                Assert.That(history.MostRecentTick, Is.EqualTo(tick));
+            }
+            history.ClearPast(1790);
+            Assert.That(history.TryCompactBackingStorage(65536), Is.True);
+            history.RestoreEagerBackingStorage();
+            Assert.That(Backing(history), Is.EqualTo(602));
+            Assert.That(history.Read(1790, out var retained), Is.True);
+            Assert.That(retained.Number, Is.EqualTo(1790));
+            history.Clear();
+        }
+
+        [Test]
+        public void TickWindowStorageStillSupportsUnprunedOutOfOrderWritesAndDisposal()
+        {
+            var history = History<Value>.ForTickWindow(600);
+            var allocated = new List<Ticket>();
+            var expected = new SortedDictionary<ulong, Ticket>();
+            for (ulong tick = 0; tick < 880; tick += 2)
+                expected[tick] = Write(history, allocated, tick);
+            for (ulong tick = 1; tick < 400; tick += 2)
+                expected[tick] = Write(history, allocated, tick);
+            Assert.That(Backing(history), Is.EqualTo(901));
+            Check(history, expected, allocated);
+            history.Clear(); expected.Clear(); Check(history, expected, allocated);
         }
 
         [Test]
@@ -174,6 +257,64 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(Backing(history), Is.EqualTo(eager));
             Assert.That(history.Capacity, Is.EqualTo(capacity));
             Assert.That(history.Count, Is.Zero);
+        }
+
+        [Test]
+        public void ExpiredAndFilledGapsRestoreDirectIndexingWithoutChangingOwnership()
+        {
+            var history = new History<Value>(600);
+            var allocated = new List<Ticket>();
+            var expected = new SortedDictionary<ulong, Ticket>();
+            bool Direct() => (bool)typeof(History<Value>).GetField("m_contiguous", Fields).GetValue(history);
+            foreach (ulong tick in new ulong[] { 0, 10, 11, 12, 13, 14, 20 })
+                expected[tick] = Write(history, allocated, tick);
+            Assert.That(Direct(), Is.False);
+            history.TryCompactBackingStorage(65536);
+            history.ClearPast(10); expected.Remove(0);
+            Assert.That(Direct(), Is.False, "the remaining tail still has a gap");
+            history.ClearFuture(14); expected.Remove(20);
+            Assert.That(Direct(), Is.True);
+            Check(history, expected, allocated);
+            history.Remove(12); expected.Remove(12);
+            Assert.That(Direct(), Is.False);
+            expected[12] = Write(history, allocated, 12);
+            Assert.That(Direct(), Is.True);
+            expected[ulong.MaxValue] = Write(history, allocated, ulong.MaxValue);
+            Assert.That(Direct(), Is.False);
+            history.Remove(ulong.MaxValue); expected.Remove(ulong.MaxValue);
+            Assert.That(Direct(), Is.True);
+            history.Remove(10); expected.Remove(10);
+            Assert.That(Direct(), Is.True);
+            Check(history, expected, allocated);
+            Assert.That(history.Find(10, out int before), Is.False);
+            Assert.That(before, Is.Zero);
+            Assert.That(history.Find(15, out int after), Is.False);
+            Assert.That(after, Is.EqualTo(expected.Count));
+            history.Clear(); expected.Clear(); Check(history, expected, allocated);
+        }
+
+        [Test]
+        public void StartupGapExpirationRestoresDirectIndexingInAWrappedTickWindow()
+        {
+            var history = History<Value>.ForTickWindow(10);
+            var allocated = new List<Ticket>();
+            var expected = new SortedDictionary<ulong, Ticket>();
+            expected[0] = Write(history, allocated, 0);
+            for (ulong tick = 100; tick < 150; tick++)
+            {
+                history.PruneByTickWindow(tick);
+                foreach (var old in expected.Keys.Where(old => old < tick - 10).ToArray())
+                {
+                    // Sparse pruning retains the newest preceding anchor until a
+                    // newer entry reaches the cutoff.
+                    if (expected.Keys.Any(next => next > old && next <= tick - 10)) expected.Remove(old);
+                }
+                expected[tick] = Write(history, allocated, tick);
+                Check(history, expected, allocated);
+                if (tick >= 111)
+                    Assert.That(typeof(History<Value>).GetField("m_contiguous", Fields).GetValue(history), Is.True);
+            }
+            history.Clear(); expected.Clear(); Check(history, expected, allocated);
         }
 
         [Test]

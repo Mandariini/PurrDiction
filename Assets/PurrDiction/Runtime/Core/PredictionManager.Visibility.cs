@@ -700,6 +700,8 @@ namespace PurrNet.Prediction
             PlayerVisibilityTimeline timeline,
             PredictedIdentity system)
         {
+            if (timeline.isPassThrough)
+                return true;
             if (!system || system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return true;
 
@@ -712,6 +714,8 @@ namespace PurrNet.Prediction
             PredictedIdentity system,
             ulong tick)
         {
+            if (timeline.isPassThrough)
+                return true;
             if (!system || system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return true;
 
@@ -742,8 +746,8 @@ namespace PurrNet.Prediction
             PredictedIdentity system,
             ulong baselineTick,
             bool hasHierarchyBaseline,
-            HashSet<PredictedObjectID> baselineRoots,
-            HashSet<PredictedObjectID> baselinePieces)
+            PredictionObjectSet baselineRoots,
+            PredictionObjectSet baselinePieces)
         {
             if (system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return false;
@@ -757,32 +761,35 @@ namespace PurrNet.Prediction
 
         sealed class HierarchyBaselineScratch
         {
-            public ulong baselineTick = ulong.MaxValue;
-            public ulong cachedAtLocalTick = ulong.MaxValue;
             public bool hasBaseline;
-            public readonly HashSet<PredictedObjectID> roots = new();
-            public readonly HashSet<PredictedObjectID> pieces = new();
+            public readonly PredictionObjectSet roots = new();
+            public readonly PredictionObjectSet pieces = new();
+            // A non-owning lease copy detects disposal before a pooled list can be reused.
+            public DisposableList<InstanceDetails> sourcePieces;
         }
 
-        readonly Dictionary<PlayerID, HierarchyBaselineScratch> _hierarchyBaselineScratchByPlayer = new();
+        readonly Dictionary<ulong, HierarchyBaselineScratch> _hierarchyBaselineScratchByTick = new();
+        readonly List<HierarchyBaselineScratch> _hierarchyBaselineScratchPool = new();
+        ulong _hierarchyBaselineCacheTick = ulong.MaxValue;
 
-        // Share the baseline scan across state and event writes in one tick.
-        // Invalidate each tick: a stalled ACK can outlive its retained baseline.
-        HierarchyBaselineScratch GetHierarchyBaselineScratch(PlayerID player, ulong baselineTick)
+        // Share the global baseline scan across receivers, state and event writes.
+        // Revalidate each tick: a stalled ACK can outlive its retained baseline.
+        // Membership can reuse the same immutable snapshot while its lease remains valid.
+        HierarchyBaselineScratch GetHierarchyBaselineScratch(ulong baselineTick)
         {
-            if (!_hierarchyBaselineScratchByPlayer.TryGetValue(player, out var scratch))
+            if (_hierarchyBaselineCacheTick != localTick)
             {
-                scratch = new HierarchyBaselineScratch();
-                _hierarchyBaselineScratchByPlayer[player] = scratch;
+                _hierarchyBaselineScratchByTick.Clear();
+                _hierarchyBaselineCacheTick = localTick;
             }
 
-            if (scratch.baselineTick == baselineTick && scratch.cachedAtLocalTick == localTick)
+            if (_hierarchyBaselineScratchByTick.TryGetValue(baselineTick, out var scratch))
                 return scratch;
 
-            scratch.baselineTick = baselineTick;
-            scratch.cachedAtLocalTick = localTick;
-            scratch.roots.Clear();
-            scratch.pieces.Clear();
+            int index = _hierarchyBaselineScratchByTick.Count;
+            if (index == _hierarchyBaselineScratchPool.Count)
+                _hierarchyBaselineScratchPool.Add(new HierarchyBaselineScratch());
+            scratch = _hierarchyBaselineScratchPool[index];
 
             if (hierarchy &&
                 hierarchy.TryGetVerifiedState(
@@ -790,20 +797,36 @@ namespace PurrNet.Prediction
                     out _,
                     out PredictedHierarchyState hierarchyBaseline))
             {
-                scratch.hasBaseline = true;
-                PredictedHierarchy.CollectSpawnedRoots(hierarchyBaseline, scratch.roots);
-
-                if (!hierarchyBaseline.spawnedPrefabs.isDisposed)
+                var source = hierarchyBaseline.spawnedPrefabs;
+                var sourceList = source.list;
+                if (!scratch.hasBaseline || scratch.sourcePieces.isDisposed ||
+                    !ReferenceEquals(scratch.sourcePieces.list, sourceList) ||
+                    scratch.pieces.Count != (sourceList?.Count ?? 0))
                 {
-                    for (var i = 0; i < hierarchyBaseline.spawnedPrefabs.Count; i++)
-                        scratch.pieces.Add(hierarchyBaseline.spawnedPrefabs[i].instanceId);
+                    scratch.roots.Clear();
+                    scratch.pieces.Clear();
+                    if (sourceList != null)
+                    {
+                        for (var i = 0; i < sourceList.Count; i++)
+                        {
+                            var piece = sourceList[i];
+                            scratch.roots.Add(piece.rootId);
+                            scratch.pieces.Add(piece.instanceId);
+                        }
+                    }
                 }
+                scratch.sourcePieces = source;
+                scratch.hasBaseline = true;
             }
             else
             {
                 scratch.hasBaseline = false;
+                scratch.sourcePieces = default;
+                scratch.roots.Clear();
+                scratch.pieces.Clear();
             }
 
+            _hierarchyBaselineScratchByTick.Add(baselineTick, scratch);
             return scratch;
         }
 
@@ -930,7 +953,7 @@ namespace PurrNet.Prediction
         {
             _addressedSystemScratch.Clear();
 
-            var baselineScratch = GetHierarchyBaselineScratch(player, baselineTick);
+            var baselineScratch = GetHierarchyBaselineScratch(baselineTick);
 
             for (var i = 0; i < _systemsCount; i++)
             {
@@ -944,105 +967,106 @@ namespace PurrNet.Prediction
             }
 
             bool allowOmission = !fullFrame && baselineTick > 0;
-            if (!allowOmission)
-            {
-                AddressedPredictionRecords.WriteSectionCount(
-                    _addressedSystemScratch.Count,
-                    destination);
-            }
-
-            using var records = allowOmission ? BitPackerPool.Get() : null;
+            int sectionOrigin = destination.positionInBits;
+            AddressedPredictionRecords.WriteSectionCount(_addressedSystemScratch.Count, destination);
+            int recordsOrigin = destination.positionInBits;
             using var payload = BitPackerPool.Get();
             using var body = BitPackerPool.Get();
             int writtenCount = 0;
 
-            for (var i = 0; i < _addressedSystemScratch.Count; i++)
+            try
             {
-                var system = _addressedSystemScratch[i];
-                payload.ResetPositionAndMode(false);
-
-                bool writeFull = fullFrame ||
-                                 (baselineTick > 0 && !system.HasUnchangedStateBaseline(baselineTick)) ||
-                                 RequiresFullEntryState(
-                                     timeline,
-                                     system,
-                                     baselineTick,
-                                     baselineScratch.hasBaseline,
-                                     baselineScratch.roots,
-                                     baselineScratch.pieces);
-                // A prepared continuation may be discarded for size; consume the request only when sent.
-                bool heal = PrepareDesyncHeal(player, system.id);
-                if (heal)
-                    writeFull = true;
-
-                ulong recordBaseline = baselineTick;
-                bool ownBaseline = false;
-                if (writeFull && !fullFrame && !heal && baselineTick > 0 &&
-                    TryGetEnteringBaseline(system, timeline, baselineTick, tick, out var enteringTick))
+                for (var i = 0; i < _addressedSystemScratch.Count; i++)
                 {
-                    writeFull = false;
-                    ownBaseline = true;
-                    recordBaseline = enteringTick;
-                }
-                bool changed;
+                    var system = _addressedSystemScratch[i];
+                    payload.ResetPositionAndMode(false);
 
-                body.ResetPositionAndMode(false);
-                if (!TryWriteAggregateVisibilityState(
-                        system,
-                        player,
-                        timeline,
-                        body,
-                        tick,
-                        recordBaseline,
-                        ref writeFull,
-                        out changed))
-                {
-                    if (writeFull)
+                    bool writeFull = fullFrame ||
+                                     (baselineTick > 0 && !system.HasUnchangedStateBaseline(baselineTick)) ||
+                                     RequiresFullEntryState(
+                                         timeline,
+                                         system,
+                                         baselineTick,
+                                         baselineScratch.hasBaseline,
+                                         baselineScratch.roots,
+                                         baselineScratch.pieces);
+                    // A prepared continuation may be discarded for size; consume the request only when sent.
+                    bool heal = PrepareDesyncHeal(player, system.id);
+                    if (heal)
+                        writeFull = true;
+
+                    ulong recordBaseline = baselineTick;
+                    bool ownBaseline = false;
+                    if (writeFull && !fullFrame && !heal && baselineTick > 0 &&
+                        TryGetEnteringBaseline(system, timeline, baselineTick, tick, out var enteringTick))
                     {
-                        system.RunWriteFirstState(tick, body);
-                        changed = true;
+                        writeFull = false;
+                        ownBaseline = true;
+                        recordBaseline = enteringTick;
                     }
-                    else
-                    {
-                        changed = system.RunWriteCurrentState(
+                    bool changed;
+
+                    body.ResetPositionAndMode(false);
+                    if (!TryWriteAggregateVisibilityState(
+                            system,
                             player,
+                            timeline,
                             body,
-                            recordBaseline);
+                            tick,
+                            recordBaseline,
+                            ref writeFull,
+                            out changed))
+                    {
+                        if (writeFull)
+                        {
+                            system.RunWriteFirstState(tick, body);
+                            changed = true;
+                        }
+                        else
+                        {
+                            changed = system.RunWriteCurrentState(
+                                player,
+                                body,
+                                recordBaseline);
+                        }
                     }
-                }
-                ownBaseline &= !writeFull;
-                if (ownBaseline)
-                    spawnBaselineRecordsTotal++;
-
-                bool canOmit = allowOmission &&
-                               !writeFull &&
-                               !ownBaseline &&
-                               !changed &&
-                               system.RunCanOmitUnchangedState(baselineTick);
-                if (canOmit)
-                    continue;
-
-                payload.ResetPositionAndMode(false);
-                if (!writeFull)
-                {
-                    Packer<bool>.Write(payload, ownBaseline);
+                    ownBaseline &= !writeFull;
                     if (ownBaseline)
-                        Packer<PackedUInt>.Write(payload, checked((uint)(tick - recordBaseline)));
+                        spawnBaselineRecordsTotal++;
+
+                    bool canOmit = allowOmission &&
+                                   !writeFull &&
+                                   !ownBaseline &&
+                                   !changed &&
+                                   system.RunCanOmitUnchangedState(baselineTick);
+                    if (canOmit)
+                        continue;
+
+                    payload.ResetPositionAndMode(false);
+                    if (!writeFull)
+                    {
+                        Packer<bool>.Write(payload, ownBaseline);
+                        if (ownBaseline)
+                            Packer<PackedUInt>.Write(payload, checked((uint)(tick - recordBaseline)));
+                    }
+                    AddressedPredictionRecords.WritePrefixedRecord(
+                        system.id,
+                        writeFull,
+                        payload,
+                        body,
+                        destination);
+                    writtenCount++;
                 }
-                payload.WriteBitsWithoutConsumingIt(body, body.positionInBits);
 
-                AddressedPredictionRecords.WriteRecord(
-                    allowOmission ? records : destination,
-                    system.id,
-                    writeFull,
-                    payload);
-                writtenCount++;
+                if (allowOmission)
+                    AddressedPredictionRecords.CompleteSection(writtenCount, sectionOrigin, recordsOrigin, destination);
             }
-
-            if (allowOmission)
+            catch
             {
-                AddressedPredictionRecords.WriteSectionCount(writtenCount, destination);
-                destination.WriteBitsWithoutConsumingIt(records, records.positionInBits);
+                // A failing user codec must not publish a partial delta section.
+                if (allowOmission)
+                    destination.SetBitPosition(sectionOrigin);
+                throw;
             }
         }
         void WriteAddressedFirstInputSection(
@@ -1552,7 +1576,6 @@ namespace PurrNet.Prediction
             _visibilityDependencyRebuild.Remove(player);
             RemoveVisibilityAcquisitions(player);
             RemovePendingVisibilityDeletes(player);
-            _hierarchyBaselineScratchByPlayer.Remove(player);
             _hiddenPiecesScratchByPlayer.Remove(player);
             ClearDesyncTrackingForPlayer(player);
         }
@@ -1574,7 +1597,9 @@ namespace PurrNet.Prediction
             _hiddenDependencyScratch.Clear();
             _spawnedRootScratch.Clear();
             _ownedRootScratch.Clear();
-            _hierarchyBaselineScratchByPlayer.Clear();
+            _hierarchyBaselineScratchByTick.Clear();
+            _hierarchyBaselineScratchPool.Clear();
+            _hierarchyBaselineCacheTick = ulong.MaxValue;
             _hiddenPiecesScratchByPlayer.Clear();
             _visibilityRootScratch.Clear();
             ClearPendingVisibilityDeletes();

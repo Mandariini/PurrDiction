@@ -29,7 +29,7 @@ namespace PurrNet.Prediction
 
         internal override bool WriteCurrentState(PlayerID target, BitPacker packer, ulong baselineTick)
         {
-            return WritePredictionMetadata(packer, baselineTick, in fullPredictedState.prediction);
+            return WritePredictionMetadata(packer, baselineTick, fullPredictedState.prediction);
         }
 
         internal override void ReadState(ulong tick, BitPacker packer, ulong baselineTick, ulong serverTick)
@@ -340,7 +340,7 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            RefreshMetadataLedger(tick, in state.prediction);
+            RefreshMetadataLedger(tick, state.prediction);
             var baseline = GetFirstStateBaseline();
             DeltaPacker<PredictedIdentityState>.Write(packer, default, state.prediction);
             DeltaPacker<STATE>.Write(packer, baseline, state.state);

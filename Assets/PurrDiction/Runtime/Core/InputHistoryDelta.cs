@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using PurrNet.Packing;
 
 namespace PurrNet.Prediction
@@ -16,6 +17,9 @@ namespace PurrNet.Prediction
             int encodedBits = ((bytes - 1) / 8 + 1) * 8;
             if (encodedBits >= rawBits)
                 return false;
+            if (length <= 512)
+                return TryWriteBuffered(destination, previous, current, length, bytes, rawBits, encodedBits);
+
             for (int i = 0; i < bytes; i++)
             {
                 if (PeekByte(previous, i, length) == PeekByte(current, i, length))
@@ -41,6 +45,35 @@ namespace PurrNet.Prediction
                         destination.WriteBits(PeekByte(current, first + i, length), 8);
                 }
             }
+            return true;
+        }
+
+        private static bool TryWriteBuffered(BitPacker destination, in BitData previous, in BitData current,
+            int length, int bytes, int rawBits, int encodedBits)
+        {
+            // Bound stack use for ordinary inputs. Inspect each byte once, then commit the
+            // complete patch so an unhelpful delta leaves the destination untouched.
+            Span<byte> encoded = stackalloc byte[72];
+            int written = 0;
+            for (int first = 0; first < bytes; first += 8)
+            {
+                int maskPosition = written++;
+                byte mask = 0;
+                int count = Math.Min(8, bytes - first);
+                for (int i = 0; i < count; i++)
+                {
+                    byte value = PeekByte(current, first + i, length);
+                    if (PeekByte(previous, first + i, length) == value)
+                        continue;
+                    encodedBits += 8;
+                    if (encodedBits >= rawBits)
+                        return false;
+                    mask |= (byte)(1 << i);
+                    encoded[written++] = value;
+                }
+                encoded[maskPosition] = mask;
+            }
+            destination.WriteBytes(encoded.Slice(0, written));
             return true;
         }
 
@@ -85,6 +118,7 @@ namespace PurrNet.Prediction
             return (byte)source.ReadBits(8);
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static byte PeekByte(in BitData data, int index, int length)
         {
             int position = (int)data.bitOrigin.value + index * 8;

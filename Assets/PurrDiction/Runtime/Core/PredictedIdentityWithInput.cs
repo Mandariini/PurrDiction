@@ -56,11 +56,13 @@ namespace PurrNet.Prediction
 
         private void EnsureInputHistory(PredictionManager world)
         {
-            if (_inputHistory != null && _inputHistory.Capacity == world.tickRate * 5)
+            int capacity = world.isServer ? checked((int)world.verifiedHistoryWindowTicks) : world.tickRate * 5;
+            if (_inputHistory != null && _inputHistory.Capacity == capacity)
                 return;
 
             _inputHistory?.Clear();
-            _inputHistory = new History<INPUT>(world.tickRate * 5);
+            _inputHistory = History<INPUT>.ForTickWindow(capacity, world.initialLocalHistoryWindowTicks,
+                checked((int)world.verifiedHistoryWindowTicks));
         }
 
         internal override void ReleasePredictionStateForPool()
@@ -151,6 +153,13 @@ namespace PurrNet.Prediction
 
         internal override void PrepareInput(bool isServer, bool isLocal, ulong tick, bool extrapolate)
         {
+            // The server only writes inputs for its current tick. Retain the full
+            // protocol window plus its preceding anchor without geometric growth.
+            if (isServer)
+                _inputHistory.PruneByTickWindow(tick);
+            else
+                PruneAcceptedInputHistory(tick);
+
             if (isLocal)
             {
                 try
@@ -248,6 +257,7 @@ namespace PurrNet.Prediction
         public override void ReadFirstInput(ulong localTick, BitPacker packer)
         {
             var pos = packer.positionInBits;
+            PruneAcceptedInputHistory(localTick);
             if (Packer<bool>.Read(packer))
             {
                 var input = Packer<INPUT>.Read(packer);
@@ -256,6 +266,13 @@ namespace PurrNet.Prediction
             else _inputHistory.Remove(localTick);
 
             TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);
+        }
+
+        private void PruneAcceptedInputHistory(ulong tick)
+        {
+            ulong floor = GetAcceptedHistoryRetentionFloor(tick);
+            if (floor > 0 && _inputHistory.Count > 1 && _inputHistory.OldestTick < floor)
+                _inputHistory.PruneBeforeBaseline(floor);
         }
 
         private INPUT? _queuedInput;

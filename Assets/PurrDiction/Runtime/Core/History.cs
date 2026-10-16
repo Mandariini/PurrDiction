@@ -17,8 +17,13 @@ namespace PurrNet.Prediction
 
         readonly int m_limitToCut;
 
+        readonly int m_eagerCapacity;
+
+        readonly int m_growthBoundary;
+
         bool m_contiguous = true;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         int Phys(int index)
         {
             int phys = m_head + index;
@@ -53,19 +58,53 @@ namespace PurrNet.Prediction
         /// <summary>
         /// Number of entries
         /// </summary>
-        public int Count => m_count;
+        public int Count
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => m_count;
+        }
 
         public int Capacity => m_maxCount;
 
         /// <summary>
         /// Value of the most recent received tick
         /// </summary>
-        public ulong MostRecentTick => m_count == 0 ? 0 : m_ticks[Phys(m_count - 1)];
+        public ulong MostRecentTick
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => m_count == 0 ? 0 : m_ticks[Phys(m_count - 1)];
+        }
+
+        // Read only the newest entry, and reject it if it is ahead of the caller.
+        // Keep the ordinary value copy so equality callbacks cannot change history slots.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal bool TryReadLatest(ulong maximumTick, out T result)
+        {
+            if (m_count > 0)
+            {
+                int phys = Phys(m_count - 1);
+                if (m_ticks[phys] <= maximumTick)
+                {
+                    result = m_values[phys];
+                    return true;
+                }
+            }
+            result = default;
+            return false;
+        }
 
         /// <summary>
         /// Oldest tick we have in the set (this will vary as older entries are purged)
         /// </summary>
-        public ulong OldestTick => m_count == 0 ? 0 : m_ticks[m_head];
+        public ulong OldestTick
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get => m_count == 0 ? 0 : m_ticks[m_head];
+        }
+
+        // Availability checks need neither a search nor a copy of the retained value.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal bool HasAtOrBefore(ulong tick) => m_count > 0 && m_ticks[m_head] <= tick;
 
         /// <summary>
         /// Gets the tick value for the index in the internal collection
@@ -85,15 +124,32 @@ namespace PurrNet.Prediction
         /// </summary>
         /// <param name="maxEntries">Number of entries you can have at once reliably,
         /// anything past this number can be cleaned at any time without your input. -1 means no limit thus no cleaning.</param>
-        public History(int maxEntries = -1)
+        public History(int maxEntries = -1) : this(maxEntries, -1) { }
+
+        // A tick window holds its cutoff anchor, the ticks inside the window and the
+        // next write. Keep the usual entry-count ceiling for out-of-order callers.
+        internal static History<T> ForTickWindow(int maxEntries)
+            => new History<T>(maxEntries, maxEntries > 0 ? maxEntries + 2 : -1);
+
+        internal static History<T> ForTickWindow(int maxEntries, int initialWindow)
+            => new History<T>(maxEntries, maxEntries > 0 ? Math.Min(maxEntries, initialWindow) + 2 : -1);
+
+        internal static History<T> ForTickWindow(int maxEntries, int initialWindow, int growthWindow)
+            => new History<T>(maxEntries,
+                maxEntries > 0 ? Math.Min(maxEntries, initialWindow) + 2 : -1,
+                maxEntries > 0 ? Math.Min(maxEntries, growthWindow) + 2 : 0);
+
+        private History(int maxEntries, int initialCapacity, int growthBoundary = 0)
         {
             m_maxCount = maxEntries;
 
             if (m_maxCount > 0)
             {
                 m_limitToCut = Math.Max(m_maxCount + 10, m_maxCount + m_maxCount / 2);
-                m_ticks = new ulong[m_limitToCut + 1];
-                m_values = new T[m_limitToCut + 1];
+                m_eagerCapacity = initialCapacity > 0 ? Math.Min(initialCapacity, m_limitToCut + 1) : m_limitToCut + 1;
+                m_growthBoundary = Math.Min(growthBoundary, m_limitToCut + 1);
+                m_ticks = new ulong[m_eagerCapacity];
+                m_values = new T[m_eagerCapacity];
             }
             else
             {
@@ -106,7 +162,16 @@ namespace PurrNet.Prediction
         {
             int newCapacity = m_ticks.Length * 2;
             if (m_maxCount > 0)
+            {
                 newCapacity = Math.Min(newCapacity, m_limitToCut + 1);
+                int tickWindowCapacity = m_maxCount + 2;
+                if (m_eagerCapacity < tickWindowCapacity && m_ticks.Length < tickWindowCapacity)
+                    newCapacity = Math.Min(newCapacity, tickWindowCapacity);
+                // Reach the protocol window without doubling past it. Stalled local
+                // timelines can still grow beyond this boundary to their full limit.
+                if (m_ticks.Length < m_growthBoundary)
+                    newCapacity = Math.Min(newCapacity, m_growthBoundary);
+            }
             ResizeBackingStorage(newCapacity);
         }
 
@@ -137,15 +202,16 @@ namespace PurrNet.Prediction
         }
 
         // Restore capacity before Setup to avoid deferring growth into later simulation.
-        internal long RestoreEagerBackingStorage()
+        internal long RestoreEagerBackingStorage(int minimumCapacity = 0)
         {
-            if (m_maxCount <= 0 || m_ticks.Length >= m_limitToCut + 1)
+            int capacity = Math.Min(m_limitToCut + 1, Math.Max(m_eagerCapacity, minimumCapacity));
+            if (m_maxCount <= 0 || m_ticks.Length >= capacity)
                 return 0;
-            ResizeBackingStorage(m_limitToCut + 1);
+            ResizeBackingStorage(Math.Max(m_count, capacity));
             return BackingStoragePayloadBytes;
         }
 
-        internal bool HasEagerBackingStorage => m_maxCount > 0 && m_ticks.Length >= m_limitToCut + 1;
+        internal bool HasEagerBackingStorage => m_maxCount > 0 && m_ticks.Length >= m_eagerCapacity;
 
         internal long BackingStoragePayloadBytes =>
             (long)m_ticks.Length * (Unsafe.SizeOf<T>() + sizeof(ulong));
@@ -205,7 +271,7 @@ namespace PurrNet.Prediction
             }
 
             InsertAt(index, tick, data);
-            m_contiguous = false;
+            RefreshContiguity();
 
             if (m_maxCount > 0)
                 TryToDownsize();
@@ -240,6 +306,15 @@ namespace PurrNet.Prediction
             RemoveFront(m_count - m_maxCount);
         }
 
+        // Sorted unique ticks fill the entire interval exactly when its span equals
+        // the entry count. A sparse startup or replay gap need not disable direct
+        // indexing after that gap has expired or been filled.
+        private void RefreshContiguity()
+        {
+            m_contiguous = m_count <= 1 ||
+                m_ticks[Phys(m_count - 1)] - m_ticks[m_head] == (ulong)(m_count - 1);
+        }
+
         private void RemoveFront(int count)
         {
             for (int i = 0; i < count; i++)
@@ -252,8 +327,8 @@ namespace PurrNet.Prediction
             m_head = Phys(count);
             m_count -= count;
 
-            if (m_count <= 1)
-                m_contiguous = true;
+            if (!m_contiguous)
+                RefreshContiguity();
         }
 
         private void RemoveBack(int count)
@@ -267,8 +342,8 @@ namespace PurrNet.Prediction
 
             m_count -= count;
 
-            if (m_count <= 1)
-                m_contiguous = true;
+            if (!m_contiguous)
+                RefreshContiguity();
         }
 
         /// <summary>
@@ -443,8 +518,27 @@ namespace PurrNet.Prediction
                 return false;
             }
 
+            // Delta baselines usually address one of the newest sparse entries.
+            // Also resolve insertion points beyond or between those entries directly.
+            int lastIndex = m_count - 1;
+            ulong last = m_ticks[Phys(lastIndex)];
+            if (tick >= last)
+            {
+                result = tick == last ? lastIndex : m_count;
+                return tick == last;
+            }
+            if (lastIndex > 0)
+            {
+                ulong previous = m_ticks[Phys(lastIndex - 1)];
+                if (tick >= previous)
+                {
+                    result = tick == previous ? lastIndex - 1 : lastIndex;
+                    return tick == previous;
+                }
+            }
+
             int min = 0;
-            int max = m_count - 1;
+            int max = lastIndex - 2;
 
             while (min <= max)
             {
@@ -501,11 +595,7 @@ namespace PurrNet.Prediction
             m_values[Phys(m_count - 1)] = default;
             m_count--;
 
-            if (index != 0 && index != m_count)
-                m_contiguous = false;
-
-            if (m_count <= 1)
-                m_contiguous = true;
+            RefreshContiguity();
         }
     }
 }

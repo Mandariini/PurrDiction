@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using PurrNet.Packing;
+using PurrNet.Pooling;
 
 namespace PurrNet.Prediction
 {
@@ -124,13 +125,23 @@ namespace PurrNet.Prediction
 
         private readonly Dictionary<ulong, UploadedInputTick> _uploadedInputs = new();
         private readonly List<ulong> _uploadedInputPruneScratch = new();
+        private BitPacker _spareUploadedInputBits;
 
         internal void RecordUploadedInputs(ulong tick, BitPacker block, List<InputHistorySpan> spans)
         {
             // Only the first upload of a tick can be the one the server consumed.
             if (_uploadedInputs.ContainsKey(tick))
                 return;
-            var entry = new UploadedInputTick { bits = BitPackerPool.Get(), spans = new List<InputHistorySpan>(spans) };
+            var copiedSpans = ListPool<InputHistorySpan>.Instantiate(spans.Count);
+            copiedSpans.AddRange(spans);
+            // Uploads outlive shared packet scratch buffers by an entire history window.
+            // Own compact buffers so each retained tick cannot pin an oversized packet buffer.
+            var entry = new UploadedInputTick
+            {
+                bits = _spareUploadedInputBits ?? new BitPacker(block.positionInBytes + 8),
+                spans = copiedSpans
+            };
+            _spareUploadedInputBits = null;
             entry.bits.ResetPositionAndMode(false);
             entry.bits.WriteBitDataWithoutConsumingIt(new BitData(block, 0, block.positionInBits));
             _uploadedInputs[tick] = entry;
@@ -148,7 +159,10 @@ namespace PurrNet.Prediction
             }
             for (int i = 0; i < _uploadedInputPruneScratch.Count; i++)
             {
-                _uploadedInputs[_uploadedInputPruneScratch[i]].bits.Dispose();
+                // One spare is enough for steady tick-by-tick expiry. Drop the others after
+                // a large acknowledgement advance instead of keeping a second history pool.
+                _spareUploadedInputBits ??= _uploadedInputs[_uploadedInputPruneScratch[i]].bits;
+                ListPool<InputHistorySpan>.Destroy(_uploadedInputs[_uploadedInputPruneScratch[i]].spans);
                 _uploadedInputs.Remove(_uploadedInputPruneScratch[i]);
             }
         }
@@ -172,8 +186,11 @@ namespace PurrNet.Prediction
         private void ClearUploadedInputs()
         {
             foreach (var entry in _uploadedInputs.Values)
-                entry.bits.Dispose();
+            {
+                ListPool<InputHistorySpan>.Destroy(entry.spans);
+            }
             _uploadedInputs.Clear();
+            _spareUploadedInputBits = null;
         }
 
         private void StageVerifiedInputSpan(ulong tick, PredictedComponentID id, int origin, int length)

@@ -67,7 +67,8 @@ namespace PurrNet.Prediction
         {
             return new PredictedPhysics2DData
             {
-                events = events.Duplicate()
+                events = events.isDisposed ? default : events.Count == 0
+                    ? DisposableList<Physics2DEvent>.Create(0) : events.Duplicate()
             };
         }
 #else
@@ -92,6 +93,12 @@ namespace PurrNet.Prediction
         }
 
 #if UNITY_PHYSICS_2D
+        protected override void SetUnityState(PredictedPhysics2DData state)
+        {
+            if (!state.events.isDisposed && state.events.list.Capacity < 16)
+                state.events.list.Capacity = 16;
+        }
+
         public override void PostSimulate()
         {
             ref var state = ref currentState;

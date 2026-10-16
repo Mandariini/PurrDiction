@@ -65,6 +65,38 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void LiveReceiverRetiresOnlyStatesBeforeItsAcceptedBaseline()
+        {
+            using var f = new Fixture();
+            f.Queue(11, 8, 110);
+            f.Render();
+            Assert.That(f.Floor, Is.EqualTo(8));
+            Assert.That(f.verified.Read(2, out _), Is.True, "the floor advances only after the first frame succeeds");
+            f.Queue(12, 8, 120);
+            f.Render();
+            Assert.That(f.verified.Read(2, out _), Is.False);
+            Assert.That(f.verified.Read(8, out var anchor), Is.True);
+            Assert.That(anchor.state.value, Is.EqualTo(80));
+            Assert.That(f.verified.Read(11, out _), Is.True);
+            Assert.That(f.verified.Read(12, out var current), Is.True);
+            Assert.That(current.state.value, Is.EqualTo(120));
+            Assert.That(f.probe.verifiedValues, Is.EqualTo(new[] { 110, 120 }));
+        }
+
+        [Test]
+        public void ReceiverRetentionFloorCannotPassAQuarantinedComponentsVerifiedTick()
+        {
+            using var f = new Fixture();
+            f.Floor = 9;
+            f.probe.lastVerifiedTick = 5;
+            Assert.That(f.probe.GetAcceptedVerifiedHistoryRetentionFloor(12), Is.EqualTo(5));
+            f.verified.PruneBeforeBaseline(f.probe.GetAcceptedVerifiedHistoryRetentionFloor(12));
+            Assert.That(f.verified.Read(2, out var anchor), Is.True);
+            Assert.That(anchor.state.value, Is.EqualTo(20));
+            Assert.That(f.verified.Read(8, out _), Is.True);
+        }
+
+        [Test]
         public void LaterSuccessfulBaselineCanAdvanceFloorAcrossGapCatchup()
         {
             using var f = new Fixture();

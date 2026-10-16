@@ -12,13 +12,17 @@ namespace PurrNet.Prediction
             public readonly PredictedObjectID rootId;
             public readonly int bitOrigin;
             public readonly int bitLength;
-            // The previous tick contains identical bits for this ID under the same root.
-            public readonly bool repeatsPrevious;
             public readonly int deltaOrigin;
             public readonly int deltaLength;
+            // The previous tick contains identical bits for this ID under the same root.
+            public readonly bool repeatsPrevious;
             // The owner uploaded exactly these bits for this tick, so it can restore them itself.
-            public readonly PlayerID? owner;
             public readonly bool asUploaded;
+            private readonly byte _ownerFlags;
+            private readonly ulong _ownerId;
+
+            public PlayerID? owner => (_ownerFlags & 1) != 0
+                ? new PlayerID(_ownerId, (_ownerFlags & 2) != 0) : (PlayerID?)null;
 
             public CachedInputEntry(
                 PredictedComponentID id,
@@ -38,11 +42,12 @@ namespace PurrNet.Prediction
                 this.repeatsPrevious = repeatsPrevious;
                 this.deltaOrigin = deltaOrigin;
                 this.deltaLength = deltaLength;
-                this.owner = owner;
                 this.asUploaded = asUploaded;
+                _ownerId = owner.HasValue ? owner.Value.id.value : 0;
+                _ownerFlags = owner.HasValue ? (byte)(1 | (owner.Value.isBot ? 2 : 0)) : (byte)0;
             }
 
-            public bool RestoredBy(PlayerID player) => asUploaded && owner.HasValue && owner.Value == player;
+            public bool RestoredBy(PlayerID player) => asUploaded && (_ownerFlags & 1) != 0 && _ownerId == player.id.value;
         }
 
         private struct CachedInputBlock
@@ -59,7 +64,7 @@ namespace PurrNet.Prediction
 
         private CachedInputBlock[] _inputBlockCache;
         private CachedInputBlock _inputBlockScratch;
-        private readonly Dictionary<PredictedComponentID, int> _previousInputEntryIndex = new();
+        private readonly Dictionary<PredictedComponentID, int> _previousInputEntryIndex = new(PredictionIdComparers.Components);
         private ulong _latestCapturedInputTick;
         private bool _hasCapturedInputHistory;
 
@@ -75,10 +80,21 @@ namespace PurrNet.Prediction
                     $"Cannot capture authoritative input tick {tick} after tick {_latestCapturedInputTick}.");
             }
 
+            CachedInputBlock previous = default;
+            bool hasPrevious = tick > 0 && TryGetInputBlockForTick(tick - 1, out previous);
             ref var scratch = ref _inputBlockScratch;
-            scratch.packer ??= BitPackerPool.Get();
-            scratch.deltas ??= BitPackerPool.Get();
-            scratch.entries ??= new List<CachedInputEntry>();
+            // Retained snapshots must not absorb oversized transient frame buffers.
+            // Size new buffers from the adjacent snapshot, then retain them for reuse.
+            scratch.packer ??= new BitPacker(hasPrevious ? Math.Max(32, previous.packer.positionInBytes + 8) : 32);
+            scratch.deltas ??= new BitPacker(hasPrevious ? Math.Max(32, previous.deltas.positionInBytes + 8) : 32);
+            // Use the live roster count: spawning one input after the preceding tick
+            // must not double every newly allocated history slot's backing array.
+            scratch.entries ??= new List<CachedInputEntry>(_inputHistorySystems);
+            // Reused slots can predate roster growth too. Reserve before adding;
+            // one extra input must not double every retained slot's entry table.
+            if (scratch.entries.Capacity < _inputHistorySystems)
+                scratch.entries.Capacity = Math.Max(_inputHistorySystems,
+                    Math.Max(4, checked(scratch.entries.Capacity + scratch.entries.Capacity / 4)));
             scratch.captured = false;
             scratch.packer.ResetPositionAndMode(false);
             scratch.deltas.ResetPositionAndMode(false);
@@ -87,13 +103,7 @@ namespace PurrNet.Prediction
             CollectViewOffsets(tick, scratch.viewOffsets);
 
             _previousInputEntryIndex.Clear();
-            CachedInputBlock previous = default;
-            bool hasPrevious = tick > 0 && TryGetInputBlockForTick(tick - 1, out previous);
-            if (hasPrevious)
-            {
-                for (var i = 0; i < previous.entries.Count; i++)
-                    _previousInputEntryIndex[previous.entries[i].id] = i;
-            }
+            bool indexedPrevious = false;
 
             for (var i = 0; i < _systemsCount; i++)
             {
@@ -113,7 +123,27 @@ namespace PurrNet.Prediction
                 bool repeats = false;
                 int deltaOrigin = scratch.deltas.positionInBits;
                 int deltaLength = 0;
-                if (hasPrevious && _previousInputEntryIndex.TryGetValue(id, out int previousIndex))
+                int previousIndex = -1;
+                if (hasPrevious)
+                {
+                    // Unchanged ordering already supplies the lookup: avoid rebuilding
+                    // and probing a hash table for every input on every stable tick.
+                    int ordinal = scratch.entries.Count;
+                    if (ordinal < previous.entries.Count && previous.entries[ordinal].id.Equals(id))
+                        previousIndex = ordinal;
+                    else
+                    {
+                        if (!indexedPrevious)
+                        {
+                            for (int j = 0; j < previous.entries.Count; j++)
+                                _previousInputEntryIndex[previous.entries[j].id] = j;
+                            indexedPrevious = true;
+                        }
+                        if (!_previousInputEntryIndex.TryGetValue(id, out previousIndex))
+                            previousIndex = -1;
+                    }
+                }
+                if (previousIndex >= 0)
                 {
                     var previousEntry = previous.entries[previousIndex];
                     if (previousEntry.rootId.Equals(rootId))

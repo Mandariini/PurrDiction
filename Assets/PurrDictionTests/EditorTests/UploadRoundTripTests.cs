@@ -252,6 +252,57 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void RepeatLookupFollowsIdsAcrossRosterReorderingAndRejectsMissingPreviousIds()
+        {
+            var serverObject = new GameObject("Reordered input roster server");
+            try
+            {
+                var server = CreateManager(serverObject);
+                SetLocalTick(server, 30);
+                var a = new PredictedComponentID(new PredictedObjectID(700), 0);
+                var b = new PredictedComponentID(new PredictedObjectID(701), 0);
+                var c = new PredictedComponentID(new PredictedObjectID(702), 0);
+                using var payload = BitPackerPool.Get();
+                AppendTick((a, false, 7), (b, false, 9), (c, false, 11));
+                AppendTick((c, true, 0), (a, true, 0));
+                AppendTick((c, true, 0), (b, false, 13));
+                AppendTick((a, true, 0)); // A was absent from the immediately preceding tick.
+                var sender = new PlayerID(9, false);
+                Deliver(server, 36, 4, CopyForRead(payload), sender);
+                var queue = GetQueue(server, sender);
+                Assert.That(queue.Count, Is.EqualTo(3));
+                var reordered = DecodeSlice(queue.byTick[37]);
+                Assert.That(reordered[0].id, Is.EqualTo(c));
+                Assert.That(reordered[0].value, Is.EqualTo(11));
+                Assert.That(reordered[1].id, Is.EqualTo(a));
+                Assert.That(reordered[1].value, Is.EqualTo(7));
+                var replaced = DecodeSlice(queue.byTick[38]);
+                Assert.That(replaced[1].id, Is.EqualTo(b));
+                Assert.That(replaced[1].value, Is.EqualTo(13));
+                Assert.That(queue.byTick.ContainsKey(39), Is.False);
+
+                void AppendTick(params (PredictedComponentID id, bool repeat, int value)[] entries)
+                {
+                    using var block = BitPackerPool.Get();
+                    foreach (var entry in entries)
+                    {
+                        Packer<PredictedComponentID>.Write(block, entry.id);
+                        Packer<bool>.Write(block, entry.repeat);
+                        if (entry.repeat) continue;
+                        Packer<PackedUInt>.Write(block, 33U);
+                        Packer<bool>.Write(block, true);
+                        Packer<int>.Write(block, entry.value);
+                    }
+                    payload.WriteBits(0, PredictionManager.ViewOffsetBits);
+                    Packer<PackedUInt>.Write(payload, (uint)block.positionInBits);
+                    Packer<PackedUInt>.Write(payload, (uint)entries.Length);
+                    payload.WriteBitsWithoutConsumingIt(block, block.positionInBits);
+                }
+            }
+            finally { Object.DestroyImmediate(serverObject); }
+        }
+
+        [Test]
         public void ChangingInputsWriteFullPayloadsForEveryTick()
         {
             var clientObject = new GameObject("Changing upload client");

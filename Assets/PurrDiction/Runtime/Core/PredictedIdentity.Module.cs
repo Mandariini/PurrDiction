@@ -33,10 +33,8 @@ namespace PurrNet.Prediction
             var store = moduleSetVerified;
             store.PruneByTickWindow(serverTick);
 
-            int lastIndex = store.Count - 1;
-            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            if (store.TryReadLatest(serverTick, out var latest))
             {
-                var latest = store[lastIndex];
                 if (latest.Equals(snapshot))
                     return;
             }
@@ -883,7 +881,7 @@ namespace PurrNet.Prediction
         private bool HasUnchangedStateBaselineModules(ulong baselineTick)
         {
             if (HasDynamicModulesOrHistory() &&
-                !moduleSetVerified.ReadOrPrevious(baselineTick, out _))
+                !moduleSetVerified.HasAtOrBefore(baselineTick))
             {
                 return false;
             }

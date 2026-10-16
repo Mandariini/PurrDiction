@@ -26,6 +26,57 @@ namespace PurrNet.Prediction
             Packer<PackedUInt>.Write(packer, (uint)count);
         }
 
+        internal static void CompleteSection(int count, int sectionOrigin, int recordsOrigin, BitPacker destination)
+        {
+            using var header = BitPackerPool.Get();
+            header.SetBitPosition(sectionOrigin);
+            WriteSectionCount(count, header);
+            ReplaceSectionHeader(sectionOrigin, recordsOrigin, header, destination);
+        }
+
+        // Records already occupy the frame. Usually the count has the reserved width,
+        // so completing the section touches only its header. Varints change by whole
+        // bytes; overlap-safe byte moves handle those width changes without bit shifting.
+        internal static void ReplaceSectionHeader(int sectionOrigin, int recordsOrigin,
+            BitPacker header, BitPacker destination)
+        {
+            int oldEnd = destination.positionInBits;
+            int headerBits = header.positionInBits - sectionOrigin;
+            int newRecordsOrigin = checked(sectionOrigin + headerBits);
+            int payloadBits = oldEnd - recordsOrigin;
+            int shift = newRecordsOrigin - recordsOrigin;
+            int newEnd = checked(oldEnd + shift);
+
+            if (shift != 0 && payloadBits != 0)
+            {
+                if ((shift & 7) == 0)
+                {
+                    if (shift > 0)
+                        destination.EnsureBitsExist(shift);
+                    var bytes = destination.buffer;
+                    int offset = recordsOrigin & 7;
+                    int length = (offset + payloadBits + 7) >> 3;
+                    int firstByte = newRecordsOrigin >> 3;
+                    int prefixMask = (1 << offset) - 1;
+                    byte prefix = (byte)(bytes[firstByte] & prefixMask);
+                    Array.Copy(bytes, recordsOrigin >> 3, bytes, firstByte, length);
+                    bytes[firstByte] = (byte)((bytes[firstByte] & ~prefixMask) | prefix);
+                }
+                else
+                {
+                    // Preserve arbitrary custom header codecs as well as byte varints.
+                    using var records = BitPackerPool.Get();
+                    records.WriteBitDataWithoutConsumingIt(new BitData(destination, recordsOrigin, payloadBits));
+                    destination.SetBitPosition(newRecordsOrigin);
+                    destination.WriteBitsWithoutConsumingIt(records, payloadBits);
+                }
+            }
+
+            destination.SetBitPosition(sectionOrigin);
+            destination.WriteBitDataWithoutConsumingIt(new BitData(header, sectionOrigin, headerBits));
+            destination.SetBitPosition(newEnd);
+        }
+
         public static void WriteRecord(
             BitPacker destination,
             PredictedComponentID id,
@@ -37,6 +88,23 @@ namespace PurrNet.Prediction
             Packer<bool>.Write(destination, isFullState);
             Packer<PackedUInt>.Write(destination, (uint)payloadBits);
             destination.WriteBitsWithoutConsumingIt(payload, payloadBits);
+        }
+
+        // Keep the codec body at its original bit origin while avoiding a concatenation copy.
+        internal static void WritePrefixedRecord(
+            PredictedComponentID id,
+            bool isFullState,
+            BitPacker prefix,
+            BitPacker body,
+            BitPacker destination)
+        {
+            int prefixBits = prefix.positionInBits;
+            int bodyBits = body.positionInBits;
+            Packer<PredictedComponentID>.Write(destination, id);
+            Packer<bool>.Write(destination, isFullState);
+            Packer<PackedUInt>.Write(destination, checked((uint)(prefixBits + bodyBits)));
+            destination.WriteBitsWithoutConsumingIt(prefix, prefixBits);
+            destination.WriteBitsWithoutConsumingIt(body, bodyBits);
         }
 
         internal static void ReadSection(ReadRecord readRecord, BitPacker source, RecordFailure onRecordFailure = null)

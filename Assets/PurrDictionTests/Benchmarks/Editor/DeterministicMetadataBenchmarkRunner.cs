@@ -170,8 +170,9 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 sample.counters.Add(DeterministicMetadataBenchmarkCounters.Read() - before);
                 if (!fixture.history.Read(tick, out var state) || !valid(state.state))
                     throw new InvalidOperationException("Measured operation lost or corrupted its exact tick.");
-                var expected = save ? fixture.identity.fullPredictedState.prediction : expectedMetadata;
-                if (!Packer.AreEqualRef(ref state.prediction, ref expected))
+                PredictedIdentityState expected = save ? (PredictedIdentityState)fixture.identity.fullPredictedState.prediction : expectedMetadata;
+                PredictedIdentityState actualMetadata = state.prediction;
+                if (!Packer.AreEqualRef(ref actualMetadata, ref expected))
                     throw new InvalidOperationException("Metadata does not match the applied baseline/delta.");
                 if (save) sample.saveCalls++; else if (readUnchanged) sample.readUnchangedCalls++; else sample.readStateCalls++;
             }

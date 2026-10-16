@@ -7,7 +7,7 @@ namespace PurrNet.Prediction
         where T : struct, IPredictedData<T>
     {
         public T state;
-        public PredictedIdentityState prediction;
+        public CompactIdentityState prediction;
 
         static readonly ProfilerMarker SimulateMarker = new("DeepCopy." + typeof(T).FullName);
 
@@ -25,7 +25,7 @@ namespace PurrNet.Prediction
 
         public bool HasSameContents(ref FULL_STATE<T> other)
         {
-            return Packer.AreEqualRef(ref prediction, ref other.prediction) &&
+            return prediction.HasSameContents(other.prediction) &&
                    Packer.AreEqualRef(ref state, ref other.state);
         }
 

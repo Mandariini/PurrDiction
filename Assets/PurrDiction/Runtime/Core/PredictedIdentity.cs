@@ -395,9 +395,16 @@ namespace PurrNet.Prediction
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal PredictionPolicy EffectivePolicy()
         {
+            var policy = predictionPolicy;
+            if (policy is PredictionPolicy.FullPrediction or PredictionPolicy.ServerRelay)
+                return policy;
+
+            if (policy == PredictionPolicy.PredictedIfOwned)
+                return IsOwner() ? PredictionPolicy.FullPrediction : PredictionPolicy.ServerRelay;
+
             return ResolveEffectivePolicy(
-                predictionPolicy,
-                IsOwner(),
+                policy,
+                policy == PredictionPolicy.PredictedIfOwnedWithSoftFallback && IsOwner(),
                 !isDeterministic && supportsSoftCorrection);
         }
 
@@ -453,6 +460,9 @@ namespace PurrNet.Prediction
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool SkipsCurrentSimulationPhase()
         {
+            if (predictionPolicy == PredictionPolicy.FullPrediction)
+                return false;
+
             var manager = predictionManager;
             if (manager.cachedIsServer)
                 return false;
@@ -598,10 +608,8 @@ namespace PurrNet.Prediction
             var store = metadataVerified;
             store.PruneByTickWindow(serverTick);
 
-            int lastIndex = store.Count - 1;
-            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            if (store.TryReadLatest(serverTick, out var latest))
             {
-                var latest = store[lastIndex];
                 var current = metadata;
                 if (Packer.AreEqualRef(ref latest, ref current))
                     return;
@@ -644,7 +652,7 @@ namespace PurrNet.Prediction
         }
 
         internal bool HasPredictionMetadataBaseline(ulong baselineTick)
-            => metadataVerified.ReadOrPrevious(baselineTick, out _);
+            => metadataVerified.HasAtOrBefore(baselineTick);
 
         internal void ReadPredictionMetadata(BitPacker packer, ulong baselineTick, ulong serverTick, ref PredictedIdentityState metadata)
         {
@@ -783,6 +791,7 @@ namespace PurrNet.Prediction
             }
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner()
         {
             if (predictionManager && predictionManager.isSpawned && owner == predictionManager.localPlayer)
@@ -790,16 +799,19 @@ namespace PurrNet.Prediction
             return false;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID player)
         {
             return owner == player;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID? player)
         {
             return owner == player;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID player, bool asServer)
         {
             if (owner.HasValue)
@@ -820,6 +832,18 @@ namespace PurrNet.Prediction
         internal abstract void PrepareInput(bool isServer, bool isLocal, ulong tick, bool extrapolate);
 
         internal abstract void SaveStateInHistory(ulong tick);
+
+        internal ulong GetAcceptedHistoryRetentionFloor(ulong tick)
+        {
+            ulong floor = predictionManager?.acceptedHistoryBaselineFloor ?? 0;
+            // A quarantined component can retain an older verified view than its peers.
+            return floor > 0 && lastVerifiedTick.HasValue
+                ? Math.Min(Math.Min(floor, lastVerifiedTick.Value), tick) : 0;
+        }
+
+        internal ulong GetAcceptedVerifiedHistoryRetentionFloor(ulong tick)
+            => predictionManager && predictionManager.isClient && !predictionManager.isServer
+                ? GetAcceptedHistoryRetentionFloor(tick) : 0;
 
         internal abstract void Rollback(ulong tick);
 
@@ -891,7 +915,9 @@ namespace PurrNet.Prediction
 
         internal void RecordUploadedInputBits(BitPacker packer, int origin)
         {
-            _uploadedInputBits ??= BitPackerPool.Get();
+            // This identity retains one input, not a whole packet. Keep its storage out
+            // of the shared scratch pool, whose buffers can be much larger than the input.
+            _uploadedInputBits ??= new BitPacker(((packer.positionInBits - origin + 7) >> 3) + 8);
             _uploadedInputBits.ResetPositionAndMode(false);
             _uploadedInputBits.WriteBitDataWithoutConsumingIt(new BitData(packer, origin, packer.positionInBits - origin));
             _uploadedInputPending = true;
@@ -915,7 +941,6 @@ namespace PurrNet.Prediction
 
         private void DisposeUploadedInputBits()
         {
-            _uploadedInputBits?.Dispose();
             _uploadedInputBits = null;
             _uploadedInputPending = false;
             _hasUploadedInputBits = false;

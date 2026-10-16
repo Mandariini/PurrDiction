@@ -16,6 +16,7 @@ namespace PurrNet.Prediction
 {
     [DefaultExecutionOrder(1000)]
     [AddComponentMenu("PurrDiction/Prediction Manager")]
+    [PackerDependencies(typeof(NetworkID), typeof(SceneID))]
     public partial class PredictionManager : NetworkIdentity
     {
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterAssembliesLoaded)]
@@ -226,8 +227,11 @@ namespace PurrNet.Prediction
             public readonly History<T> history;
 
             public VerifiedStateStore(int capacity)
+                : this(capacity, capacity) { }
+
+            public VerifiedStateStore(int capacity, int initialWindow)
             {
-                history = new History<T>(capacity);
+                history = History<T>.ForTickWindow(capacity, initialWindow);
             }
 
             public override void Clear() => history.Clear();
@@ -249,7 +253,7 @@ namespace PurrNet.Prediction
         }
 
         readonly Dictionary<(uint, PredictedComponentID, int), VerifiedStore> _verifiedStores = new ();
-        readonly Dictionary<PredictedComponentID, VerifiedStore> _verifiedStoresByComponent = new ();
+        readonly Dictionary<PredictedComponentID, VerifiedStore> _verifiedStoresByComponent = new (PredictionIdComparers.Components);
         readonly List<VerifiedStore> _verifiedStoreMaintenance = new ();
         readonly Dictionary<uint, Stack<VerifiedStore>> _recycledVerifiedStores = new ();
         readonly List<PredictedComponentID> _retiredVerifiedComponents = new ();
@@ -278,6 +282,12 @@ namespace PurrNet.Prediction
 
         internal int verifiedStoreCount => _verifiedStores.Count;
 
+        // The protocol window remains the logical ceiling. Pure clients can discard
+        // states before an accepted baseline, and grow if that floor stops advancing.
+        // Receiver stores advance on server ticks; delivery delay does not age them.
+        // Prediction, verified view sampling and deterministic replay use separate histories.
+        private int verifiedStoreCapacity => checked((int)verifiedHistoryWindowTicks);
+
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, out bool created) where T : struct, IDisposable
         {
             return GetVerifiedHistory<T>(componentId, 0, out created);
@@ -293,13 +303,16 @@ namespace PurrNet.Prediction
                 created = false;
                 var history = ((VerifiedStateStore<T>)store).history;
                 using (VerifiedHistoryRebindMarker.Auto())
-                    verifiedHistoryRestoredArrayPayloadBytesTotal += history.RestoreEagerBackingStorage();
+                    verifiedHistoryRestoredArrayPayloadBytesTotal += history.RestoreEagerBackingStorage(
+                        initialLocalHistoryWindowTicks + 2);
                 return history;
             }
 
-            int capacity = tickRate * 10;
+            int capacity = verifiedStoreCapacity;
             var newStore = TakeRecycledVerifiedStore(typeHash, capacity) as VerifiedStateStore<T> ??
-                           new VerifiedStateStore<T>(capacity);
+                           new VerifiedStateStore<T>(capacity, initialLocalHistoryWindowTicks);
+            verifiedHistoryRestoredArrayPayloadBytesTotal += newStore.history.RestoreEagerBackingStorage(
+                initialLocalHistoryWindowTicks + 2);
             newStore.typeHash = typeHash;
             newStore.componentId = componentId;
             newStore.subKey = subKey;
@@ -426,7 +439,7 @@ namespace PurrNet.Prediction
             if (!_verifiedStoresByComponent.Remove(componentId, out var store))
                 return;
 
-            int capacity = tickRate * 10;
+            int capacity = verifiedStoreCapacity;
             while (store != null)
             {
                 var next = store.nextForComponent;
@@ -452,7 +465,7 @@ namespace PurrNet.Prediction
         {
             var recycled = RecycledVerifiedStores(Hasher<T>.stableHash);
             if (recycled.Count < RecycledVerifiedStoresPerType)
-                recycled.Push(new VerifiedStateStore<T>(tickRate * 10));
+                recycled.Push(new VerifiedStateStore<T>(verifiedStoreCapacity, initialLocalHistoryWindowTicks));
         }
 
         private Stack<VerifiedStore> RecycledVerifiedStores(uint typeHash)
@@ -820,6 +833,7 @@ namespace PurrNet.Prediction
 
         internal uint spawnPass { get; private set; }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal PredictedComponentID? EnterSpawnCreator(PredictedComponentID creator)
         {
             var previous = spawnCreator;
@@ -827,6 +841,7 @@ namespace PurrNet.Prediction
             return previous;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal void ExitSpawnCreator(PredictedComponentID? previous) => spawnCreator = previous;
 
         public void UnregisterInstance(GameObject go, bool reset, bool destroyEvent)
@@ -869,7 +884,7 @@ namespace PurrNet.Prediction
             ListPool<PredictedIdentity>.Destroy(components);
         }
 
-        readonly Dictionary<PredictedComponentID, PredictedIdentity> _instanceMap = new ();
+        readonly Dictionary<PredictedComponentID, PredictedIdentity> _instanceMap = new (PredictionIdComparers.Components);
 
         public bool TryGetIdentity(PredictedComponentID id, out PredictedIdentity instance)
         {
@@ -1302,6 +1317,14 @@ namespace PurrNet.Prediction
 
         internal ulong verifiedHistoryWindowTicks => VerifiedHistoryWindowTicks(tickRate);
 
+        internal ulong acceptedHistoryBaselineFloor => _verifiedHistoryBaselineFloor;
+
+        // Local client timelines grow if ACKs stall or prediction runs further ahead.
+        // Clients also start receiver stores small; their full protocol ceiling is unchanged.
+        internal int initialLocalHistoryWindowTicks => isServer
+            ? checked((int)verifiedHistoryWindowTicks)
+            : Math.Max(16, (tickRate + 3) / 4);
+
         private const double InputResendIntervalSeconds = 0.02;
         // Copies sent after the input slack window cannot beat the server simulation deadline.
         internal static ulong InputRedundancyTicks(int tickRate)
@@ -1333,6 +1356,16 @@ namespace PurrNet.Prediction
         private uint _cachedInputTickCount;
         private bool _cachedInputFragmented;
         private double _lastInputSendTime;
+
+        private readonly Dictionary<PredictedComponentID, int> _uploadPreviousInputIndex = new(PredictionIdComparers.Components);
+        private readonly Dictionary<PredictedComponentID, int> _receivePreviousInputIndex = new(PredictionIdComparers.Components);
+
+        private static void IndexInputSpans(List<InputHistorySpan> spans, Dictionary<PredictedComponentID, int> indices)
+        {
+            indices.Clear();
+            for (int i = 0; i < spans.Count; i++)
+                indices.TryAdd(spans[i].id, i);
+        }
 
         private void CacheInputPayload(ulong firstTick, uint tickCount, BitPacker payload)
         {
@@ -1441,20 +1474,18 @@ namespace PurrNet.Prediction
                 RecordUploadedInputs(tick, curBlock, curSpans);
 
                 wireBlock.ResetPositionAndMode(false);
+                IndexInputSpans(prevSpans, _uploadPreviousInputIndex);
                 for (var s = 0; s < curSpans.Count; s++)
                 {
                     var span = curSpans[s];
                     Packer<PredictedComponentID>.Write(wireBlock, span.id);
 
                     bool repeat = false;
-                    for (var p = 0; p < prevSpans.Count; p++)
+                    if (_uploadPreviousInputIndex.TryGetValue(span.id, out int previousIndex))
                     {
-                        if (!prevSpans[p].id.Equals(span.id))
-                            continue;
-                        var prevSpan = prevSpans[p];
+                        var prevSpan = prevSpans[previousIndex];
                         repeat = new BitData(curBlock, span.bitOrigin, span.bitLength)
                             .Equals(new BitData(prevBlock, prevSpan.bitOrigin, prevSpan.bitLength));
-                        break;
                     }
 
                     Packer<bool>.Write(wireBlock, repeat);
@@ -1488,6 +1519,8 @@ namespace PurrNet.Prediction
             inputBytesSentTotal += (ulong)payload.positionInBytes;
             inputTicksSentTotal += tickCount;
         }
+
+        internal bool hasMultipleStateRecipients => _clientFrames.Count > 1;
 
         private void FinalizeTickOnServer(bool cachedIsClient)
         {
@@ -2121,7 +2154,8 @@ namespace PurrNet.Prediction
 
         private const ulong MinLead = 2;
         private const ulong TargetLead = 3;
-        private const ulong AbsoluteMaxLead = MaxInputWindow - 2;
+        // Prediction lead spans the round trip and must scale with the retained replay window.
+        private ulong absoluteMaxLead => verifiedHistoryWindowTicks - 2;
 
         private const long InputMarginClamp = 64;
         private const long InputMarginLow = 1;
@@ -2607,9 +2641,9 @@ namespace PurrNet.Prediction
                         minLeadSnapsTotal++;
                         ResetSlackController();
                     }
-                    else if (curLead > AbsoluteMaxLead)
+                    else if (curLead > absoluteMaxLead)
                     {
-                        _pauseAdvanceTicks = curLead - AbsoluteMaxLead;
+                        _pauseAdvanceTicks = curLead - absoluteMaxLead;
                         leadPausesTotal++;
                     }
 
@@ -3058,6 +3092,7 @@ namespace PurrNet.Prediction
 
                     curExpanded.ResetPositionAndMode(false);
                     curSpans.Clear();
+                    IndexInputSpans(prevSpans, _receivePreviousInputIndex);
 
                     for (uint e = 0; e < count.value; e++)
                     {
@@ -3072,11 +3107,9 @@ namespace PurrNet.Prediction
 
                         if (repeat)
                         {
-                            for (var p = 0; p < prevSpans.Count; p++)
+                            if (_receivePreviousInputIndex.TryGetValue(pid, out int previousIndex))
                             {
-                                if (!prevSpans[p].id.Equals(pid))
-                                    continue;
-                                var prevSpan = prevSpans[p];
+                                var prevSpan = prevSpans[previousIndex];
                                 origin = curExpanded.positionInBits;
                                 curExpanded.WriteBitDataWithoutConsumingIt(
                                     new BitData(prevExpanded, prevSpan.bitOrigin, prevSpan.bitLength));
@@ -3087,7 +3120,6 @@ namespace PurrNet.Prediction
                                     bitOrigin = origin,
                                     bitLength = payloadLength
                                 });
-                                break;
                             }
 
                             if (origin < 0)
