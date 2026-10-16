@@ -848,20 +848,36 @@ namespace PurrNet.Prediction
             ListPool<PredictedIdentity>.Destroy(components);
         }
 
-        internal PredictedComponentID? spawnCreator { get; private set; }
+        // Every simulated identity enters and leaves this scope each tick. Plain fields keep the
+        // swap in registers instead of round-tripping a nullable through memory.
+        private PredictedComponentID _spawnCreatorId;
+        private bool _hasSpawnCreator;
+
+        internal PredictedComponentID? spawnCreator => _hasSpawnCreator ? _spawnCreatorId : null;
 
         internal uint spawnPass { get; private set; }
 
-        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-        internal PredictedComponentID? EnterSpawnCreator(PredictedComponentID creator)
+        internal struct SpawnCreatorScope
         {
-            var previous = spawnCreator;
-            spawnCreator = creator;
+            internal PredictedComponentID id;
+            internal bool has;
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal SpawnCreatorScope EnterSpawnCreator(PredictedComponentID creator)
+        {
+            var previous = new SpawnCreatorScope { id = _spawnCreatorId, has = _hasSpawnCreator };
+            _spawnCreatorId = creator;
+            _hasSpawnCreator = true;
             return previous;
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-        internal void ExitSpawnCreator(PredictedComponentID? previous) => spawnCreator = previous;
+        internal void ExitSpawnCreator(in SpawnCreatorScope previous)
+        {
+            _spawnCreatorId = previous.id;
+            _hasSpawnCreator = previous.has;
+        }
 
         public void UnregisterInstance(GameObject go, bool reset, bool destroyEvent)
         {

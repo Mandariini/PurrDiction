@@ -453,12 +453,14 @@ namespace PurrNet.Prediction
 
         public bool shouldSkipReplaySpawnInitialization => _skipReplaySpawnInitialization;
 
+        // Every phase asks this of every identity; full prediction never skips, so only the
+        // policy load stays inline.
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool SkipsCurrentSimulationPhase()
-        {
-            if (predictionPolicy == PredictionPolicy.FullPrediction)
-                return false;
+            => predictionPolicy != PredictionPolicy.FullPrediction && SkipsCurrentSimulationPhaseForPolicy();
 
+        private bool SkipsCurrentSimulationPhaseForPolicy()
+        {
             var manager = predictionManager;
             if (manager.cachedIsServer)
                 return false;
