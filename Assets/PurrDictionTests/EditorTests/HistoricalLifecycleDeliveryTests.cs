@@ -863,7 +863,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(server, "<localTick>k__BackingField", tick);
                 Set(server, "<localTickInContext>k__BackingField", tick);
                 Set(server, "<isVerified>k__BackingField", true);
-                var systems = Get<List<PredictedIdentity>>(server, "_systems");
+                var systems = Get<PredictedSystemList>(server, "_systems");
                 // These are the real OnPreTick stages, split only at the transport seam:
                 // no socket/RPC is needed to retain, lose, and deliver serialized frames.
                 for (var i = 0; i < systems.Count; i++)
@@ -1101,7 +1101,7 @@ namespace PurrNet.Prediction.Tests.Editor
                         continue;
                     if (manager.hierarchy)
                         manager.hierarchy.Cleanup();
-                    var systems = Get<List<PredictedIdentity>>(manager, "_systems");
+                    var systems = Get<PredictedSystemList>(manager, "_systems");
                     foreach (var identity in systems)
                         identity.ReleasePredictionStateForPool();
                     systems.Clear();

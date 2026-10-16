@@ -299,7 +299,7 @@ namespace PurrNet.Prediction.Tests.Editor
             verified.Write(10, FullState(100));
             Set(typeof(PredictedIdentity<SchedulingProbeState>), identity, "_verifiedHistory", verified);
             identity.lastVerifiedTick = 10;
-            Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems").Add(identity);
+            Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems").Add(identity);
             Set(typeof(PredictionManager), manager, "_systemsCount", 1);
             Get<Dictionary<PredictedComponentID, PredictedIdentity>>(
                 typeof(PredictionManager), manager, "_instanceMap").Add(id, identity);

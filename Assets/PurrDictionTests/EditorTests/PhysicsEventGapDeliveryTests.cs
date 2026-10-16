@@ -1168,7 +1168,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 verified.Write(BaselineTick, initial.DeepCopy());
                 Set(typeof(PredictedIdentity<TState>), physics, "_verifiedHistory", verified);
                 physics.lastVerifiedTick = BaselineTick;
-                Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems").Add(physics);
+                Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems").Add(physics);
                 Set(typeof(PredictionManager), manager, "_systemsCount", 1);
                 Get<Dictionary<PredictedComponentID, PredictedIdentity>>(
                     typeof(PredictionManager), manager, "_instanceMap").Add(id, physics);

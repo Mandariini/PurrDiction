@@ -897,7 +897,7 @@ namespace PurrNet.Prediction.Tests.Editor
             PredictionManager manager,
             PredictedIdentity identity)
         {
-            var systems = GetField<List<PredictedIdentity>>(
+            var systems = GetField<PredictedSystemList>(
                 typeof(PredictionManager),
                 manager,
                 "_systems");
@@ -1044,7 +1044,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var history = new History<TrackedInput>(256);
             Set(deterministic ? typeof(DeterministicIdentity<TrackedInput, EmptyState>)
                 : typeof(PredictedIdentity<TrackedInput, EmptyState>), identity, "_inputHistory", history);
-            var systems = (List<PredictedIdentity>)typeof(PredictionManager)
+            var systems = (PredictedSystemList)typeof(PredictionManager)
                 .GetField("_systems", Fields).GetValue(manager);
             systems.Add(identity);
             Set(typeof(PredictionManager), manager, "_systemsCount", systems.Count);
@@ -1102,7 +1102,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var map = (Dictionary<PredictedComponentID, PredictedIdentity>)typeof(PredictionManager)
                 .GetField("_instanceMap", Fields).GetValue(manager);
             map.Remove(identity.id);
-            var systems = (List<PredictedIdentity>)typeof(PredictionManager).GetField("_systems", Fields).GetValue(manager);
+            var systems = (PredictedSystemList)typeof(PredictionManager).GetField("_systems", Fields).GetValue(manager);
             systems.Remove(identity);
             Set(typeof(PredictionManager), manager, "_systemsCount", systems.Count);
             _identities.Remove(identity);

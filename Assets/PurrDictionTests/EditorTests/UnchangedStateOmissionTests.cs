@@ -904,7 +904,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     manager,
                     new PredictedComponentID(new PredictedObjectID(206), 0));
 
-                var systems = GetField<List<PredictedIdentity>>(
+                var systems = GetField<PredictedSystemList>(
                     typeof(PredictionManager),
                     manager,
                     "_systems");
@@ -1458,7 +1458,7 @@ namespace PurrNet.Prediction.Tests.Editor
             PredictionManager manager,
             PredictedIdentity identity)
         {
-            var systems = GetField<List<PredictedIdentity>>(
+            var systems = GetField<PredictedSystemList>(
                 typeof(PredictionManager),
                 manager,
                 "_systems");

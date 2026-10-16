@@ -334,7 +334,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
             public void DetachProbe()
             {
-                Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems").Clear();
+                Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems").Clear();
                 Get<Dictionary<PredictedComponentID, PredictedIdentity>>(
                     typeof(PredictionManager), manager, "_instanceMap").Clear();
                 Set(typeof(PredictionManager), manager, "_systemsCount", 0);
@@ -450,7 +450,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
         private static void Register(BaselineFloorProbeIdentity identity, PredictionManager manager)
         {
-            var systems = Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems");
+            var systems = Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems");
             systems.Add(identity);
             Set(typeof(PredictionManager), manager, "_systemsCount", systems.Count);
             Get<Dictionary<PredictedComponentID, PredictedIdentity>>(

@@ -184,7 +184,7 @@ namespace PurrNet.Prediction.Tests.Editor
             fixture.Capture(10);
             var original = fixture.Snapshot(10);
 
-            Get<List<PredictedIdentity>>(fixture.manager, "_systems").Reverse();
+            Get<PredictedSystemList>(fixture.manager, "_systems").Reverse();
             fixture.Seed(first, 11, 111);
             fixture.Seed(middle, 11, 222);
             fixture.Seed(last, 11, 333);

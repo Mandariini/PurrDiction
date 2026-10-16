@@ -108,7 +108,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var sentB = sender.AddInput(true, 811);
             var receivedA = receiver.AddInput(false, 810);
             var receivedB = receiver.AddInput(true, 811);
-            var systems = (List<PredictedIdentity>)typeof(PredictionManager)
+            var systems = (PredictedSystemList)typeof(PredictionManager)
                 .GetField("_systems", Members).GetValue(sender.manager);
             for (ulong tick = 10; tick <= 18; tick++)
             {

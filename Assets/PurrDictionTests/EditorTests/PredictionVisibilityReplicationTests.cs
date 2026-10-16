@@ -1300,7 +1300,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 "<cachedIsServer>k__BackingField",
                 true);
 
-            var systems = GetField<List<PredictedIdentity>>(
+            var systems = GetField<PredictedSystemList>(
                 typeof(PredictionManager),
                 manager,
                 "_systems");
@@ -1332,7 +1332,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 "<predictionManager>k__BackingField",
                 manager);
 
-            var systems = GetField<List<PredictedIdentity>>(
+            var systems = GetField<PredictedSystemList>(
                 typeof(PredictionManager),
                 manager,
                 "_systems");

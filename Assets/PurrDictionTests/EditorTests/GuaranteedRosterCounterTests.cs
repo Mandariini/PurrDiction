@@ -43,7 +43,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var networkManager = networkObject.AddComponent<NetworkManager>();
                 var manager =
                     CreateSpawnedPredictionManager(managerObject, networkManager);
-                var systems = GetField<List<PredictedIdentity>>(
+                var systems = GetField<PredictedSystemList>(
                     typeof(PredictionManager), manager, "_systems");
 
                 var identities = new List<PredictedIdentity>();

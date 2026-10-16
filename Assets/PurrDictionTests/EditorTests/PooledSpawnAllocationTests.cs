@@ -250,7 +250,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 _ack.ackedServerTick = 10;
             }
 
-            internal int LiveCount(PredictionManager manager) => Get<List<PredictedIdentity>>(manager, "_systems").Count;
+            internal int LiveCount(PredictionManager manager) => Get<PredictedSystemList>(manager, "_systems").Count;
 
             static readonly string[] BufferFields = { "_stateHistory", "_interpolatedState", "_inputHistory" };
 
@@ -481,7 +481,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(server, "<localTick>k__BackingField", tick);
                 Set(server, "<localTickInContext>k__BackingField", tick);
                 Set(server, "<isVerified>k__BackingField", true);
-                var systems = Get<List<PredictedIdentity>>(server, "_systems");
+                var systems = Get<PredictedSystemList>(server, "_systems");
                 for (var i = 0; i < systems.Count; i++)
                 {
                     systems[i].RunGetLatestUnityState();
@@ -607,7 +607,7 @@ namespace PurrNet.Prediction.Tests.Editor
                         continue;
                     if (manager.hierarchy)
                         manager.hierarchy.Cleanup();
-                    var systems = Get<List<PredictedIdentity>>(manager, "_systems");
+                    var systems = Get<PredictedSystemList>(manager, "_systems");
                     foreach (var identity in systems)
                         identity.ReleasePredictionStateForPool();
                     systems.Clear();

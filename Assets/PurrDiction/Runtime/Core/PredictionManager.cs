@@ -89,10 +89,8 @@ namespace PurrNet.Prediction
         static readonly ProfilerMarker ReplayToLatestTickMarker = new("PredictionManager.ReplayToLatestTick");
 
         readonly List<PredictedIdentity> _queue = new ();
-        readonly List<PredictedIdentity> _systems = new ();
+        readonly PredictedSystemList _systems = new ();
         private int _systemsCount;
-        // Changes whenever the registered system list does, so per-tick scans can reuse rosters.
-        private uint _systemsRevision;
 
         GameObjectPoolCollection _pools;
 
@@ -109,8 +107,8 @@ namespace PurrNet.Prediction
         [ContextMenu("Debug/Print all systems")]
         public void PrintAllSystems()
         {
-            foreach (var system in _systems)
-                Debug.Log(system, system);
+            for (var i = 0; i < _systems.Count; i++)
+                Debug.Log(_systems[i], _systems[i]);
         }
 
         private uint _sessionSeed;
@@ -701,7 +699,6 @@ namespace PurrNet.Prediction
             _systems.Clear();
             _replayFrozenSystems.Clear();
             _systemsCount = 0;
-            _systemsRevision++;
             _inputHistorySystems = 0;
             _nextHistoryResyncRequestAt = 0;
             _historyResyncPending = false;
@@ -940,7 +937,6 @@ namespace PurrNet.Prediction
 
             _systems.Insert(posToInsert, system);
             ++_systemsCount;
-            _systemsRevision++;
             if (system.hasInput)
                 ++_inputHistorySystems;
 
@@ -975,7 +971,6 @@ namespace PurrNet.Prediction
             {
                 _systems.RemoveAt(systemIndex);
                 --_systemsCount;
-                _systemsRevision++;
                 if (predictedIdentity.hasInput)
                 {
                     --_inputHistorySystems;

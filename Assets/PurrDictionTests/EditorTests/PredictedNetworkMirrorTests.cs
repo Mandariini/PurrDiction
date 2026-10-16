@@ -459,7 +459,7 @@ namespace PurrNet.Prediction.Tests.Editor
             public void Dispose()
             {
                 hierarchy.Cleanup();
-                var systems = (List<PredictedIdentity>)typeof(PredictionManager).GetField("_systems", Instance)!.GetValue(manager);
+                var systems = (PredictedSystemList)typeof(PredictionManager).GetField("_systems", Instance)!.GetValue(manager);
                 foreach (var identity in systems)
                     identity.ReleasePredictionStateForPool();
                 systems.Clear();

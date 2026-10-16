@@ -371,7 +371,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 verified.Write(10, State(100));
                 Set(typeof(PredictedIdentity<FrameProbeState>), identity, "_verifiedHistory", verified);
                 identity.lastVerifiedTick = 10;
-                Get<List<PredictedIdentity>>(manager, "_systems").Add(identity);
+                Get<PredictedSystemList>(manager, "_systems").Add(identity);
                 Set(manager, "_systemsCount", 1);
                 Set(manager, "_inputHistorySystems", 1);
                 Get<Dictionary<PredictedComponentID, PredictedIdentity>>(manager, "_instanceMap").Add(id, identity);
@@ -385,7 +385,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 // Editor-only lifecycle callbacks cannot hide missing state disposal.
                 foreach (var manager in new[] { client, _server })
                 {
-                    Get<List<PredictedIdentity>>(manager, "_systems").Clear();
+                    Get<PredictedSystemList>(manager, "_systems").Clear();
                     Get<Dictionary<PredictedComponentID, PredictedIdentity>>(manager, "_instanceMap").Clear();
                     Set(manager, "_systemsCount", 0);
                 }

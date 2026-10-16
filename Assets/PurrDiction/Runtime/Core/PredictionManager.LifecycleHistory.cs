@@ -121,11 +121,11 @@ namespace PurrNet.Prediction
             // Borrow while preparing: a failed entrant writer must leave the old owner intact.
             captured.ownsTopology = !sharesPreviousTopology;
             captured.tick = tick;
-            captured.systemsRevision = _systemsRevision;
+            captured.systemsRevision = _systems.revision;
 
             // Unchanged systems, topology and visibility have no entrants, so the tick
             // repeats the previous roster without rescanning every system.
-            if (sharesPreviousTopology && previous.systemsRevision == _systemsRevision &&
+            if (sharesPreviousTopology && previous.systemsRevision == _systems.revision &&
                 previous.parents.Count == 0 && !HasVisibilityFilteredPlayer())
             {
                 RepeatPreviousLifecycleTick(tick, previous, captured);
