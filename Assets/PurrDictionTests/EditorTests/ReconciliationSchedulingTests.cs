@@ -232,6 +232,8 @@ namespace PurrNet.Prediction.Tests.Editor
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // hierarchy record
                     Packer<PackedUInt>.Write(frame, checked((uint)(tick - 10)));
+                    if (tick > 10)
+                        Packer<bool>.Write(frame, false); // no carried input roster
                     for (ulong inputTick = 11; inputTick <= tick; inputTick++)
                         Packer<PackedUInt>.Write(frame, 0u); // explicit empty input tick
                     Packer<bool>.Write(frame, false); // no historical lifecycle hierarchy

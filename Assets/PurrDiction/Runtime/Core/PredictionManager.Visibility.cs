@@ -1223,14 +1223,23 @@ namespace PurrNet.Prediction
                 throw new MissingPredictionBaselineException(
                     $"Authoritative inputs from tick {baselineTick + 1} through {localTick} are outside retained history.");
 
-            // Empty ticks still need entries to prove verification; the first tick cannot use repeats.
+            // Empty ticks still need entries to prove verification. The first tick can repeat
+            // only the roster the receiver kept from the baseline frame.
             Packer<PackedUInt>.Write(frame, checked((uint)(localTick - baselineTick)));
+            bool carry = _inputCarryAvailable && localTick > baselineTick &&
+                         TryGetInputBlockForTick(baselineTick, out _);
+            if (localTick > baselineTick)
+                Packer<bool>.Write(frame, carry);
             for (ulong tick = baselineTick + 1; tick <= localTick; tick++)
             {
                 var block = GetInputBlockForTick(tick);
-                WriteTranscriptTick(player, timeline, tick, in block, frame, tick > baselineTick + 1);
+                bool laterTick = tick > baselineTick + 1;
+                WriteTranscriptTick(player, timeline, tick, in block, frame, laterTick || carry, laterTick);
             }
         }
+
+        // Set while writing a frame whose receiver holds the baseline tick's complete input roster.
+        bool _inputCarryAvailable;
 
         bool IsInputEntryVisible(PlayerVisibilityTimeline timeline, in CachedInputEntry entry, ulong tick)
             => !hierarchy || timeline.isPassThrough || entry.id.objectId.instanceId.value == 1 ||
@@ -1253,7 +1262,8 @@ namespace PurrNet.Prediction
             ulong tick,
             in CachedInputBlock block,
             BitPacker frame,
-            bool allowRepeat)
+            bool allowRepeat,
+            bool allowOffsetRepeat)
         {
             var entries = block.entries;
             var visible = _visibleInputEntryScratch;
@@ -1285,7 +1295,7 @@ namespace PurrNet.Prediction
                 }
                 Packer<bool>.Write(frame, sameRoster);
             }
-            WriteTranscriptViewOffsets(frame, in block, allowRepeat && previousWroteOffsets);
+            WriteTranscriptViewOffsets(frame, in block, allowOffsetRepeat && previousWroteOffsets);
 
             if (sameRoster)
             {

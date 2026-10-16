@@ -1127,6 +1127,8 @@ namespace PurrNet.Prediction.Tests.Editor
                     if (!events.fullFrame)
                     {
                         Packer<PackedUInt>.Write(frame, checked((uint)(tick - events.baselineTick)));
+                        if (tick > events.baselineTick)
+                            Packer<bool>.Write(frame, false); // no carried input roster
                         for (ulong inputTick = events.baselineTick + 1; inputTick <= tick; inputTick++)
                             Packer<PackedUInt>.Write(frame, 0u); // complete empty input transcript
                         Packer<bool>.Write(frame, false); // no historical lifecycle hierarchy

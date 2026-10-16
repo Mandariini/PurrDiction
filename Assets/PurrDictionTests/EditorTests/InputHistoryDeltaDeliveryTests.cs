@@ -195,6 +195,7 @@ namespace PurrNet.Prediction.Tests.Editor
             int end = frame.positionInBits;
             frame.ResetPositionAndMode(true);
             Assert.That((uint)Packer<PackedUInt>.Read(frame), Is.EqualTo(18UL - baseline));
+            Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
             for (ulong tick = baseline + 1; tick <= 18; tick++)
             {
                 int value = values[(int)(tick - 10)];

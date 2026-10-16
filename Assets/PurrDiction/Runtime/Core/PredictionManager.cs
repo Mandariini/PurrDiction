@@ -710,6 +710,7 @@ namespace PurrNet.Prediction
             DisposeInputBlockCache();
             DisposeLifecycleHistory();
             ClearVerifiedInputTranscript();
+            DropCarriedInputs();
             DisposeCachedInputPayload();
             DisposeSharedStateSections();
             ClearUploadedInputs();
@@ -1685,6 +1686,9 @@ namespace PurrNet.Prediction
                 clientFrame.preparedFrameTick = localTick;
                 clientFrame.preparedBaselineTick = baselineTick;
                 clientFrame.preparedVisibilityTick = localTick;
+                // Full and delta frames both end with this tick's complete visible input roster.
+                clientFrame.preparedInputCarryTick = localTick;
+                clientFrame.preparedInputCarry = timeline.isPassThrough;
                 _clientFrames[j] = clientFrame;
                 BeginPreparingDesyncHeals(player);
 
@@ -1735,8 +1739,18 @@ namespace PurrNet.Prediction
                     deltaSectionHierarchyBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
                     sectionStart = frame.positionInBits;
-                    using (WriteInputHistoryMarker.Auto())
-                        WriteVisibilityInputHistory(player, frame, baselineTick, timeline);
+                    _inputCarryAvailable = clientFrame.sentInputCarry &&
+                                           clientFrame.sentInputCarryTick == baselineTick &&
+                                           timeline.isPassThrough;
+                    try
+                    {
+                        using (WriteInputHistoryMarker.Auto())
+                            WriteVisibilityInputHistory(player, frame, baselineTick, timeline);
+                    }
+                    finally
+                    {
+                        _inputCarryAvailable = false;
+                    }
                     deltaSectionInputBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
                     sectionStart = frame.positionInBits;
@@ -1926,6 +1940,9 @@ namespace PurrNet.Prediction
 
             clientFrame.sentVisibilityTick = frameTick;
             clientFrame.lastSentFrameTick = frameTick;
+            clientFrame.sentInputCarryTick = clientFrame.preparedInputCarryTick;
+            clientFrame.sentInputCarry = clientFrame.preparedInputCarry &&
+                                         clientFrame.preparedInputCarryTick == frameTick;
             clientFrame.preparedVisibilityTick = 0;
             if (_playerVisibility.TryGetValue(player, out var visibilityTimeline))
                 HandleVisibilityFrameSent(player, visibilityTimeline, frameTick);
@@ -2667,6 +2684,7 @@ namespace PurrNet.Prediction
                             ReadFullFrame(frame.packer, frame.serverTick, frame.serverTick, frame.serverTick);
                             if (_frameApplyHadRecordFailure)
                             {
+                                DropCarriedInputs();
                                 MarkHistoryResyncNeeded(frame.serverTick);
                                 continue;
                             }
@@ -2674,6 +2692,7 @@ namespace PurrNet.Prediction
                             SaveEnteringState(frame.serverTick + 1);
                             _savedEnteringStateTick = frame.serverTick + 1;
                             _verifiedServerTick = frame.serverTick;
+                            CarryVerifiedInputs(frame.serverTick);
                         }
                         catch (Exception error)
                         {
@@ -2696,6 +2715,7 @@ namespace PurrNet.Prediction
                             continue;
                         }
                         _verifiedServerTick = frame.serverTick;
+                        CarryVerifiedInputs(frame.serverTick);
                     }
 
                     ApplyAcceptedFrameFeedback(frame);
@@ -2841,6 +2861,7 @@ namespace PurrNet.Prediction
 
         private void HandleFrameApplicationFailure(in FrameDelta frame, Exception error)
         {
+            DropCarriedInputs();
             _frameApplyHadRecordFailure = true;
             _frameApplyHadBaselineFailure = true;
             if (frame.fullFrame)

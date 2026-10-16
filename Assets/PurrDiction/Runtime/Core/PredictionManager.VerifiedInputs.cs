@@ -234,8 +234,13 @@ namespace PurrNet.Prediction
             if (frame.positionInBits > frameEndBit || count != serverTick - baselineTick)
                 throw new MissingPredictionBaselineException(
                     $"Authoritative inputs must cover every tick after {baselineTick} through {serverTick}.");
+            bool carried = count > 0 && ReadTranscriptFlag(frame, frameEndBit, baselineTick);
+            if (carried && (!_hasCarriedInputs || _carriedInputTick != baselineTick))
+                throw new MissingPredictionBaselineException(
+                    $"Authoritative inputs at tick {baselineTick + 1} repeat an input roster this peer does not hold.");
 
             BeginVerifiedInputTranscript(baselineTick + 1, serverTick);
+            var carriedBatch = carried ? StageCarriedInputs() : default;
             for (uint k = 0; k < count; k++)
             {
                 ulong tick = baselineTick + 1 + k;
@@ -251,8 +256,8 @@ namespace PurrNet.Prediction
                     continue;
                 }
 
-                var previousBatch = k > 0 ? _verifiedInputTicks[(int)k - 1] : default;
-                bool sameRoster = k > 0 && Packer<bool>.Read(frame);
+                var previousBatch = k > 0 ? _verifiedInputTicks[(int)k - 1] : carriedBatch;
+                bool sameRoster = (k > 0 || carried) && ReadTranscriptFlag(frame, frameEndBit, tick);
                 ReadTranscriptViewOffsets(frame, frameEndBit, tick, k > 0 && previousBatch.count > 0);
                 _verifiedInputRepeatScratch.Clear();
                 _verifiedInputDeltaScratch.Clear();
@@ -307,6 +312,61 @@ namespace PurrNet.Prediction
                     StageVerifiedInput(tick, id, frame, origin, (int)bits);
                 }
             }
+        }
+
+        // The last verified tick's complete input roster, kept after its frame applied so the
+        // next frame's first tick can repeat or patch it.
+        private BitPacker _carriedInputs;
+        private readonly List<InputHistorySpan> _carriedInputEntries = new();
+        private ulong _carriedInputTick;
+        private bool _hasCarriedInputs;
+
+        // Carried entries precede the transcript's own ticks in its payload, outside every tick batch.
+        private VerifiedInputTick StageCarriedInputs()
+        {
+            int first = _verifiedInputEntries.Count;
+            int origin = _verifiedInputPayload.positionInBits;
+            _verifiedInputPayload.WriteBitsWithoutConsumingIt(_carriedInputs, _carriedInputs.positionInBits);
+            for (int i = 0; i < _carriedInputEntries.Count; i++)
+            {
+                var entry = _carriedInputEntries[i];
+                entry.bitOrigin += origin;
+                _verifiedInputEntries.Add(entry);
+            }
+            return new VerifiedInputTick { firstEntry = first, count = _carriedInputEntries.Count };
+        }
+
+        private void CarryVerifiedInputs(ulong tick)
+        {
+            if (_verifiedInputPayload == null || _verifiedInputTicks.Count == 0 ||
+                tick < _verifiedInputFrom || tick > _verifiedInputThrough ||
+                tick - _verifiedInputFrom >= (ulong)_verifiedInputTicks.Count)
+            {
+                _hasCarriedInputs &= _carriedInputTick == tick;
+                return;
+            }
+
+            var batch = _verifiedInputTicks[(int)(tick - _verifiedInputFrom)];
+            _carriedInputs ??= new BitPacker(Math.Max(32, _verifiedInputPayload.positionInBytes));
+            _carriedInputs.ResetPositionAndMode(false);
+            _carriedInputEntries.Clear();
+            for (int i = batch.firstEntry; i < batch.firstEntry + batch.count; i++)
+            {
+                var entry = _verifiedInputEntries[i];
+                int origin = _carriedInputs.positionInBits;
+                _carriedInputs.WriteBitDataWithoutConsumingIt(
+                    new BitData(_verifiedInputPayload, entry.bitOrigin, entry.bitLength));
+                entry.bitOrigin = origin;
+                _carriedInputEntries.Add(entry);
+            }
+            _carriedInputTick = tick;
+            _hasCarriedInputs = true;
+        }
+
+        private void DropCarriedInputs()
+        {
+            _hasCarriedInputs = false;
+            _carriedInputEntries.Clear();
         }
 
         private static bool ReadTranscriptFlag(BitPacker frame, int frameEndBit, ulong tick)

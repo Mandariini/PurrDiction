@@ -283,6 +283,11 @@ namespace PurrNet.Prediction.Tests.Editor
                     uint tickCount = Packer<PackedUInt>.Read(source).value;
                     Assert.That(tickCount, Is.EqualTo(original.tick - original.baseline));
                     Packer<PackedUInt>.Write(altered, tickCount);
+                    if (tickCount > 0)
+                    {
+                        Assert.That(Packer<bool>.Read(source), Is.False, "no carried input roster");
+                        Packer<bool>.Write(altered, false);
+                    }
                     // Decode every tick (repeats resolve against the previous decoded tick) and
                     // re-emit the canonical no-repeat layout, since byte padding depends on position.
                     var previous = new List<(PredictedComponentID id, BitPacker payload)>();

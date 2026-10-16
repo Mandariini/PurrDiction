@@ -174,6 +174,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var writtenBits = frame.positionInBits;
                 frame.ResetPositionAndMode(true);
                 Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(5));
+                Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
                 var previous = new List<(PredictedComponentID id, int value)>();
                 for (ulong tick = 16; tick <= 20; tick++)
                 {

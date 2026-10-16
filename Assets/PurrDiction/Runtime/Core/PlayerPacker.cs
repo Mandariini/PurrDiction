@@ -15,6 +15,12 @@ namespace PurrNet.Prediction
         public ulong sentVisibilityTick;
         public ulong lastFullFrameSentTick;
         public ulong lastSentFrameTick;
+        // The receiver keeps the complete input roster of the last transcript tick it applied,
+        // so the next frame's first tick can repeat it. Holds only for unfiltered transcripts.
+        public ulong preparedInputCarryTick;
+        public bool preparedInputCarry;
+        public ulong sentInputCarryTick;
+        public bool sentInputCarry;
 
         public void BeginFullFrame(ulong tick)
         {
@@ -34,6 +40,8 @@ namespace PurrNet.Prediction
             requiresFullCheckpoint = false;
             lastFullFrameSentTick = 0;
             lastSentFrameTick = 0;
+            preparedInputCarry = false;
+            sentInputCarry = false;
         }
     }
 }
