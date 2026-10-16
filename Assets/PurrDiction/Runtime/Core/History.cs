@@ -191,7 +191,8 @@ namespace PurrNet.Prediction
         // Keep the baseline's latest preceding entry as an anchor, even with a removal budget.
         internal int PruneBeforeBaseline(ulong baselineTick, int maximumEntriesToRemove = int.MaxValue)
         {
-            if (m_count <= 1 || maximumEntriesToRemove <= 0)
+            // An oldest entry at or after the baseline is already the anchor.
+            if (m_count <= 1 || maximumEntriesToRemove <= 0 || m_ticks[m_head] >= baselineTick)
                 return 0;
             bool found = Find(baselineTick, out int index);
             int firstIndexToKeep = found ? index : Math.Max(0, index - 1);
