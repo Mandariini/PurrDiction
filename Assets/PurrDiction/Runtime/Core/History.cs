@@ -5,9 +5,14 @@ namespace PurrNet.Prediction
 {
     public sealed class History<T> where T : struct, IDisposable
     {
-        ulong[] m_ticks;
+        // A tick and its value share one slot, so each lookup touches a single cache line.
+        struct Slot
+        {
+            public ulong tick;
+            public T value;
+        }
 
-        T[] m_values;
+        Slot[] m_values;
 
         int m_head;
 
@@ -27,8 +32,8 @@ namespace PurrNet.Prediction
         int Phys(int index)
         {
             int phys = m_head + index;
-            if (phys >= m_ticks.Length)
-                phys -= m_ticks.Length;
+            if (phys >= m_values.Length)
+                phys -= m_values.Length;
             return phys;
         }
 
@@ -43,7 +48,7 @@ namespace PurrNet.Prediction
                 {
                     throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {m_count - 1} is valid.");
                 }
-                return m_values[Phys(index)];
+                return m_values[Phys(index)].value;
             }
             set
             {
@@ -51,7 +56,7 @@ namespace PurrNet.Prediction
                 {
                     throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {m_count - 1} is valid.");
                 }
-                m_values[Phys(index)] = value;
+                m_values[Phys(index)].value = value;
             }
         }
 
@@ -72,7 +77,7 @@ namespace PurrNet.Prediction
         public ulong MostRecentTick
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => m_count == 0 ? 0 : m_ticks[Phys(m_count - 1)];
+            get => m_count == 0 ? 0 : m_values[Phys(m_count - 1)].tick;
         }
 
         // Read only the newest entry, and reject it if it is ahead of the caller.
@@ -83,9 +88,9 @@ namespace PurrNet.Prediction
             if (m_count > 0)
             {
                 int phys = Phys(m_count - 1);
-                if (m_ticks[phys] <= maximumTick)
+                if (m_values[phys].tick <= maximumTick)
                 {
-                    result = m_values[phys];
+                    result = m_values[phys].value;
                     return true;
                 }
             }
@@ -99,12 +104,12 @@ namespace PurrNet.Prediction
         public ulong OldestTick
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => m_count == 0 ? 0 : m_ticks[m_head];
+            get => m_count == 0 ? 0 : m_values[m_head].tick;
         }
 
         // Availability checks need neither a search nor a copy of the retained value.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal bool HasAtOrBefore(ulong tick) => m_count > 0 && m_ticks[m_head] <= tick;
+        internal bool HasAtOrBefore(ulong tick) => m_count > 0 && m_values[m_head].tick <= tick;
 
         /// <summary>
         /// Gets the tick value for the index in the internal collection
@@ -116,7 +121,7 @@ namespace PurrNet.Prediction
             {
                 throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {m_count - 1} is valid.");
             }
-            return m_ticks[Phys(index)];
+            return m_values[Phys(index)].tick;
         }
 
         /// <summary>
@@ -148,28 +153,26 @@ namespace PurrNet.Prediction
                 m_limitToCut = Math.Max(m_maxCount + 10, m_maxCount + m_maxCount / 2);
                 m_eagerCapacity = initialCapacity > 0 ? Math.Min(initialCapacity, m_limitToCut + 1) : m_limitToCut + 1;
                 m_growthBoundary = Math.Min(growthBoundary, m_limitToCut + 1);
-                m_ticks = new ulong[m_eagerCapacity];
-                m_values = new T[m_eagerCapacity];
+                m_values = new Slot[m_eagerCapacity];
             }
             else
             {
-                m_ticks = new ulong[16];
-                m_values = new T[16];
+                m_values = new Slot[16];
             }
         }
 
         void Grow()
         {
-            int newCapacity = m_ticks.Length * 2;
+            int newCapacity = m_values.Length * 2;
             if (m_maxCount > 0)
             {
                 newCapacity = Math.Min(newCapacity, m_limitToCut + 1);
                 int tickWindowCapacity = m_maxCount + 2;
-                if (m_eagerCapacity < tickWindowCapacity && m_ticks.Length < tickWindowCapacity)
+                if (m_eagerCapacity < tickWindowCapacity && m_values.Length < tickWindowCapacity)
                     newCapacity = Math.Min(newCapacity, tickWindowCapacity);
                 // Reach the protocol window without doubling past it. Stalled local
                 // timelines can still grow beyond this boundary to their full limit.
-                if (m_ticks.Length < m_growthBoundary)
+                if (m_values.Length < m_growthBoundary)
                     newCapacity = Math.Min(newCapacity, m_growthBoundary);
             }
             ResizeBackingStorage(newCapacity);
@@ -181,7 +184,7 @@ namespace PurrNet.Prediction
             if (m_maxCount <= 0)
                 return false;
             int newCapacity = Math.Max(1, m_count);
-            if (newCapacity >= m_ticks.Length ||
+            if (newCapacity >= m_values.Length ||
                 (long)newCapacity * (Unsafe.SizeOf<T>() + sizeof(ulong)) > maximumPayloadBytes)
                 return false;
             ResizeBackingStorage(newCapacity);
@@ -192,7 +195,7 @@ namespace PurrNet.Prediction
         internal int PruneBeforeBaseline(ulong baselineTick, int maximumEntriesToRemove = int.MaxValue)
         {
             // An oldest entry at or after the baseline is already the anchor.
-            if (m_count <= 1 || maximumEntriesToRemove <= 0 || m_ticks[m_head] >= baselineTick)
+            if (m_count <= 1 || maximumEntriesToRemove <= 0 || m_values[m_head].tick >= baselineTick)
                 return 0;
             bool found = Find(baselineTick, out int index);
             int firstIndexToKeep = found ? index : Math.Max(0, index - 1);
@@ -206,34 +209,28 @@ namespace PurrNet.Prediction
         internal long RestoreEagerBackingStorage(int minimumCapacity = 0)
         {
             int capacity = Math.Min(m_limitToCut + 1, Math.Max(m_eagerCapacity, minimumCapacity));
-            if (m_maxCount <= 0 || m_ticks.Length >= capacity)
+            if (m_maxCount <= 0 || m_values.Length >= capacity)
                 return 0;
             ResizeBackingStorage(Math.Max(m_count, capacity));
             return BackingStoragePayloadBytes;
         }
 
-        internal bool HasEagerBackingStorage => m_maxCount > 0 && m_ticks.Length >= m_eagerCapacity;
+        internal bool HasEagerBackingStorage => m_maxCount > 0 && m_values.Length >= m_eagerCapacity;
 
         internal long BackingStoragePayloadBytes =>
-            (long)m_ticks.Length * (Unsafe.SizeOf<T>() + sizeof(ulong));
+            (long)m_values.Length * (Unsafe.SizeOf<T>() + sizeof(ulong));
 
         private void ResizeBackingStorage(int newCapacity)
         {
-            var newTicks = new ulong[newCapacity];
-            var newValues = new T[newCapacity];
+            var newValues = new Slot[newCapacity];
 
-            int firstChunk = Math.Min(m_count, m_ticks.Length - m_head);
-            Array.Copy(m_ticks, m_head, newTicks, 0, firstChunk);
+            int firstChunk = Math.Min(m_count, m_values.Length - m_head);
             Array.Copy(m_values, m_head, newValues, 0, firstChunk);
 
             int remaining = m_count - firstChunk;
             if (remaining > 0)
-            {
-                Array.Copy(m_ticks, 0, newTicks, firstChunk, remaining);
                 Array.Copy(m_values, 0, newValues, firstChunk, remaining);
-            }
 
-            m_ticks = newTicks;
             m_values = newValues;
             m_head = 0;
         }
@@ -245,17 +242,15 @@ namespace PurrNet.Prediction
         /// <param name="data">What is the state/data of the tick.</param>
         public void Write(ulong tick, in T data)
         {
-            if (m_count == 0 || tick > m_ticks[Phys(m_count - 1)])
+            if (m_count == 0 || tick > m_values[Phys(m_count - 1)].tick)
             {
-                if (m_count > 0 && tick != m_ticks[Phys(m_count - 1)] + 1)
+                if (m_count > 0 && tick != m_values[Phys(m_count - 1)].tick + 1)
                     m_contiguous = false;
 
-                if (m_count == m_ticks.Length)
+                if (m_count == m_values.Length)
                     Grow();
 
-                int phys = Phys(m_count);
-                m_ticks[phys] = tick;
-                m_values[phys] = data;
+                m_values[Phys(m_count)] = new Slot { tick = tick, value = data };
                 m_count++;
 
                 if (m_maxCount > 0)
@@ -266,8 +261,8 @@ namespace PurrNet.Prediction
             if (Find(tick, out var index))
             {
                 int phys = Phys(index);
-                m_values[phys].Dispose();
-                m_values[phys] = data;
+                m_values[phys].value.Dispose();
+                m_values[phys].value = data;
                 return;
             }
 
@@ -280,20 +275,17 @@ namespace PurrNet.Prediction
 
         void InsertAt(int index, ulong tick, in T data)
         {
-            if (m_count == m_ticks.Length)
+            if (m_count == m_values.Length)
                 Grow();
 
             for (int i = m_count; i > index; i--)
             {
                 int dst = Phys(i);
                 int src = Phys(i - 1);
-                m_ticks[dst] = m_ticks[src];
                 m_values[dst] = m_values[src];
             }
 
-            int phys = Phys(index);
-            m_ticks[phys] = tick;
-            m_values[phys] = data;
+            m_values[Phys(index)] = new Slot { tick = tick, value = data };
             m_count++;
         }
 
@@ -313,7 +305,7 @@ namespace PurrNet.Prediction
         private void RefreshContiguity()
         {
             m_contiguous = m_count <= 1 ||
-                m_ticks[Phys(m_count - 1)] - m_ticks[m_head] == (ulong)(m_count - 1);
+                m_values[Phys(m_count - 1)].tick - m_values[m_head].tick == (ulong)(m_count - 1);
         }
 
         private void RemoveFront(int count)
@@ -321,7 +313,7 @@ namespace PurrNet.Prediction
             for (int i = 0; i < count; i++)
             {
                 int phys = Phys(i);
-                m_values[phys].Dispose();
+                m_values[phys].value.Dispose();
                 m_values[phys] = default;
             }
 
@@ -337,7 +329,7 @@ namespace PurrNet.Prediction
             for (int i = m_count - count; i < m_count; i++)
             {
                 int phys = Phys(i);
-                m_values[phys].Dispose();
+                m_values[phys].value.Dispose();
                 m_values[phys] = default;
             }
 
@@ -409,7 +401,7 @@ namespace PurrNet.Prediction
         {
             if (Find(tick, out var index))
             {
-                result = m_values[Phys(index)];
+                result = m_values[Phys(index)].value;
                 return true;
             }
 
@@ -419,7 +411,7 @@ namespace PurrNet.Prediction
 
         public T ReadOrDefault(ulong tick)
         {
-            return Find(tick, out var index) ? m_values[Phys(index)] : default;
+            return Find(tick, out var index) ? m_values[Phys(index)].value : default;
         }
 
         public bool TryGet(ulong tick, out T result)
@@ -442,14 +434,14 @@ namespace PurrNet.Prediction
         {
             if (Find(tick, out var index))
             {
-                result = m_values[Phys(index)];
+                result = m_values[Phys(index)].value;
                 return true;
             }
 
             // index is the insertion point; index-1 is the closest previous entry
             if (index > 0)
             {
-                result = m_values[Phys(index - 1)];
+                result = m_values[Phys(index - 1)].value;
                 return true;
             }
 
@@ -473,16 +465,16 @@ namespace PurrNet.Prediction
 
             if (Find(tick, out var index))
             {
-                result = m_values[Phys(index)];
+                result = m_values[Phys(index)].value;
                 tickDifference = 0;
                 return true;
             }
 
-            if (index == m_count || (index > 0 && tick - m_ticks[Phys(index - 1)] < m_ticks[Phys(index)] - tick))
+            if (index == m_count || (index > 0 && tick - m_values[Phys(index - 1)].tick < m_values[Phys(index)].tick - tick))
                 index -= 1;
 
-            result = m_values[Phys(index)];
-            var resultTick = m_ticks[Phys(index)];
+            result = m_values[Phys(index)].value;
+            var resultTick = m_values[Phys(index)].tick;
             tickDifference = resultTick > tick ? resultTick - tick : tick - resultTick;
             return true;
         }
@@ -501,7 +493,7 @@ namespace PurrNet.Prediction
                 return false;
             }
 
-            ulong first = m_ticks[m_head];
+            ulong first = m_values[m_head].tick;
 
             if (tick < first)
             {
@@ -526,7 +518,7 @@ namespace PurrNet.Prediction
             // Delta baselines usually address one of the newest sparse entries.
             // Also resolve insertion points beyond or between those entries directly.
             int lastIndex = m_count - 1;
-            ulong last = m_ticks[Phys(lastIndex)];
+            ulong last = m_values[Phys(lastIndex)].tick;
             if (tick >= last)
             {
                 result = tick == last ? lastIndex : m_count;
@@ -534,7 +526,7 @@ namespace PurrNet.Prediction
             }
             if (lastIndex > 0)
             {
-                ulong previous = m_ticks[Phys(lastIndex - 1)];
+                ulong previous = m_values[Phys(lastIndex - 1)].tick;
                 if (tick >= previous)
                 {
                     result = tick == previous ? lastIndex - 1 : lastIndex;
@@ -548,7 +540,7 @@ namespace PurrNet.Prediction
             while (min <= max)
             {
                 int mid = (min + max) / 2;
-                ulong midTick = m_ticks[Phys(mid)];
+                ulong midTick = m_values[Phys(mid)].tick;
 
                 if (tick == midTick)
                 {
@@ -575,7 +567,7 @@ namespace PurrNet.Prediction
         /// </summary>
         public void TrimExcessMemory()
         {
-            if (m_maxCount > 0 || m_count > m_ticks.Length / 2 || m_ticks.Length <= 16)
+            if (m_maxCount > 0 || m_count > m_values.Length / 2 || m_values.Length <= 16)
                 return;
 
             ResizeBackingStorage(Math.Max(16, m_count));
@@ -587,13 +579,12 @@ namespace PurrNet.Prediction
                 return;
 
             int phys = Phys(index);
-            m_values[phys].Dispose();
+            m_values[phys].value.Dispose();
 
             for (int i = index; i < m_count - 1; i++)
             {
                 int dst = Phys(i);
                 int src = Phys(i + 1);
-                m_ticks[dst] = m_ticks[src];
                 m_values[dst] = m_values[src];
             }
 
