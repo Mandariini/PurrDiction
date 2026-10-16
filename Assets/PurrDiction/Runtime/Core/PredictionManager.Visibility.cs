@@ -1238,7 +1238,7 @@ namespace PurrNet.Prediction
             _visibleInputEntryScratch.Clear();
             for (int i = 0; i < block.entries.Count; i++)
             {
-                var entry = block.entries[i];
+                ref readonly var entry = ref block.entries[i];
                 if (!hierarchy || timeline.isPassThrough || entry.id.objectId.instanceId.value == 1 ||
                     timeline.WasVisibleAt(entry.rootId, tick))
                     _visibleInputEntryScratch.Add(i);
@@ -1247,7 +1247,7 @@ namespace PurrNet.Prediction
             using var payload = BitPackerPool.Get();
             foreach (int index in _visibleInputEntryScratch)
             {
-                var entry = block.entries[index];
+                ref readonly var entry = ref block.entries[index];
                 payload.ResetPositionAndMode(false);
                 payload.WriteBitDataWithoutConsumingIt(new BitData(block.packer, entry.bitOrigin, entry.bitLength));
                 AddressedPredictionRecords.WriteRecord(destination, entry.id, true, payload);
@@ -1295,10 +1295,13 @@ namespace PurrNet.Prediction
             var entries = block.entries;
             for (var i = 0; i < entries.Count; i++)
             {
-                if (IsInputEntryVisible(timeline, entries[i], tick))
+                if (IsInputEntryVisible(timeline, in entries[i], tick))
                     into.Add(i);
             }
         }
+
+        // Without a hierarchy or with a pass-through timeline every entry is visible.
+        bool SeesEveryInputEntry(PlayerVisibilityTimeline timeline) => !hierarchy || timeline.isPassThrough;
 
         void WriteTranscriptTick(
             PlayerID player,
@@ -1310,10 +1313,15 @@ namespace PurrNet.Prediction
             bool allowOffsetRepeat)
         {
             var entries = block.entries;
+            bool all = SeesEveryInputEntry(timeline);
             var visible = _visibleInputEntryScratch;
-            CollectVisibleInputEntries(timeline, in block, tick, visible);
-            Packer<PackedUInt>.Write(frame, (uint)visible.Count);
-            if (visible.Count == 0)
+            if (all)
+                visible.Clear();
+            else
+                CollectVisibleInputEntries(timeline, in block, tick, visible);
+            int visibleCount = all ? entries.Count : visible.Count;
+            Packer<PackedUInt>.Write(frame, (uint)visibleCount);
+            if (visibleCount == 0)
                 return;
 
             bool sameRoster = false;
@@ -1332,9 +1340,9 @@ namespace PurrNet.Prediction
                         var previousVisible = _previousVisibleInputEntryScratch;
                         CollectVisibleInputEntries(timeline, in previous, tick - 1, previousVisible);
                         previousWroteOffsets = previousVisible.Count > 0;
-                        sameRoster = previousVisible.Count == visible.Count;
-                        for (var i = 0; sameRoster && i < visible.Count; i++)
-                            sameRoster = entries[visible[i]].id.Equals(previous.entries[previousVisible[i]].id);
+                        sameRoster = previousVisible.Count == visibleCount;
+                        for (var i = 0; sameRoster && i < visibleCount; i++)
+                            sameRoster = entries[all ? i : visible[i]].id.Equals(previous.entries[previousVisible[i]].id);
                     }
                 }
                 Packer<bool>.Write(frame, sameRoster);
@@ -1345,14 +1353,14 @@ namespace PurrNet.Prediction
             bool allowSame = sameRoster && timeline.isPassThrough;
             if (sameRoster)
             {
-                for (var i = 0; i < visible.Count; i++)
+                for (var i = 0; i < visibleCount; i++)
                 {
-                    var entry = entries[visible[i]];
-                    Packer<bool>.Write(frame, entry.repeatsPrevious);
+                    ref readonly var entry = ref entries[all ? i : visible[i]];
+                    frame.WriteBit(entry.repeatsPrevious);
                     if (entry.repeatsPrevious)
                         continue;
                     bool same = allowSame && entry.sameAs >= 0;
-                    Packer<bool>.Write(frame, same);
+                    frame.WriteBit(same);
                     if (same)
                     {
                         Packer<PackedUInt>.Write(frame, (uint)(i - entry.sameAs - 1));
@@ -1360,18 +1368,18 @@ namespace PurrNet.Prediction
                     }
                     bool restored = entry.RestoredBy(player);
                     bool delta = !restored && entry.deltaLength > 0;
-                    Packer<bool>.Write(frame, delta);
+                    frame.WriteBit(delta);
                     if (!delta)
-                        Packer<bool>.Write(frame, restored);
+                        frame.WriteBit(restored);
                 }
             }
 
             WriteTranscriptPadding(frame);
-            for (var i = 0; i < visible.Count; i++)
+            for (var i = 0; i < visibleCount; i++)
             {
-                int index = visible[i];
-                if (sameRoster && (entries[index].repeatsPrevious || allowSame && entries[index].sameAs >= 0 ||
-                                   entries[index].RestoredBy(player)))
+                int index = all ? i : visible[i];
+                ref readonly var entry = ref entries[index];
+                if (sameRoster && (entry.repeatsPrevious || allowSame && entry.sameAs >= 0 || entry.RestoredBy(player)))
                     continue;
                 WriteTranscriptEntry(frame, in block, index, sameRoster, player);
             }

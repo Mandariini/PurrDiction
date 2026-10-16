@@ -162,7 +162,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     sender.Capture(tick);
                     object block = typeof(PredictionManager).GetMethod("GetInputBlockForTick", Members)
                         .Invoke(sender.manager, new object[] { tick });
-                    var entries = (List<PredictionManager.CachedInputEntry>)block.GetType().GetField("entries")
+                    var entries = (PredictionManager.CachedInputEntries)block.GetType().GetField("entries")
                         .GetValue(block);
                     Assert.That(entries[0].bitLength, Is.EqualTo(tick == 14 ? 41 : 33),
                         $"custom serialized size at tick {tick}");
@@ -272,7 +272,7 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 object block = typeof(PredictionManager).GetMethod("GetInputBlockForTick", Members)
                     .Invoke(manager, new object[] { tick });
-                var entries = (List<PredictionManager.CachedInputEntry>)block.GetType().GetField("entries")
+                var entries = (PredictionManager.CachedInputEntries)block.GetType().GetField("entries")
                     .GetValue(block);
                 foreach (var entry in entries)
                 {
