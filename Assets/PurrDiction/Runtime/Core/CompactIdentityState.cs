@@ -17,8 +17,17 @@ namespace PurrNet.Prediction
             get => (_ownerFlags & 1) != 0 ? new PlayerID(_ownerId, (_ownerFlags & 2) != 0) : (PlayerID?)null;
             set
             {
-                _ownerId = value.HasValue ? value.Value.id.value : 0;
-                _ownerFlags = value.HasValue ? (byte)(1 | (value.Value.isBot ? 2 : 0)) : (byte)0;
+                if (value.HasValue)
+                {
+                    var player = value.GetValueOrDefault();
+                    _ownerId = player.id.value;
+                    _ownerFlags = (byte)(1 | (player.isBot ? 2 : 0));
+                }
+                else
+                {
+                    _ownerId = 0;
+                    _ownerFlags = 0;
+                }
             }
         }
 

@@ -800,9 +800,14 @@ namespace PurrNet.Prediction
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner()
         {
-            if (predictionManager && predictionManager.isSpawned && owner == predictionManager.localPlayer)
-                return true;
-            return false;
+            var manager = predictionManager;
+            if (!manager || !manager.isSpawned)
+                return false;
+            // Lifted equality on two nullable ids, without copying through the nullable wrappers.
+            var local = manager.localPlayer;
+            if (_owner.HasValue != local.HasValue)
+                return false;
+            return !_owner.HasValue || _owner.GetValueOrDefault().id.value == local.GetValueOrDefault().id.value;
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -843,8 +848,9 @@ namespace PurrNet.Prediction
         {
             ulong floor = predictionManager?.acceptedHistoryBaselineFloor ?? 0;
             // A quarantined component can retain an older verified view than its peers.
-            return floor > 0 && lastVerifiedTick.HasValue
-                ? Math.Min(Math.Min(floor, lastVerifiedTick.Value), tick) : 0;
+            var verified = lastVerifiedTick;
+            return floor > 0 && verified.HasValue
+                ? Math.Min(Math.Min(floor, verified.GetValueOrDefault()), tick) : 0;
         }
 
         internal ulong GetAcceptedVerifiedHistoryRetentionFloor(ulong tick)

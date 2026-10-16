@@ -72,7 +72,8 @@ namespace PurrNet.Prediction
 
         private static bool SameOwner(PlayerID? a, PlayerID? b)
             => a.HasValue == b.HasValue && (!a.HasValue ||
-                a.Value.id.value == b.Value.id.value && a.Value.isBot == b.Value.isBot);
+                a.GetValueOrDefault().id.value == b.GetValueOrDefault().id.value &&
+                a.GetValueOrDefault().isBot == b.GetValueOrDefault().isBot);
 
         private static int Bits(float value) => BitConverter.SingleToInt32Bits(value);
 
