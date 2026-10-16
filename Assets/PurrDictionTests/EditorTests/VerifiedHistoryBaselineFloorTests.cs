@@ -388,9 +388,14 @@ namespace PurrNet.Prediction.Tests.Editor
                         if (omitUnchanged)
                             Assert.That(changed, Is.False, "the omitted payload must actually be unchanged");
                     }
-                    AddressedPredictionRecords.WriteSectionCount(omitUnchanged ? 0 : 1, frame);
+                    using var state = BitPackerPool.Get();
+                    AddressedPredictionRecords.WriteSectionCount(omitUnchanged ? 0 : 1, state);
                     if (!omitUnchanged)
-                        AddressedPredictionRecords.WriteRecord(frame, probe.id, fullFrame || fullEntry, payload);
+                        AddressedPredictionRecords.WriteRecord(state, probe.id, fullFrame || fullEntry, payload);
+                    // Delta frames prefix their state section with its length.
+                    if (fullFrame)
+                        frame.WriteBitsWithoutConsumingIt(state, state.positionInBits);
+                    else AddressedPredictionRecords.WriteLengthPrefixed(state.positionInBits, state, frame);
                     if (fullFrame)
                         AddressedPredictionRecords.WriteSectionCount(0, frame); // first inputs
                     Packer<PackedUInt>.Write(frame, 0u); // historical physics event batches

@@ -967,7 +967,8 @@ namespace PurrNet.Prediction
             ulong baselineTick,
             bool fullFrame,
             bool eventHandlers,
-            BitPacker destination)
+            BitPacker destination,
+            bool lengthPrefixed = false)
         {
             if (_sharedStateSectionTick != tick)
             {
@@ -983,6 +984,8 @@ namespace PurrNet.Prediction
                     section.eventHandlers != eventHandlers)
                     continue;
 
+                if (lengthPrefixed)
+                    Packer<PackedUInt>.Write(destination, (uint)section.bits.positionInBits);
                 destination.WriteBitsWithoutConsumingIt(section.bits, section.bits.positionInBits);
                 spawnBaselineRecordsTotal += section.spawnBaselineRecords;
                 return true;
@@ -1057,6 +1060,43 @@ namespace PurrNet.Prediction
                     spawnBaselineRecordsTotal - spawnBaselineRecordsBefore);
             }
         }
+
+        // Delta frames place their event transcript after this section. Receivers validate that
+        // transcript before applying any state, so the length lets them jump over the records.
+        void WriteLengthPrefixedStateSection(
+            PlayerID player,
+            PlayerVisibilityTimeline timeline,
+            BitPacker destination,
+            ulong tick,
+            ulong baselineTick)
+        {
+            bool share = CanShareStateSection(player, timeline);
+            if (share && TryCopySharedStateSection(tick, baselineTick, false, false, destination, true))
+                return;
+
+            var section = _lengthPrefixedSectionScratch;
+            section.ResetPositionAndMode(false);
+            ulong spawnBaselineRecordsBefore = spawnBaselineRecordsTotal;
+            writingSharedStateSection = share;
+            try
+            {
+                WriteAddressedStateSectionRecords(player, timeline, section, tick, baselineTick, false, false);
+            }
+            finally
+            {
+                writingSharedStateSection = false;
+            }
+
+            if (share)
+            {
+                StoreSharedStateSection(baselineTick, false, false, section, 0,
+                    spawnBaselineRecordsTotal - spawnBaselineRecordsBefore);
+            }
+
+            AddressedPredictionRecords.WriteLengthPrefixed(section.positionInBits, section, destination);
+        }
+
+        readonly BitPacker _lengthPrefixedSectionScratch = new (1024);
 
         void WriteAddressedStateSectionRecords(
             PlayerID player,

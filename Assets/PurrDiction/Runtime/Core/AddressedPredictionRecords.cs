@@ -26,6 +26,14 @@ namespace PurrNet.Prediction
             Packer<PackedUInt>.Write(packer, (uint)count);
         }
 
+        // Lets a receiver step over a whole section without reading each record header.
+        // A leading BitPacker would make codegen discover this as the global BitPacker serializer.
+        internal static void WriteLengthPrefixed(int sectionBits, BitPacker section, BitPacker destination)
+        {
+            Packer<PackedUInt>.Write(destination, (uint)sectionBits);
+            destination.WriteBitsWithoutConsumingIt(section, sectionBits);
+        }
+
         internal static void CompleteSection(int count, int sectionOrigin, int recordsOrigin, BitPacker destination)
         {
             using var header = BitPackerPool.Get();

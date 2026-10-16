@@ -1814,16 +1814,7 @@ namespace PurrNet.Prediction
 
                     sectionStart = frame.positionInBits;
                     using (WriteStateDeltasMarker.Auto())
-                    {
-                        WriteAddressedStateSection(
-                            player,
-                            timeline,
-                            frame,
-                            localTick,
-                            baselineTick,
-                            false,
-                            false);
-                    }
+                        WriteLengthPrefixedStateSection(player, timeline, frame, localTick, baselineTick);
                     deltaSectionStateBitsTotal += (ulong)(frame.positionInBits - sectionStart);
                     deltaFramesWrittenTotal++;
                 }
@@ -2252,10 +2243,15 @@ namespace PurrNet.Prediction
                 crossedGap);
             ReadInputHistory(frame, serverTick, baselineTick, frameEndBit);
             using var lifecycleHistory = ReadLifecycleHistory(frame, baselineTick, serverTick, frameEndBit);
+            if (frame.positionInBits >= frameEndBit)
+                throw new InvalidOperationException("Missing addressed state section length.");
+            uint stateRecordsBits = Packer<PackedUInt>.Read(frame);
             int stateRecordsStart = frame.positionInBits;
+            if (stateRecordsStart > frameEndBit || stateRecordsBits > (uint)(frameEndBit - stateRecordsStart))
+                throw new InvalidOperationException("Addressed state section exceeds its frame.");
 
             // Validate the entire event transcript before dispatching any callbacks.
-            AddressedPredictionRecords.SkipSection(frame, frameEndBit);
+            frame.SetBitPosition(stateRecordsStart + (int)stateRecordsBits);
             using var eventHistory = ReadPhysicsEventHistory(frame, serverTick, baselineTick, false, frameEndBit);
             int currentEventsStart = frame.positionInBits;
             frame.SetBitPosition(stateRecordsStart);
@@ -2295,6 +2291,8 @@ namespace PurrNet.Prediction
                 serverTick,
                 false,
                 false);
+            if (frame.positionInBits != stateRecordsStart + (int)stateRecordsBits)
+                throw new InvalidOperationException("Addressed state section length does not match its records.");
             frame.SetBitPosition(currentEventsStart);
             ReadAddressedStateRecords(
                 frame,

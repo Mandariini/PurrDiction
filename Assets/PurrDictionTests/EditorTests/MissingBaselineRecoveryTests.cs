@@ -696,6 +696,9 @@ namespace PurrNet.Prediction.Tests.Editor
                     Invoke(_server, "ClearVerifiedInputTranscript");
                     Assert.That(Packer<bool>.Read(packer), Is.False,
                         "this fixture has no historical lifecycle hierarchy");
+                    uint stateBits = Packer<PackedUInt>.Read(packer);
+                    Assert.That(stateBits, Is.LessThanOrEqualTo((uint)(end - packer.positionInBits)),
+                        "a delta frame prefixes its state section with its length");
                 }
                 int count = 0;
                 LastRegularRecordFullFlags.Clear();

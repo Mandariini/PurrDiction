@@ -240,8 +240,10 @@ namespace PurrNet.Prediction.Tests.Editor
                     using var payload = BitPackerPool.Get();
                     Packer<bool>.Write(payload, false); // no entering baseline override
                     Assert.That(_sender.RunWriteCurrentState(default, payload, 10), Is.True);
-                    AddressedPredictionRecords.WriteSectionCount(1, frame);
-                    AddressedPredictionRecords.WriteRecord(frame, probe.id, false, payload);
+                    using var state = BitPackerPool.Get();
+                    AddressedPredictionRecords.WriteSectionCount(1, state);
+                    AddressedPredictionRecords.WriteRecord(state, probe.id, false, payload);
+                    AddressedPredictionRecords.WriteLengthPrefixed(state.positionInBits, state, frame);
                     Packer<PackedUInt>.Write(frame, 0u); // historical physics event batches
                     AddressedPredictionRecords.WriteSectionCount(0, frame); // event handlers
                     int length = frame.positionInBytes;

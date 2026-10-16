@@ -1133,9 +1133,17 @@ namespace PurrNet.Prediction.Tests.Editor
                             Packer<PackedUInt>.Write(frame, 0u); // complete empty input transcript
                         Packer<bool>.Write(frame, false); // no historical lifecycle hierarchy
                     }
-                    AddressedPredictionRecords.WriteSectionCount(0, frame); // regular state
                     if (events.fullFrame)
+                    {
+                        AddressedPredictionRecords.WriteSectionCount(0, frame); // regular state
                         AddressedPredictionRecords.WriteSectionCount(0, frame); // first inputs
+                    }
+                    else
+                    {
+                        using var state = BitPackerPool.Get();
+                        AddressedPredictionRecords.WriteSectionCount(0, state);
+                        AddressedPredictionRecords.WriteLengthPrefixed(state.positionInBits, state, frame); // regular state
+                    }
                     events.packer.ResetPositionAndMode(true);
                     frame.WriteBits(events.packer, events.bitCount);
                     int bytes = frame.positionInBytes;
