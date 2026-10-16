@@ -216,15 +216,8 @@ namespace PurrNet.Prediction
 
         protected override void GetUnityState(ref PredictedHierarchyState state)
         {
-            int count = _spawnedPrefabs.Count;
             state.spawnedPrefabs.Clear();
-
-            if (state.spawnedPrefabs.list.Capacity < count)
-                state.spawnedPrefabs.list.Capacity = count;
-
-            for (var i = 0; i < count; i++)
-                state.spawnedPrefabs.Add(_spawnedPrefabs[i]);
-
+            state.spawnedPrefabs.list.AddRange(_spawnedPrefabs);
             state.nextInstanceId = _nextInstanceId;
         }
 
@@ -424,11 +417,23 @@ namespace PurrNet.Prediction
             InvalidateVisibilityTopology();
         }
 
+        // Registering the list comparer lets an unchanged topology match in one bitwise comparison.
+        static readonly bool s_topologyListEquality = RegisterTopologyListEquality();
+
+        static bool RegisterTopologyListEquality()
+        {
+            PackCollections.RegisterList<InstanceDetails>();
+            return true;
+        }
+
         private bool MatchesLiveTopology(DisposableList<InstanceDetails> target)
         {
             int count = target.Count;
             if (count != _spawnedPrefabs.Count || count != _recordsById.Count || count != _instanceMap.Count)
                 return false;
+            // Bitwise-equal records are equal; anything else is compared field by field.
+            if (s_topologyListEquality && Packer.AreEqual(_spawnedPrefabs, target.list))
+                return true;
             for (int i = 0; i < count; i++)
             {
                 if (!_spawnedPrefabs[i].Equals(target[i]))
