@@ -1620,14 +1620,15 @@ namespace PurrNet.Prediction
         void ReadStateRecord(PredictedComponentID id, bool isFullState, BitPacker payload, int payloadBitCount)
         {
             var read = _addressedRead;
+            // Unity's equality only differs from a reference compare when the hierarchy is absent.
             if (!_instanceMap.TryGetValue(id, out var system) ||
                 system.isEventHandler != read.eventHandlers ||
-                system == hierarchy)
+                (hierarchy is null ? !system : ReferenceEquals(system, hierarchy)))
             {
                 return;
             }
 
-            if (_recordDecodeQuarantine.Contains(id))
+            if (_recordDecodeQuarantine.Count > 0 && _recordDecodeQuarantine.Contains(id))
                 return;
 
             if (system.addressedReadStamp == read.stamp)
