@@ -1083,6 +1083,7 @@ namespace PurrNet.Prediction
             }
 
             bool allowOmission = !fullFrame && baselineTick > 0;
+            bool hasPendingHeals = _pendingDesyncHeals.TryGetValue(player, out var pendingHeals) && pendingHeals.Count > 0;
             int sectionOrigin = destination.positionInBits;
             AddressedPredictionRecords.WriteSectionCount(_addressedSystemScratch.Count, destination);
             int recordsOrigin = destination.positionInBits;
@@ -1107,7 +1108,7 @@ namespace PurrNet.Prediction
                                          baselineScratch.roots,
                                          baselineScratch.pieces);
                     // A prepared continuation may be discarded for size; consume the request only when sent.
-                    bool heal = PrepareDesyncHeal(player, system.id);
+                    bool heal = hasPendingHeals && PrepareDesyncHeal(player, system.id);
                     if (heal)
                         writeFull = true;
 
