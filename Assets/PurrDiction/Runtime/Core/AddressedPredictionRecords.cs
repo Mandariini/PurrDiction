@@ -111,9 +111,13 @@ namespace PurrNet.Prediction
         {
             PackedUInt count = default;
             Packer<PackedUInt>.Read(source, ref count);
+            if (count.value == 0)
+                return;
 
+            // Readers copy what they keep, so one bounded payload can serve every record.
+            using var boundedPayload = BitPackerPool.Get();
             for (uint i = 0; i < count.value; i++)
-                ReadOne(readRecord, source, onRecordFailure);
+                ReadOne(readRecord, source, boundedPayload, onRecordFailure);
         }
 
         // Gap replay needs the trailing event transcript before ordinary states are decoded.
@@ -139,6 +143,13 @@ namespace PurrNet.Prediction
 
         internal static void ReadOne(ReadRecord readRecord, BitPacker source, RecordFailure onRecordFailure = null)
         {
+            using var boundedPayload = BitPackerPool.Get();
+            ReadOne(readRecord, source, boundedPayload, onRecordFailure);
+        }
+
+        static void ReadOne(ReadRecord readRecord, BitPacker source, BitPacker boundedPayload,
+            RecordFailure onRecordFailure)
+        {
             PredictedComponentID id = default;
             Packer<PredictedComponentID>.Read(source, ref id);
 
@@ -149,7 +160,7 @@ namespace PurrNet.Prediction
             Packer<PackedUInt>.Read(source, ref payloadBits);
 
             int payloadLength = checked((int)payloadBits.value);
-            using var boundedPayload = BitPackerPool.Get();
+            boundedPayload.ResetPositionAndMode(false);
             boundedPayload.WriteBits(source, payloadLength);
             boundedPayload.ResetPositionAndMode(true);
 
