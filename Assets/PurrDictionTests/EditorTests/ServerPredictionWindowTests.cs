@@ -210,6 +210,48 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.probe.currentState.a, Is.EqualTo(10));
         }
 
+        [Test]
+        public void OnlyPlainValueStatesShareTheRowPerTickTable()
+        {
+            var networkObject = new GameObject("storage network");
+            var worldObject = new GameObject("storage world");
+            var plainObject = new GameObject("plain probe");
+            var pointerObject = new GameObject("pointer probe");
+            try
+            {
+                var network = networkObject.AddComponent<NetworkManager>();
+                var world = worldObject.AddComponent<PredictionManager>();
+                var plain = plainObject.AddComponent<ServerPredictionWindowProbe>();
+                var pointer = pointerObject.AddComponent<PointerStateProbe>();
+                Set(typeof(NetworkManager), network, "<isClient>k__BackingField", true);
+                Set(typeof(NetworkIdentity), world, "<networkManager>k__BackingField", network);
+                Set(typeof(NetworkIdentity), world, "_isSpawnedClient", true);
+                Set(typeof(PredictionManager), world, "<tickRate>k__BackingField", 60);
+                Set(typeof(PredictedIdentity), plain, "<predictionManager>k__BackingField", world);
+                Set(typeof(PredictedIdentity), pointer, "<predictionManager>k__BackingField", world);
+                plain.PrewarmPredictionState(world);
+                pointer.PrewarmPredictionState(world);
+
+                Assert.That(plain.predictedHistoryStorage, Is.InstanceOf<DenseStateHistory<FULL_STATE<CompactStateProbe>>>());
+                // Rows are copied bitwise and never disposed, which a state owning native memory cannot afford.
+                Assert.That(pointer.predictedHistoryStorage, Is.InstanceOf<History<FULL_STATE<PointerStateProbe.State>>>());
+
+                pointer.currentState.handle = new IntPtr(7);
+                pointer.SaveStateInHistory(1);
+                Assert.That(pointer.TryReadPredictedState(1, out var saved), Is.True);
+                Assert.That(saved.state.handle, Is.EqualTo(new IntPtr(7)));
+                Set(typeof(NetworkIdentity), world, "_isSpawnedClient", false);
+                Set(typeof(NetworkManager), network, "<isClient>k__BackingField", false);
+            }
+            finally
+            {
+                Object.DestroyImmediate(pointerObject);
+                Object.DestroyImmediate(plainObject);
+                Object.DestroyImmediate(worldObject);
+                Object.DestroyImmediate(networkObject);
+            }
+        }
+
         // Dense predicted histories grow in power-of-two row blocks.
         static int RowBlock(int rows)
         {
@@ -268,8 +310,22 @@ namespace PurrNet.Prediction.Tests.Editor
         public void Dispose() { }
     }
 
+    public sealed class PointerStateProbe : PredictedIdentity<PointerStateProbe.State>
+    {
+        public struct State : IPredictedData<State>
+        {
+            public IntPtr handle;
+            public void Dispose() { }
+        }
+
+        protected override void Simulate(ref State state, float delta) { }
+    }
+
     public sealed class ServerPredictionWindowProbe : PredictedIdentity<ServerPredictionWindowInput, CompactStateProbe>
     {
+        // Codegen skips editor assemblies; this is what it emits for a plain value state.
+        protected override bool SupportsStateDeltaCaching() => true;
+
         protected override void GetFinalInput(ref ServerPredictionWindowInput input) => input.sequence = currentState.a;
         protected override void Simulate(ServerPredictionWindowInput input, ref CompactStateProbe state, float delta) { }
     }

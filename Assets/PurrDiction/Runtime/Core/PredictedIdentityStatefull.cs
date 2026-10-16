@@ -193,7 +193,9 @@ namespace PurrNet.Prediction
             if (HasStateHistoryFor(world))
                 return;
 
-            if (s_denseCapable && !isEventHandler)
+            // Rows are copied bitwise and never disposed, so only plain value states qualify:
+            // a reference-free state can still own native memory through a pointer.
+            if (s_denseCapable && !isEventHandler && SupportsStateDeltaCaching())
             {
                 ReleaseDenseHistory();
                 _stateHistory?.Clear();
