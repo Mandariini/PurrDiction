@@ -91,6 +91,8 @@ namespace PurrNet.Prediction
         readonly List<PredictedIdentity> _queue = new ();
         readonly List<PredictedIdentity> _systems = new ();
         private int _systemsCount;
+        // Changes whenever the registered system list does, so per-tick scans can reuse rosters.
+        private uint _systemsRevision;
 
         GameObjectPoolCollection _pools;
 
@@ -699,6 +701,7 @@ namespace PurrNet.Prediction
             _systems.Clear();
             _replayFrozenSystems.Clear();
             _systemsCount = 0;
+            _systemsRevision++;
             _inputHistorySystems = 0;
             _nextHistoryResyncRequestAt = 0;
             _historyResyncPending = false;
@@ -937,6 +940,7 @@ namespace PurrNet.Prediction
 
             _systems.Insert(posToInsert, system);
             ++_systemsCount;
+            _systemsRevision++;
             if (system.hasInput)
                 ++_inputHistorySystems;
 
@@ -971,6 +975,7 @@ namespace PurrNet.Prediction
             {
                 _systems.RemoveAt(systemIndex);
                 --_systemsCount;
+                _systemsRevision++;
                 if (predictedIdentity.hasInput)
                 {
                     --_inputHistorySystems;
