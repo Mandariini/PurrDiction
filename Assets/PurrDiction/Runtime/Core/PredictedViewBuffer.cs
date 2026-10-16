@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 
 namespace PurrNet.Prediction
 {
@@ -11,7 +10,10 @@ namespace PurrNet.Prediction
             public T value;
         }
 
-        private readonly List<Entry> _samples;
+        // Pending samples, oldest first, in a ring addressed by reference so reads copy no states.
+        private Entry[] _samples;
+        private int _head;
+        private int _count;
         private readonly LerpFunction<T> _lerp;
         private readonly int _capacity;
 
@@ -22,7 +24,7 @@ namespace PurrNet.Prediction
         {
             _lerp = lerp ?? throw new ArgumentNullException(nameof(lerp));
             _capacity = Math.Max(1, capacity);
-            _samples = new List<Entry>(_capacity + 1);
+            _samples = new Entry[_capacity + 1];
             _anchor = initial;
             _anchorTick = tick;
         }
@@ -32,9 +34,24 @@ namespace PurrNet.Prediction
         /// <summary>
         /// Samples not yet reached by the presented tick.
         /// </summary>
-        public int Count => _samples.Count;
+        public int Count => _count;
 
         public ulong anchorTick => _anchorTick;
+
+        private ref Entry At(int index)
+        {
+            int slot = _head + index;
+            if (slot >= _samples.Length)
+                slot -= _samples.Length;
+            return ref _samples[slot];
+        }
+
+        private void DropOldest()
+        {
+            At(0) = default;
+            _head = _head + 1 == _samples.Length ? 0 : _head + 1;
+            _count--;
+        }
 
         /// <summary>
         /// Tick of the oldest pending sample, the one the anchor lerps toward. A gap larger than one
@@ -44,13 +61,13 @@ namespace PurrNet.Prediction
         /// </summary>
         public bool TryGetNextTick(out ulong tick)
         {
-            if (_samples.Count == 0)
+            if (_count == 0)
             {
                 tick = 0;
                 return false;
             }
 
-            tick = _samples[0].tick;
+            tick = At(0).tick;
             return true;
         }
 
@@ -76,29 +93,39 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            int index = _samples.Count;
-            while (index > 0 && _samples[index - 1].tick > tick)
+            int index = _count;
+            while (index > 0 && At(index - 1).tick > tick)
                 index--;
 
-            if (index > 0 && _samples[index - 1].tick == tick)
+            if (index > 0 && At(index - 1).tick == tick)
             {
-                var existing = _samples[index - 1];
+                ref var existing = ref At(index - 1);
                 existing.value.Dispose();
                 existing.value = value;
-                _samples[index - 1] = existing;
                 return;
             }
 
-            // Samples almost always arrive in tick order, so this is usually an append.
-            if (index == _samples.Count)
-                _samples.Add(new Entry { tick = tick, value = value });
-            else _samples.Insert(index, new Entry { tick = tick, value = value });
+            if (_count == _samples.Length)
+                Grow();
+            for (int i = _count; i > index; i--)
+                At(i) = At(i - 1);
+            At(index) = new Entry { tick = tick, value = value };
+            _count++;
 
-            while (_samples.Count > _capacity)
+            while (_count > _capacity)
             {
-                _samples[0].value.Dispose();
-                _samples.RemoveAt(0);
+                At(0).value.Dispose();
+                DropOldest();
             }
+        }
+
+        private void Grow()
+        {
+            var grown = new Entry[_samples.Length * 2];
+            for (int i = 0; i < _count; i++)
+                grown[i] = At(i);
+            _samples = grown;
+            _head = 0;
         }
 
         /// <summary>
@@ -107,9 +134,12 @@ namespace PurrNet.Prediction
         /// </summary>
         public void Teleport(ulong tick, T value)
         {
-            for (int i = 0; i < _samples.Count; i++)
-                _samples[i].value.Dispose();
-            _samples.Clear();
+            while (_count > 0)
+            {
+                At(0).value.Dispose();
+                DropOldest();
+            }
+            _head = 0;
 
             _anchor.Dispose();
             _anchor = value;
@@ -123,18 +153,19 @@ namespace PurrNet.Prediction
         /// </summary>
         public T Sample(double presentTick)
         {
-            while (_samples.Count > 0 && _samples[0].tick <= presentTick)
+            while (_count > 0 && At(0).tick <= presentTick)
             {
+                ref var reached = ref At(0);
                 _anchor.Dispose();
-                _anchor = _samples[0].value;
-                _anchorTick = _samples[0].tick;
-                _samples.RemoveAt(0);
+                _anchor = reached.value;
+                _anchorTick = reached.tick;
+                DropOldest();
             }
 
-            if (_samples.Count == 0 || presentTick <= _anchorTick)
+            if (_count == 0 || presentTick <= _anchorTick)
                 return _lerp(_anchor, _anchor, 1f);
 
-            var next = _samples[0];
+            ref var next = ref At(0);
             double span = next.tick - (double)_anchorTick;
             float t = span > 0d ? (float)((presentTick - _anchorTick) / span) : 1f;
             if (t < 0f) t = 0f;
@@ -148,7 +179,7 @@ namespace PurrNet.Prediction
         public int CountAhead(double presentTick)
         {
             int ahead = 0;
-            for (int i = _samples.Count - 1; i >= 0 && _samples[i].tick > presentTick; i--)
+            for (int i = _count - 1; i >= 0 && At(i).tick > presentTick; i--)
                 ahead++;
             return ahead;
         }
