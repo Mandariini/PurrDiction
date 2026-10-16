@@ -1,7 +1,10 @@
 using System;
+using Unity.IL2CPP.CompilerServices;
 
 namespace PurrNet.Prediction
 {
+    // Ring indices are always wrapped into range; see History for why bounds checks are off.
+    [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
     internal sealed class PredictedViewBuffer<T> where T : struct, IDisposable
     {
         private struct Entry
@@ -12,6 +15,7 @@ namespace PurrNet.Prediction
 
         // Pending samples, oldest first, in a ring addressed by reference so reads copy no states.
         private Entry[] _samples;
+        private int _length;
         private int _head;
         private int _count;
         private readonly LerpFunction<T> _lerp;
@@ -25,6 +29,7 @@ namespace PurrNet.Prediction
             _lerp = lerp ?? throw new ArgumentNullException(nameof(lerp));
             _capacity = Math.Max(1, capacity);
             _samples = new Entry[_capacity + 1];
+            _length = _samples.Length;
             _anchor = initial;
             _anchorTick = tick;
         }
@@ -41,15 +46,15 @@ namespace PurrNet.Prediction
         private ref Entry At(int index)
         {
             int slot = _head + index;
-            if (slot >= _samples.Length)
-                slot -= _samples.Length;
+            if (slot >= _length)
+                slot -= _length;
             return ref _samples[slot];
         }
 
         private void DropOldest()
         {
             At(0) = default;
-            _head = _head + 1 == _samples.Length ? 0 : _head + 1;
+            _head = _head + 1 == _length ? 0 : _head + 1;
             _count--;
         }
 
@@ -105,7 +110,7 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            if (_count == _samples.Length)
+            if (_count == _length)
                 Grow();
             for (int i = _count; i > index; i--)
                 At(i) = At(i - 1);
@@ -125,6 +130,7 @@ namespace PurrNet.Prediction
             for (int i = 0; i < _count; i++)
                 grown[i] = At(i);
             _samples = grown;
+            _length = grown.Length;
             _head = 0;
         }
 
