@@ -1465,7 +1465,7 @@ namespace PurrNet.Prediction
 
         private readonly Dictionary<PredictedComponentID, int> _uploadPreviousInputIndex = new(PredictionIdComparers.Components);
         private readonly Dictionary<PredictedComponentID, int> _receivePreviousInputIndex = new(PredictionIdComparers.Components);
-        private readonly Dictionary<ulong, int> _uploadContentIndex = new(PredictionIdComparers.Ticks);
+        private readonly ContentIndex _uploadContentIndex = new();
 
         private static void IndexInputSpans(List<InputHistorySpan> spans, Dictionary<PredictedComponentID, int> indices)
         {
@@ -1705,7 +1705,7 @@ namespace PurrNet.Prediction
                         if (new BitData(entry.block, earlier.bitOrigin, earlier.bitLength).Equals(bits))
                             sameAs = candidate;
                     }
-                    _uploadContentIndex[hash] = entry.spans.Count;
+                    _uploadContentIndex.Set(hash, entry.spans.Count);
                     entry.sameAs.Add(sameAs);
                     entry.spans.Add(new InputHistorySpan
                     {

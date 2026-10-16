@@ -129,7 +129,7 @@ namespace PurrNet.Prediction
         private CachedInputBlock[] _inputBlockCache;
         private CachedInputBlock _inputBlockScratch;
         private readonly Dictionary<PredictedComponentID, int> _previousInputEntryIndex = new(PredictionIdComparers.Components);
-        private readonly Dictionary<ulong, int> _inputContentIndex = new(PredictionIdComparers.Ticks);
+        private readonly ContentIndex _inputContentIndex = new();
         private ulong _latestCapturedInputTick;
         private bool _hasCapturedInputHistory;
 
@@ -200,7 +200,7 @@ namespace PurrNet.Prediction
                     if (new BitData(scratch.packer, candidateEntry.bitOrigin, candidateEntry.bitLength).Equals(contentBits))
                         sameAs = candidate;
                 }
-                _inputContentIndex[contentHash] = scratch.entries.Count;
+                _inputContentIndex.Set(contentHash, scratch.entries.Count);
 
                 bool repeats = false;
                 int deltaOrigin = scratch.deltas.positionInBits;
