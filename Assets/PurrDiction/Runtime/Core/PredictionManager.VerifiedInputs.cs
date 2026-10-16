@@ -239,8 +239,10 @@ namespace PurrNet.Prediction
                 throw new MissingPredictionBaselineException(
                     $"Authoritative inputs at tick {baselineTick + 1} repeat an input roster this peer does not hold.");
 
-            BeginVerifiedInputTranscript(baselineTick + 1, serverTick);
-            var carriedBatch = carried ? StageCarriedInputs() : default;
+            var carriedBatch = default(VerifiedInputTick);
+            if (carried)
+                carriedBatch = BeginCarriedInputTranscript(baselineTick + 1, serverTick);
+            else BeginVerifiedInputTranscript(baselineTick + 1, serverTick);
             for (uint k = 0; k < count; k++)
             {
                 ulong tick = baselineTick + 1 + k;
@@ -321,44 +323,65 @@ namespace PurrNet.Prediction
         private ulong _carriedInputTick;
         private bool _hasCarriedInputs;
 
-        // Carried entries precede the transcript's own ticks in its payload, outside every tick batch.
-        private VerifiedInputTick StageCarriedInputs()
+        // The next transcript appends to the payload that holds the carried roster, so the carried
+        // entries precede its own ticks, outside every tick batch, and need no copy.
+        private VerifiedInputTick BeginCarriedInputTranscript(ulong firstTick, ulong lastTick)
         {
+            var carried = _carriedInputs;
+            _carriedInputs = null;
+            ClearVerifiedInputTranscript();
+            _verifiedInputPayload = carried;
+            _verifiedInputFrom = firstTick;
+            _verifiedInputThrough = lastTick;
             int first = _verifiedInputEntries.Count;
-            int origin = _verifiedInputPayload.positionInBits;
-            _verifiedInputPayload.WriteBitsWithoutConsumingIt(_carriedInputs, _carriedInputs.positionInBits);
-            for (int i = 0; i < _carriedInputEntries.Count; i++)
-            {
-                var entry = _carriedInputEntries[i];
-                entry.bitOrigin += origin;
-                _verifiedInputEntries.Add(entry);
-            }
+            _verifiedInputEntries.AddRange(_carriedInputEntries);
             return new VerifiedInputTick { firstEntry = first, count = _carriedInputEntries.Count };
         }
 
+        // Retired ticks accumulate in a continued payload; past this size the roster moves to a fresh one.
+        private const int CarriedInputCompactionBits = 1 << 16;
+
+        // Applied transcripts are not decoded again, so the carried roster takes over their payload.
         private void CarryVerifiedInputs(ulong tick)
         {
             if (_verifiedInputPayload == null || _verifiedInputTicks.Count == 0 ||
                 tick < _verifiedInputFrom || tick > _verifiedInputThrough ||
                 tick - _verifiedInputFrom >= (ulong)_verifiedInputTicks.Count)
             {
-                _hasCarriedInputs &= _carriedInputTick == tick;
+                if (_carriedInputTick != tick)
+                    DropCarriedInputs();
                 return;
             }
 
             var batch = _verifiedInputTicks[(int)(tick - _verifiedInputFrom)];
-            _carriedInputs ??= new BitPacker(Math.Max(32, _verifiedInputPayload.positionInBytes));
-            _carriedInputs.ResetPositionAndMode(false);
             _carriedInputEntries.Clear();
+            int rosterBits = 0;
             for (int i = batch.firstEntry; i < batch.firstEntry + batch.count; i++)
             {
                 var entry = _verifiedInputEntries[i];
-                int origin = _carriedInputs.positionInBits;
-                _carriedInputs.WriteBitDataWithoutConsumingIt(
-                    new BitData(_verifiedInputPayload, entry.bitOrigin, entry.bitLength));
-                entry.bitOrigin = origin;
+                rosterBits += entry.bitLength;
                 _carriedInputEntries.Add(entry);
             }
+
+            var payload = _verifiedInputPayload;
+            _verifiedInputPayload = null;
+            _carriedInputs?.Dispose();
+            if (payload.positionInBits > CarriedInputCompactionBits && payload.positionInBits > 4 * rosterBits)
+            {
+                var compact = BitPackerPool.Get();
+                for (int i = 0; i < _carriedInputEntries.Count; i++)
+                {
+                    var entry = _carriedInputEntries[i];
+                    int origin = compact.positionInBits;
+                    compact.WriteBitDataWithoutConsumingIt(new BitData(payload, entry.bitOrigin, entry.bitLength));
+                    entry.bitOrigin = origin;
+                    _carriedInputEntries[i] = entry;
+                }
+                payload.Dispose();
+                payload = compact;
+            }
+
+            _carriedInputs = payload;
             _carriedInputTick = tick;
             _hasCarriedInputs = true;
         }
@@ -367,6 +390,8 @@ namespace PurrNet.Prediction
         {
             _hasCarriedInputs = false;
             _carriedInputEntries.Clear();
+            _carriedInputs?.Dispose();
+            _carriedInputs = null;
         }
 
         private static bool ReadTranscriptFlag(BitPacker frame, int frameEndBit, ulong tick)
