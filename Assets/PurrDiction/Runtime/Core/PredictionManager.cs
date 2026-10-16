@@ -2389,6 +2389,9 @@ namespace PurrNet.Prediction
                 _tickManager.tickPacingScale = scale;
         }
 
+        // Tick whose entering state the batch's last applied frame saved; nothing has run since.
+        private ulong _savedEnteringStateTick;
+
         private void SaveEnteringState(ulong tick)
         {
             using (SaveHistoryMarker.Auto())
@@ -2547,6 +2550,7 @@ namespace PurrNet.Prediction
                     _frameApplyHadRecordFailure = false;
                     _frameApplyHadBaselineFailure = false;
                     _applyingFrameServerTick = frame.serverTick;
+                    _savedEnteringStateTick = 0;
                     _tolerateReplayHookFailures =
                         _consecutiveRejectedCheckpoints >= MaxRejectedCheckpointsBeforeTolerance;
                     _toleratedReplayHookFailures = 0;
@@ -2564,6 +2568,7 @@ namespace PurrNet.Prediction
                             }
                             SimulateFrame(frame.serverTick, HistorySaveMode.VerifiedFrame);
                             SaveEnteringState(frame.serverTick + 1);
+                            _savedEnteringStateTick = frame.serverTick + 1;
                             _verifiedServerTick = frame.serverTick;
                         }
                         catch (Exception error)
@@ -2579,6 +2584,7 @@ namespace PurrNet.Prediction
                             RollbackToFrame(frame.packer, frame.serverTick, frame.baselineTick, frame.serverTick);
                             SimulateFrame(frame.serverTick, HistorySaveMode.VerifiedFrame);
                             SaveEnteringState(frame.serverTick + 1);
+                            _savedEnteringStateTick = frame.serverTick + 1;
                         }
                         catch (Exception error)
                         {
@@ -2650,6 +2656,7 @@ namespace PurrNet.Prediction
                     }
 
                     SimulateFrame(_verifiedServerTick + 1, HistorySaveMode.Full);
+                    _savedEnteringStateTick = 0;
                     ReplayToLatestTick(_verifiedServerTick + 2, HistorySaveMode.None);
                 }
 
@@ -2678,6 +2685,7 @@ namespace PurrNet.Prediction
 
                 ClearVerifiedInputTranscript();
                 _applyingFrameServerTick = 0;
+                _savedEnteringStateTick = 0;
                 localTickInContext = localTick;
                 isVerified = false;
                 isCatchingUpFrames = false;
@@ -2869,13 +2877,17 @@ namespace PurrNet.Prediction
                 {
                     using (SaveHistoryMarker.Auto())
                     {
+                        // Full-prediction identities save regardless of verification, so the
+                        // entering state the last applied frame saved for this tick still holds.
+                        bool enteringStateSaved = verifiedTick == _savedEnteringStateTick;
                         for (var i = 0; i < _systemsCount; i++)
                         {
                             var system = _systems[i];
                             if (!system.isEventHandler &&
                                 (saveMode == HistorySaveMode.Full ||
                                  system.isDeterministic ||
-                                 system.IsSoftCorrectionReplaySimulating()))
+                                 system.IsSoftCorrectionReplaySimulating()) &&
+                                !(enteringStateSaved && system.predictionPolicy == PredictionPolicy.FullPrediction))
                             {
                                 system.RunSaveState(verifiedTick);
                             }
