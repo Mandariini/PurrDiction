@@ -1600,10 +1600,23 @@ namespace PurrNet.Prediction
             return entry;
         }
 
+        // A tick that follows another in the same upload states whether it keeps that tick's roster;
+        // a kept roster drops the ids and may patch each changed input instead of resending it.
         private void EncodeUploadWire(UploadTickBlock entry, UploadTickBlock previous, BitPacker wire)
         {
             wire.ResetPositionAndMode(false);
             var spans = entry.spans;
+            if (previous != null && spans.Count > 0)
+            {
+                bool sameRoster = SameInputRoster(spans, previous.spans);
+                Packer<bool>.Write(wire, sameRoster);
+                if (sameRoster)
+                {
+                    EncodeUploadPatches(entry, previous, wire);
+                    return;
+                }
+            }
+
             bool indexedPrevious = false;
             for (var s = 0; s < spans.Count; s++)
             {
@@ -1626,6 +1639,48 @@ namespace PurrNet.Prediction
 
                 Packer<PackedUInt>.Write(wire, (uint)span.bitLength);
                 wire.WriteBitDataWithoutConsumingIt(new BitData(entry.block, span.bitOrigin, span.bitLength));
+            }
+        }
+
+        private static bool SameInputRoster(List<InputHistorySpan> current, List<InputHistorySpan> previous)
+        {
+            if (current.Count != previous.Count)
+                return false;
+            for (var i = 0; i < current.Count; i++)
+            {
+                if (!current[i].id.Equals(previous[i].id))
+                    return false;
+            }
+            return true;
+        }
+
+        private readonly BitPacker _uploadPatchScratch = new (64);
+
+        private void EncodeUploadPatches(UploadTickBlock entry, UploadTickBlock previous, BitPacker wire)
+        {
+            var spans = entry.spans;
+            for (var s = 0; s < spans.Count; s++)
+            {
+                var span = spans[s];
+                var prevSpan = previous.spans[s];
+                var current = new BitData(entry.block, span.bitOrigin, span.bitLength);
+                var before = new BitData(previous.block, prevSpan.bitOrigin, prevSpan.bitLength);
+                bool repeat = current.Equals(before);
+                Packer<bool>.Write(wire, repeat);
+                if (repeat)
+                    continue;
+
+                _uploadPatchScratch.ResetPositionAndMode(false);
+                bool patch = InputHistoryDelta.TryWrite(_uploadPatchScratch, in before, in current);
+                Packer<bool>.Write(wire, patch);
+                if (patch)
+                {
+                    wire.WriteBitsWithoutConsumingIt(_uploadPatchScratch, _uploadPatchScratch.positionInBits);
+                    continue;
+                }
+
+                Packer<PackedUInt>.Write(wire, (uint)span.bitLength);
+                wire.WriteBitDataWithoutConsumingIt(current);
             }
         }
 
@@ -3261,7 +3316,12 @@ namespace PurrNet.Prediction
                     curSpans.Clear();
                     bool indexedPrevious = false;
 
-                    for (uint e = 0; e < count.value; e++)
+                    bool keptRoster = i > 0 && count.value > 0 && Packer<bool>.Read(payload);
+                    if (keptRoster && !ExpandUploadPatches(payload, blockStart + (int)blockBits.value, count.value,
+                            prevExpanded, prevSpans, curExpanded, curSpans))
+                        return;
+
+                    for (uint e = 0; !keptRoster && e < count.value; e++)
                     {
                         PredictedComponentID pid = default;
                         Packer<PredictedComponentID>.Read(payload, ref pid);
@@ -3354,6 +3414,45 @@ namespace PurrNet.Prediction
                     ticks.expandedTailTick = newestUploadTick;
                 }
             }
+        }
+
+        // A tick that keeps the previous tick's roster repeats, patches or resends each input in order.
+        private static bool ExpandUploadPatches(BitPacker payload, int blockEnd, uint count,
+            BitPacker prevExpanded, List<InputHistorySpan> prevSpans, BitPacker curExpanded,
+            List<InputHistorySpan> curSpans)
+        {
+            if (count != (uint)prevSpans.Count)
+                return false;
+
+            try
+            {
+                for (var e = 0; e < prevSpans.Count; e++)
+                {
+                    var prevSpan = prevSpans[e];
+                    var before = new BitData(prevExpanded, prevSpan.bitOrigin, prevSpan.bitLength);
+                    Packer<PredictedComponentID>.Write(curExpanded, prevSpan.id);
+                    int origin = curExpanded.positionInBits;
+                    int length = prevSpan.bitLength;
+                    if (Packer<bool>.Read(payload))
+                        curExpanded.WriteBitDataWithoutConsumingIt(before);
+                    else if (Packer<bool>.Read(payload))
+                        InputHistoryDelta.Read(payload, blockEnd, in before, curExpanded);
+                    else
+                    {
+                        length = checked((int)(uint)Packer<PackedUInt>.Read(payload));
+                        int sourceOrigin = payload.positionInBits;
+                        payload.SkipBits(length);
+                        curExpanded.WriteBitDataWithoutConsumingIt(new BitData(payload, sourceOrigin, length));
+                    }
+                    curSpans.Add(new InputHistorySpan { id = prevSpan.id, bitOrigin = origin, bitLength = length });
+                }
+            }
+            catch (MissingPredictionBaselineException)
+            {
+                return false;
+            }
+
+            return true;
         }
 
         private void HandleIncomingInput(BitPacker inputPacket, PackedUInt count, PlayerID sender)

@@ -263,6 +263,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var b = new PredictedComponentID(new PredictedObjectID(701), 0);
                 var c = new PredictedComponentID(new PredictedObjectID(702), 0);
                 using var payload = BitPackerPool.Get();
+                bool firstTick = true;
                 AppendTick((a, false, 7), (b, false, 9), (c, false, 11));
                 AppendTick((c, true, 0), (a, true, 0));
                 AppendTick((c, true, 0), (b, false, 13));
@@ -284,6 +285,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 void AppendTick(params (PredictedComponentID id, bool repeat, int value)[] entries)
                 {
                     using var block = BitPackerPool.Get();
+                    if (!firstTick && entries.Length > 0)
+                        Packer<bool>.Write(block, false); // roster not kept: ids precede every entry
+                    firstTick = false;
                     foreach (var entry in entries)
                     {
                         Packer<PredictedComponentID>.Write(block, entry.id);
@@ -303,7 +307,7 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
-        public void ChangingInputsWriteFullPayloadsForEveryTick()
+        public void ChangingInputsResendThenPatchTheirPayloadForEveryTick()
         {
             var clientObject = new GameObject("Changing upload client");
             var serverObject = new GameObject("Changing upload server");
@@ -334,6 +338,8 @@ namespace PurrNet.Prediction.Tests.Editor
                 {
                     Assert.That(parsed[i].entries.Count, Is.EqualTo(1));
                     Assert.That(parsed[i].entries[0].repeat, Is.False);
+                    Assert.That(parsed[i].entries[0].patch, Is.EqualTo(i > 0),
+                        "a kept roster patches the changed bytes instead of resending the input");
                     Assert.That(parsed[i].entries[0].payloadBitLength, Is.GreaterThan(0));
                 }
 
@@ -587,6 +593,7 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             public PredictedComponentID id;
             public bool repeat;
+            public bool patch;
             public int repeatBitPosition;
             public int payloadBitLength;
         }
@@ -824,6 +831,7 @@ namespace PurrNet.Prediction.Tests.Editor
             try
             {
                 var result = new List<ParsedUploadTick>();
+                ParsedUploadTick previous = null;
                 for (uint i = 0; i < tickCount; i++)
                 {
                     uint viewOffset = (uint)payload.ReadBits((byte)PredictionManager.ViewOffsetBits);
@@ -839,25 +847,50 @@ namespace PurrNet.Prediction.Tests.Editor
                         declaredBlockBits = blockBits.value
                     };
 
+                    // Later ticks state whether they keep the previous tick's roster; a kept
+                    // roster omits ids and may patch an input against its previous payload.
+                    bool keptRoster = i > 0 && entryCount.value > 0 && Packer<bool>.Read(payload);
                     for (uint e = 0; e < entryCount.value; e++)
                     {
                         PredictedComponentID pid = default;
-                        Packer<PredictedComponentID>.Read(payload, ref pid);
+                        if (keptRoster)
+                            pid = previous.entries[(int)e].id;
+                        else Packer<PredictedComponentID>.Read(payload, ref pid);
                         int repeatBitPosition = payload.positionInBits;
                         bool repeat = Packer<bool>.Read(payload);
+                        bool patch = keptRoster && !repeat && Packer<bool>.Read(payload);
                         int payloadBitLength = 0;
-                        if (!repeat)
+                        if (patch)
+                        {
+                            payloadBitLength = previous.entries[(int)e].payloadBitLength;
+                            int bytes = (payloadBitLength - 1) / 8 + 1;
+                            for (int first = 0; first < bytes; first += 8)
+                            {
+                                int mask = (int)payload.ReadBits(8);
+                                for (int b = 0; b < Math.Min(8, bytes - first); b++)
+                                    if ((mask & (1 << b)) != 0)
+                                        payload.SkipBits(8);
+                            }
+                        }
+                        else if (!repeat)
                         {
                             PackedUInt bits = default;
                             Packer<PackedUInt>.Read(payload, ref bits);
                             payloadBitLength = checked((int)bits.value);
                             payload.SkipBits(payloadBitLength);
                         }
+                        else if (previous != null)
+                        {
+                            foreach (var earlier in previous.entries)
+                                if (earlier.id.Equals(pid))
+                                    payloadBitLength = earlier.payloadBitLength;
+                        }
 
                         tickBlock.entries.Add(new ParsedUploadEntry
                         {
                             id = pid,
                             repeat = repeat,
+                            patch = patch,
                             repeatBitPosition = repeatBitPosition,
                             payloadBitLength = payloadBitLength
                         });
@@ -868,6 +901,7 @@ namespace PurrNet.Prediction.Tests.Editor
                         Is.EqualTo((int)blockBits.value),
                         $"tick block {i} declared size does not match its contents");
                     result.Add(tickBlock);
+                    previous = tickBlock;
                 }
 
                 return result;
