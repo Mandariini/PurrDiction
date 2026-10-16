@@ -204,6 +204,7 @@ namespace PurrNet.Prediction
             }
             _uploadedInputs.Clear();
             _spareUploadedInputBits = null;
+            InvalidateUploadTickBlocks();
         }
 
         private void StageVerifiedInputSpan(ulong tick, PredictedComponentID id, int origin, int length)

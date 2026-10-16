@@ -1369,6 +1369,26 @@ namespace PurrNet.Prediction
                 indices.TryAdd(spans[i].id, i);
         }
 
+        // Stable rosters keep each input at the same ordinal, so index the previous tick only
+        // when an entry moved.
+        private static bool TryFindPreviousInputSpan(List<InputHistorySpan> previous, int ordinal,
+            PredictedComponentID id, Dictionary<PredictedComponentID, int> indices, ref bool indexed, out int index)
+        {
+            if (ordinal < previous.Count && previous[ordinal].id.Equals(id))
+            {
+                index = ordinal;
+                return true;
+            }
+
+            if (!indexed)
+            {
+                IndexInputSpans(previous, indices);
+                indexed = true;
+            }
+
+            return indices.TryGetValue(id, out index);
+        }
+
         private void CacheInputPayload(ulong firstTick, uint tickCount, BitPacker payload)
         {
             _cachedInputPayload?.Dispose();
@@ -1432,82 +1452,41 @@ namespace PurrNet.Prediction
             if (cappedFirstTick < firstTick)
                 cappedFirstTick = firstTick;
 
-            var count = ownedIdentities.Count;
-
             firstTick = cappedFirstTick;
 
             if (firstTick > localTick)
                 firstTick = localTick;
 
             using var payload = BitPackerPool.Get();
-            using var blockA = BitPackerPool.Get();
-            using var blockB = BitPackerPool.Get();
-            using var wireBlock = BitPackerPool.Get();
-
-            var prevBlock = blockA;
-            var curBlock = blockB;
-            var prevSpans = _uploadPrevSpans;
-            var curSpans = _uploadCurSpans;
-            prevSpans.Clear();
-            curSpans.Clear();
+            PrepareUploadTickBlocks(ownedIdentities);
 
             uint tickCount = 0;
+            UploadTickBlock previous = null;
 
             for (ulong tick = firstTick; tick <= localTick; tick++)
             {
-                curBlock.ResetPositionAndMode(false);
-                curSpans.Clear();
+                var entry = GetUploadTickBlock(tick, ownedIdentities);
+                RecordUploadedInputs(tick, entry.block, entry.spans);
 
-                for (var ownedIdx = 0; ownedIdx < count; ownedIdx++)
+                // The window's first tick has no predecessor in the payload, so it cannot repeat.
+                BitPacker wire = entry.standalone;
+                if (previous != null)
                 {
-                    var owned = ownedIdentities[ownedIdx];
-                    if (owned && owned.hasInput)
+                    if (entry.relativeBaseStamp != previous.stamp)
                     {
-                        int origin = curBlock.positionInBits;
-                        owned.WriteFirstInput(tick, curBlock);
-                        curSpans.Add(new InputHistorySpan
-                        {
-                            id = owned.id,
-                            bitOrigin = origin,
-                            bitLength = curBlock.positionInBits - origin
-                        });
+                        EncodeUploadWire(entry, previous, entry.relative);
+                        entry.relativeBaseStamp = previous.stamp;
                     }
-                }
-                RecordUploadedInputs(tick, curBlock, curSpans);
-
-                wireBlock.ResetPositionAndMode(false);
-                IndexInputSpans(prevSpans, _uploadPreviousInputIndex);
-                for (var s = 0; s < curSpans.Count; s++)
-                {
-                    var span = curSpans[s];
-                    Packer<PredictedComponentID>.Write(wireBlock, span.id);
-
-                    bool repeat = false;
-                    if (_uploadPreviousInputIndex.TryGetValue(span.id, out int previousIndex))
-                    {
-                        var prevSpan = prevSpans[previousIndex];
-                        repeat = new BitData(curBlock, span.bitOrigin, span.bitLength)
-                            .Equals(new BitData(prevBlock, prevSpan.bitOrigin, prevSpan.bitLength));
-                    }
-
-                    Packer<bool>.Write(wireBlock, repeat);
-                    if (repeat)
-                        continue;
-
-                    Packer<PackedUInt>.Write(wireBlock, (uint)span.bitLength);
-                    wireBlock.WriteBitDataWithoutConsumingIt(
-                        new BitData(curBlock, span.bitOrigin, span.bitLength));
+                    wire = entry.relative;
                 }
 
-                int blockBits = wireBlock.positionInBits;
+                int blockBits = wire.positionInBits;
                 payload.WriteBits(GetUploadViewOffset(tick), ViewOffsetBits);
                 Packer<PackedUInt>.Write(payload, (uint)blockBits);
-                Packer<PackedUInt>.Write(payload, (uint)curSpans.Count);
-                payload.WriteBitsWithoutConsumingIt(wireBlock, blockBits);
+                Packer<PackedUInt>.Write(payload, (uint)entry.spans.Count);
+                payload.WriteBitsWithoutConsumingIt(wire, blockBits);
                 tickCount += 1;
-
-                (prevBlock, curBlock) = (curBlock, prevBlock);
-                (prevSpans, curSpans) = (curSpans, prevSpans);
+                previous = entry;
             }
 
             CacheInputPayload(firstTick, tickCount, payload);
@@ -1520,6 +1499,133 @@ namespace PurrNet.Prediction
             inputSendsTotal++;
             inputBytesSentTotal += (ulong)payload.positionInBytes;
             inputTicksSentTotal += tickCount;
+        }
+
+        // Upload windows overlap by all but one tick and a tick's inputs are final once it has
+        // run, so each tick is encoded once and reused while the owned roster is unchanged.
+        private sealed class UploadTickBlock
+        {
+            public ulong tick;
+            public bool valid;
+            public uint stamp;
+            public uint relativeBaseStamp;
+            public readonly BitPacker block = new (64);
+            public readonly List<InputHistorySpan> spans = new ();
+            public readonly BitPacker standalone = new (64);
+            public readonly BitPacker relative = new (64);
+        }
+
+        private UploadTickBlock[] _uploadTickBlocks;
+        private readonly List<PredictedIdentity> _uploadRoster = new ();
+        private readonly List<PredictedComponentID> _uploadRosterIds = new ();
+        private uint _uploadTickBlockStamp;
+
+        private void PrepareUploadTickBlocks(DisposableList<PredictedIdentity> owned)
+        {
+            if (_uploadTickBlocks == null)
+            {
+                _uploadTickBlocks = new UploadTickBlock[MaxInputWindow + 1];
+                for (var i = 0; i < _uploadTickBlocks.Length; i++)
+                    _uploadTickBlocks[i] = new UploadTickBlock();
+            }
+
+            int matched = 0;
+            bool same = true;
+            for (var i = 0; i < owned.Count && same; i++)
+            {
+                var identity = owned[i];
+                if (!identity || !identity.hasInput)
+                    continue;
+                same = matched < _uploadRoster.Count &&
+                       ReferenceEquals(_uploadRoster[matched], identity) &&
+                       _uploadRosterIds[matched].Equals(identity.id);
+                matched++;
+            }
+
+            if (same && matched == _uploadRoster.Count)
+                return;
+
+            InvalidateUploadTickBlocks();
+            for (var i = 0; i < owned.Count; i++)
+            {
+                var identity = owned[i];
+                if (!identity || !identity.hasInput)
+                    continue;
+                _uploadRoster.Add(identity);
+                _uploadRosterIds.Add(identity.id);
+            }
+        }
+
+        private void InvalidateUploadTickBlocks()
+        {
+            _uploadRoster.Clear();
+            _uploadRosterIds.Clear();
+            if (_uploadTickBlocks == null)
+                return;
+            for (var i = 0; i < _uploadTickBlocks.Length; i++)
+                _uploadTickBlocks[i].valid = false;
+        }
+
+        private UploadTickBlock GetUploadTickBlock(ulong tick, DisposableList<PredictedIdentity> owned)
+        {
+            var entry = _uploadTickBlocks[(int)(tick % (ulong)_uploadTickBlocks.Length)];
+            if (entry.valid && entry.tick == tick)
+                return entry;
+
+            entry.tick = tick;
+            entry.valid = true;
+            entry.stamp = ++_uploadTickBlockStamp;
+            entry.relativeBaseStamp = 0;
+            entry.block.ResetPositionAndMode(false);
+            entry.spans.Clear();
+
+            for (var ownedIdx = 0; ownedIdx < owned.Count; ownedIdx++)
+            {
+                var identity = owned[ownedIdx];
+                if (identity && identity.hasInput)
+                {
+                    int origin = entry.block.positionInBits;
+                    identity.WriteFirstInput(tick, entry.block);
+                    entry.spans.Add(new InputHistorySpan
+                    {
+                        id = identity.id,
+                        bitOrigin = origin,
+                        bitLength = entry.block.positionInBits - origin
+                    });
+                }
+            }
+
+            EncodeUploadWire(entry, null, entry.standalone);
+            return entry;
+        }
+
+        private void EncodeUploadWire(UploadTickBlock entry, UploadTickBlock previous, BitPacker wire)
+        {
+            wire.ResetPositionAndMode(false);
+            var spans = entry.spans;
+            bool indexedPrevious = false;
+            for (var s = 0; s < spans.Count; s++)
+            {
+                var span = spans[s];
+                Packer<PredictedComponentID>.Write(wire, span.id);
+
+                bool repeat = false;
+                if (previous != null &&
+                    TryFindPreviousInputSpan(previous.spans, s, span.id, _uploadPreviousInputIndex,
+                        ref indexedPrevious, out int previousIndex))
+                {
+                    var prevSpan = previous.spans[previousIndex];
+                    repeat = new BitData(entry.block, span.bitOrigin, span.bitLength)
+                        .Equals(new BitData(previous.block, prevSpan.bitOrigin, prevSpan.bitLength));
+                }
+
+                Packer<bool>.Write(wire, repeat);
+                if (repeat)
+                    continue;
+
+                Packer<PackedUInt>.Write(wire, (uint)span.bitLength);
+                wire.WriteBitDataWithoutConsumingIt(new BitData(entry.block, span.bitOrigin, span.bitLength));
+            }
         }
 
         internal bool hasMultipleStateRecipients => _clientFrames.Count > 1;
@@ -1714,8 +1820,6 @@ namespace PurrNet.Prediction
             public int bitLength;
         }
 
-        private readonly List<InputHistorySpan> _uploadPrevSpans = new();
-        private readonly List<InputHistorySpan> _uploadCurSpans = new();
         private readonly List<InputHistorySpan> _recvPrevSpans = new();
         private readonly List<InputHistorySpan> _recvCurSpans = new();
 
@@ -3007,6 +3111,13 @@ namespace PurrNet.Prediction
             public readonly Dictionary<ulong, InputQueueValue> byTick = new ();
             public int Count => byTick.Count;
 
+            // Expansion of the newest accepted upload tick. Accepted inputs never change, so a
+            // later upload's repeats can resolve against it without re-expanding older blocks.
+            internal BitPacker expandedTail;
+            internal readonly List<InputHistorySpan> expandedTailSpans = new ();
+            internal ulong expandedTailTick;
+            internal bool hasExpandedTail;
+
             public void Clear()
             {
                 foreach (var entry in byTick.Values)
@@ -3015,6 +3126,8 @@ namespace PurrNet.Prediction
                 rawHighestReceivedTick = 0;
                 pendingInputSlackMs = 0;
                 hasPendingInputSlack = false;
+                hasExpandedTail = false;
+                expandedTailSpans.Clear();
             }
         }
 
@@ -3067,6 +3180,7 @@ namespace PurrNet.Prediction
                 }
 
                 bool anyTickNeeded = false;
+                ulong firstNeededTick = 0;
                 for (uint i = 0; i < tickCount; i++)
                 {
                     ulong tick = firstTick + i;
@@ -3077,6 +3191,7 @@ namespace PurrNet.Prediction
                     if (ticks.byTick.ContainsKey(tick))
                         continue;
                     anyTickNeeded = true;
+                    firstNeededTick = tick;
                     break;
                 }
 
@@ -3092,7 +3207,24 @@ namespace PurrNet.Prediction
                 prevSpans.Clear();
                 curSpans.Clear();
 
-                for (uint i = 0; i < tickCount; i++)
+                uint startIndex = 0;
+                if (ticks.hasExpandedTail && ticks.expandedTailTick >= firstTick &&
+                    ticks.expandedTailTick < firstNeededTick)
+                {
+                    startIndex = checked((uint)(ticks.expandedTailTick - firstTick + 1));
+                    for (uint i = 0; i < startIndex; i++)
+                    {
+                        payload.ReadBits(ViewOffsetBits);
+                        PackedUInt skippedBits = default;
+                        Packer<PackedUInt>.Read(payload, ref skippedBits);
+                        Packer<PackedUInt>.Read(payload);
+                        payload.SkipBits(checked((int)skippedBits.value));
+                    }
+                    prevExpanded.WriteBitsWithoutConsumingIt(ticks.expandedTail, ticks.expandedTail.positionInBits);
+                    prevSpans.AddRange(ticks.expandedTailSpans);
+                }
+
+                for (uint i = startIndex; i < tickCount; i++)
                 {
                     uint viewOffset = ClampViewOffset(
                         (uint)payload.ReadBits(ViewOffsetBits), maxLagCompensationTicks);
@@ -3106,7 +3238,7 @@ namespace PurrNet.Prediction
 
                     curExpanded.ResetPositionAndMode(false);
                     curSpans.Clear();
-                    IndexInputSpans(prevSpans, _receivePreviousInputIndex);
+                    bool indexedPrevious = false;
 
                     for (uint e = 0; e < count.value; e++)
                     {
@@ -3121,7 +3253,8 @@ namespace PurrNet.Prediction
 
                         if (repeat)
                         {
-                            if (_receivePreviousInputIndex.TryGetValue(pid, out int previousIndex))
+                            if (TryFindPreviousInputSpan(prevSpans, (int)e, pid, _receivePreviousInputIndex,
+                                    ref indexedPrevious, out int previousIndex))
                             {
                                 var prevSpan = prevSpans[previousIndex];
                                 origin = curExpanded.positionInBits;
@@ -3188,6 +3321,17 @@ namespace PurrNet.Prediction
                     (prevSpans, curSpans) = (curSpans, prevSpans);
                 }
 
+                ulong newestUploadTick = firstTick + (tickCount - 1);
+                ticks.hasExpandedTail = ticks.byTick.ContainsKey(newestUploadTick);
+                if (ticks.hasExpandedTail)
+                {
+                    ticks.expandedTail ??= new BitPacker(Math.Max(32, prevExpanded.positionInBytes + 8));
+                    ticks.expandedTail.ResetPositionAndMode(false);
+                    ticks.expandedTail.WriteBitsWithoutConsumingIt(prevExpanded, prevExpanded.positionInBits);
+                    ticks.expandedTailSpans.Clear();
+                    ticks.expandedTailSpans.AddRange(prevSpans);
+                    ticks.expandedTailTick = newestUploadTick;
+                }
             }
         }
 
