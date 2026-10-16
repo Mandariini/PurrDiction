@@ -51,25 +51,31 @@ namespace PurrNet.Prediction
         private static bool TryWriteBuffered(BitPacker destination, in BitData previous, in BitData current,
             int length, int bytes, int rawBits, int encodedBits)
         {
-            // Bound stack use for ordinary inputs. Inspect each byte once, then commit the
+            // Bound stack use for ordinary inputs. Compare eight bytes per word, then commit the
             // complete patch so an unhelpful delta leaves the destination untouched.
             Span<byte> encoded = stackalloc byte[72];
             int written = 0;
+            var previousBuffer = previous.packer.buffer;
+            var currentBuffer = current.packer.buffer;
+            int previousOrigin = (int)previous.bitOrigin.value;
+            int currentOrigin = (int)current.bitOrigin.value;
             for (int first = 0; first < bytes; first += 8)
             {
                 int maskPosition = written++;
                 byte mask = 0;
                 int count = Math.Min(8, bytes - first);
+                int bits = Math.Min(64, length - first * 8);
+                ulong value = PeekWord(currentBuffer, currentOrigin + first * 8, bits);
+                ulong changed = value ^ PeekWord(previousBuffer, previousOrigin + first * 8, bits);
                 for (int i = 0; i < count; i++)
                 {
-                    byte value = PeekByte(current, first + i, length);
-                    if (PeekByte(previous, first + i, length) == value)
+                    if ((byte)(changed >> (i * 8)) == 0)
                         continue;
                     encodedBits += 8;
                     if (encodedBits >= rawBits)
                         return false;
                     mask |= (byte)(1 << i);
-                    encoded[written++] = value;
+                    encoded[written++] = (byte)(value >> (i * 8));
                 }
                 encoded[maskPosition] = mask;
             }
@@ -82,6 +88,8 @@ namespace PurrNet.Prediction
         {
             int length = (int)previous.bitLength.value;
             int bytes = (length - 1) / 8 + 1;
+            var previousBuffer = previous.packer.buffer;
+            int previousOrigin = (int)previous.bitOrigin.value;
             for (int first = 0; first < bytes; first += 8)
             {
                 int count = Math.Min(8, bytes - first);
@@ -89,17 +97,19 @@ namespace PurrNet.Prediction
                 if ((mask >> count) != 0)
                     throw new MissingPredictionBaselineException("Invalid authoritative input delta mask.");
 
+                int bits = Math.Min(64, length - first * 8);
+                ulong word = PeekWord(previousBuffer, previousOrigin + first * 8, bits);
                 for (int i = 0; i < count; i++)
                 {
-                    int index = first + i;
-                    int bits = Math.Min(8, length - index * 8);
-                    byte value = (mask & (1 << i)) != 0
-                        ? ReadByte(source, sourceEndBit)
-                        : PeekByte(previous, index, length);
-                    if ((value >> bits) != 0)
+                    if ((mask & (1 << i)) == 0)
+                        continue;
+                    int byteBits = Math.Min(8, length - (first + i) * 8);
+                    byte value = ReadByte(source, sourceEndBit);
+                    if ((value >> byteBits) != 0)
                         throw new MissingPredictionBaselineException("Invalid authoritative input delta padding.");
-                    destination.WriteBits(value, (byte)bits);
+                    word = (word & ~(0xFFUL << (i * 8))) | ((ulong)value << (i * 8));
                 }
+                destination.WriteBits(word, (byte)bits);
             }
         }
 
@@ -116,6 +126,34 @@ namespace PurrNet.Prediction
             if (endBit - source.positionInBits < 8)
                 throw new MissingPredictionBaselineException("Truncated authoritative input delta.");
             return (byte)source.ReadBits(8);
+        }
+
+        // Up to 64 bits starting at an arbitrary bit, with the bits past the requested count cleared.
+        private static unsafe ulong PeekWord(byte[] buffer, int bitPosition, int bits)
+        {
+            int bytePosition = bitPosition >> 3;
+            int shift = bitPosition & 7;
+            ulong raw;
+            if (BitConverter.IsLittleEndian && buffer.Length - bytePosition >= 9)
+            {
+                fixed (byte* b = &buffer[bytePosition])
+                {
+                    raw = *(ulong*)b >> shift;
+                    if (shift + bits > 64)
+                        raw |= (ulong)b[8] << (64 - shift);
+                }
+            }
+            else
+            {
+                raw = 0;
+                int needed = (shift + bits + 7) >> 3;
+                for (int i = 0; i < needed && i < 8; i++)
+                    raw |= (ulong)buffer[bytePosition + i] << (i * 8);
+                raw >>= shift;
+                if (needed > 8)
+                    raw |= (ulong)buffer[bytePosition + 8] << (64 - shift);
+            }
+            return bits >= 64 ? raw : raw & ((1UL << bits) - 1);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
