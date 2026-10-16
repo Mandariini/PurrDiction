@@ -555,7 +555,7 @@ namespace PurrNet.Prediction
                         ref baseline, ref fullPredictedState))
                 {
                     Packer<bool>.Write(packer, true);
-                    DeltaPacker<PredictedIdentityState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
+                    IdentityMetadataDelta.Write(packer, baseline.prediction, fullPredictedState.prediction);
                     WriteDeltaState(packer, in baseline.state, in fullPredictedState.state);
                     _stateDeltaCache.Store(predictionManager.localTick, baselineTick, pos, packer,
                         baseline, fullPredictedState);
@@ -564,7 +564,7 @@ namespace PurrNet.Prediction
             else
             {
                 Packer<bool>.Write(packer, true);
-                DeltaPacker<PredictedIdentityState>.Write(packer, baseline.prediction, fullPredictedState.prediction);
+                IdentityMetadataDelta.Write(packer, baseline.prediction, fullPredictedState.prediction);
                 WriteDeltaState(packer, in baseline.state, in fullPredictedState.state);
             }
 
@@ -599,9 +599,7 @@ namespace PurrNet.Prediction
             if (changed)
             {
                 newState = default;
-                PredictedIdentityState metadata = default;
-                DeltaPacker<PredictedIdentityState>.Read(packer, baseline.prediction, ref metadata);
-                newState.prediction = metadata;
+                newState.prediction = IdentityMetadataDelta.Read(packer, baseline.prediction);
                 ReadDeltaState(packer, in baseline.state, ref newState.state);
             }
             else
