@@ -24,14 +24,20 @@ namespace PurrNet.Prediction
         private int _stride;
         private int _maxRows;
 
-        private ulong[] _first = Array.Empty<ulong>();
-        private ulong[] _last = Array.Empty<ulong>();
-        private bool[] _any = Array.Empty<bool>();
-        private ulong[] _anchorTick = Array.Empty<ulong>();
+        // A slot's bookkeeping sits together, so an operation reads one line of it.
+        private struct SlotState
+        {
+            public ulong first;
+            public ulong last;
+            public ulong anchorTick;
+            // Written entries of the range plus the anchor.
+            public int entries;
+            public bool any;
+            public bool hasAnchor;
+        }
+
+        private SlotState[] _slots = Array.Empty<SlotState>();
         private T[] _anchorValue = Array.Empty<T>();
-        private bool[] _hasAnchor = Array.Empty<bool>();
-        // Written entries of the range plus the anchor.
-        private int[] _entries = Array.Empty<int>();
         private readonly Stack<int> _freeSlots = new ();
         private int _slotCount;
 
@@ -66,27 +72,27 @@ namespace PurrNet.Prediction
 
         internal void Clear(int slot)
         {
-            _any[slot] = false;
-            _hasAnchor[slot] = false;
-            _entries[slot] = 0;
+            _slots[slot].any = false;
+            _slots[slot].hasAnchor = false;
+            _slots[slot].entries = 0;
         }
 
         internal int rows => _rows;
 
-        internal int Count(int slot) => _entries[slot];
+        internal int Count(int slot) => _slots[slot].entries;
 
         internal ulong OldestTick(int slot)
-            => _hasAnchor[slot] ? _anchorTick[slot] : _any[slot] ? _first[slot] : 0;
+            => _slots[slot].hasAnchor ? _slots[slot].anchorTick : _slots[slot].any ? _slots[slot].first : 0;
 
         internal ulong MostRecentTick(int slot)
-            => _any[slot] ? _last[slot] : _hasAnchor[slot] ? _anchorTick[slot] : 0;
+            => _slots[slot].any ? _slots[slot].last : _slots[slot].hasAnchor ? _slots[slot].anchorTick : 0;
 
         private int Index(ulong tick, int slot) => ((int)tick & _rowMask) * _stride + slot;
 
         // The entry written at exactly tick.
         internal bool TryRead(int slot, ulong tick, out T value)
         {
-            if (_any[slot] && tick >= _first[slot] && tick <= _last[slot])
+            if (_slots[slot].any && tick >= _slots[slot].first && tick <= _slots[slot].last)
             {
                 int index = Index(tick, slot);
                 if (_written[index])
@@ -95,7 +101,7 @@ namespace PurrNet.Prediction
                     return true;
                 }
             }
-            else if (_hasAnchor[slot] && tick == _anchorTick[slot])
+            else if (_slots[slot].hasAnchor && tick == _slots[slot].anchorTick)
             {
                 value = _anchorValue[slot];
                 return true;
@@ -106,24 +112,24 @@ namespace PurrNet.Prediction
 
         internal bool Contains(int slot, ulong tick)
         {
-            if (_any[slot] && tick >= _first[slot] && tick <= _last[slot])
+            if (_slots[slot].any && tick >= _slots[slot].first && tick <= _slots[slot].last)
                 return _written[Index(tick, slot)];
-            return _hasAnchor[slot] && tick == _anchorTick[slot];
+            return _slots[slot].hasAnchor && tick == _slots[slot].anchorTick;
         }
 
         // The newest entry, unless it lies ahead of maximumTick.
         internal bool TryReadLatest(int slot, ulong maximumTick, out T value)
         {
-            if (_any[slot])
+            if (_slots[slot].any)
             {
-                ulong last = _last[slot];
+                ulong last = _slots[slot].last;
                 if (last <= maximumTick)
                 {
                     value = _values[Index(last, slot)];
                     return true;
                 }
             }
-            else if (_hasAnchor[slot] && _anchorTick[slot] <= maximumTick)
+            else if (_slots[slot].hasAnchor && _slots[slot].anchorTick <= maximumTick)
             {
                 value = _anchorValue[slot];
                 return true;
@@ -135,13 +141,13 @@ namespace PurrNet.Prediction
         // The entry at tick, or the newest one before it.
         internal bool ReadOrPrevious(int slot, ulong tick, out T value)
         {
-            if (_any[slot] && tick >= _first[slot])
+            if (_slots[slot].any && tick >= _slots[slot].first)
             {
-                ulong last = _last[slot];
+                ulong last = _slots[slot].last;
                 value = _values[Index(tick < last ? tick : last, slot)];
                 return true;
             }
-            if (_hasAnchor[slot] && tick >= _anchorTick[slot])
+            if (_slots[slot].hasAnchor && tick >= _slots[slot].anchorTick)
             {
                 value = _anchorValue[slot];
                 return true;
@@ -153,7 +159,7 @@ namespace PurrNet.Prediction
         // The entry nearest to tick; between two equally near entries the later one wins.
         internal bool TryGetClosest(int slot, ulong tick, out T value, out ulong distance)
         {
-            if (_entries[slot] == 0)
+            if (_slots[slot].entries == 0)
             {
                 value = default;
                 distance = 0;
@@ -177,14 +183,14 @@ namespace PurrNet.Prediction
         // The newest entry before tick.
         private bool TryPreviousTick(int slot, ulong tick, out ulong previous)
         {
-            if (_any[slot] && tick > _first[slot])
+            if (_slots[slot].any && tick > _slots[slot].first)
             {
-                previous = NewestWrittenAtOrBefore(slot, Math.Min(tick - 1, _last[slot]));
+                previous = NewestWrittenAtOrBefore(slot, Math.Min(tick - 1, _slots[slot].last));
                 return true;
             }
-            if (_hasAnchor[slot] && _anchorTick[slot] < tick)
+            if (_slots[slot].hasAnchor && _slots[slot].anchorTick < tick)
             {
-                previous = _anchorTick[slot];
+                previous = _slots[slot].anchorTick;
                 return true;
             }
             previous = 0;
@@ -194,14 +200,14 @@ namespace PurrNet.Prediction
         // The oldest entry after tick.
         private bool TryNextTick(int slot, ulong tick, out ulong next)
         {
-            if (_hasAnchor[slot] && _anchorTick[slot] > tick)
+            if (_slots[slot].hasAnchor && _slots[slot].anchorTick > tick)
             {
-                next = _anchorTick[slot];
+                next = _slots[slot].anchorTick;
                 return true;
             }
-            if (_any[slot] && tick < _last[slot])
+            if (_slots[slot].any && tick < _slots[slot].last)
             {
-                next = tick < _first[slot] ? _first[slot] : OldestWrittenAtOrAfter(slot, tick + 1);
+                next = tick < _slots[slot].first ? _slots[slot].first : OldestWrittenAtOrAfter(slot, tick + 1);
                 return true;
             }
             next = 0;
@@ -214,50 +220,50 @@ namespace PurrNet.Prediction
         /// </summary>
         internal bool TryWrite(int slot, ulong tick, in T value)
         {
-            if (!_any[slot])
+            if (!_slots[slot].any)
             {
-                if (_hasAnchor[slot] && tick <= _anchorTick[slot])
+                if (_slots[slot].hasAnchor && tick <= _slots[slot].anchorTick)
                 {
-                    if (tick == _anchorTick[slot])
+                    if (tick == _slots[slot].anchorTick)
                     {
                         _anchorValue[slot] = value;
                         return true;
                     }
                     // An entry before the anchor: the anchor becomes the end of a range.
-                    ulong anchorTick = _anchorTick[slot];
+                    ulong anchorTick = _slots[slot].anchorTick;
                     if (!Fits(tick, anchorTick))
                         return false;
                     var anchor = _anchorValue[slot];
-                    _hasAnchor[slot] = false;
+                    _slots[slot].hasAnchor = false;
                     StartRange(slot, tick, value);
                     Append(slot, anchorTick, anchor);
-                    _entries[slot]++;
+                    _slots[slot].entries++;
                     return true;
                 }
                 StartRange(slot, tick, value);
-                _entries[slot]++;
+                _slots[slot].entries++;
                 return true;
             }
 
-            ulong first = _first[slot];
-            ulong last = _last[slot];
+            ulong first = _slots[slot].first;
+            ulong last = _slots[slot].last;
             if (tick > last)
             {
-                if (first == last && !_hasAnchor[slot] && !Fits(first, tick))
+                if (first == last && !_slots[slot].hasAnchor && !Fits(first, tick))
                 {
                     // A lone entry far behind: keep it as the anchor and start a new range. The
                     // owner's window pruning drops any older anchor first, so one is enough.
-                    _anchorTick[slot] = last;
+                    _slots[slot].anchorTick = last;
                     _anchorValue[slot] = _values[Index(last, slot)];
-                    _hasAnchor[slot] = true;
+                    _slots[slot].hasAnchor = true;
                     StartRange(slot, tick, value);
-                    _entries[slot]++;
+                    _slots[slot].entries++;
                     return true;
                 }
                 if (!Fits(first, tick))
                     return false;
                 Append(slot, tick, value);
-                _entries[slot]++;
+                _slots[slot].entries++;
                 return true;
             }
 
@@ -265,16 +271,16 @@ namespace PurrNet.Prediction
             {
                 int index = Index(tick, slot);
                 if (!_written[index])
-                    _entries[slot]++;
+                    _slots[slot].entries++;
                 _values[index] = value;
                 _written[index] = true;
                 Propagate(slot, tick, last, value);
                 return true;
             }
 
-            if (_hasAnchor[slot] && tick <= _anchorTick[slot])
+            if (_slots[slot].hasAnchor && tick <= _slots[slot].anchorTick)
             {
-                if (tick == _anchorTick[slot])
+                if (tick == _slots[slot].anchorTick)
                 {
                     _anchorValue[slot] = value;
                     return true;
@@ -284,7 +290,7 @@ namespace PurrNet.Prediction
                     return false;
                 EnsureSpan(last - tick + 1);
                 var anchor = _anchorValue[slot];
-                ulong anchorTick = _anchorTick[slot];
+                ulong anchorTick = _slots[slot].anchorTick;
                 for (ulong filled = anchorTick + 1; filled < first; filled++)
                     Fill(Index(filled, slot), anchor);
                 int anchorIndex = Index(anchorTick, slot);
@@ -292,7 +298,7 @@ namespace PurrNet.Prediction
                 _written[anchorIndex] = true;
                 for (ulong filled = tick + 1; filled < anchorTick; filled++)
                     Fill(Index(filled, slot), value);
-                _hasAnchor[slot] = false;
+                _slots[slot].hasAnchor = false;
             }
             else
             {
@@ -305,8 +311,8 @@ namespace PurrNet.Prediction
             int written = Index(tick, slot);
             _values[written] = value;
             _written[written] = true;
-            _first[slot] = tick;
-            _entries[slot]++;
+            _slots[slot].first = tick;
+            _slots[slot].entries++;
             return true;
         }
 
@@ -329,22 +335,22 @@ namespace PurrNet.Prediction
             int index = Index(tick, slot);
             _values[index] = value;
             _written[index] = true;
-            _first[slot] = tick;
-            _last[slot] = tick;
-            _any[slot] = true;
+            _slots[slot].first = tick;
+            _slots[slot].last = tick;
+            _slots[slot].any = true;
         }
 
         private void Append(int slot, ulong tick, in T value)
         {
-            ulong last = _last[slot];
-            EnsureSpan(tick - _first[slot] + 1);
+            ulong last = _slots[slot].last;
+            EnsureSpan(tick - _slots[slot].first + 1);
             var previous = _values[Index(last, slot)];
             for (ulong filled = last + 1; filled < tick; filled++)
                 Fill(Index(filled, slot), previous);
             int index = Index(tick, slot);
             _values[index] = value;
             _written[index] = true;
-            _last[slot] = tick;
+            _slots[slot].last = tick;
         }
 
         private void Fill(int index, in T value)
@@ -355,35 +361,35 @@ namespace PurrNet.Prediction
 
         internal bool Remove(int slot, ulong tick)
         {
-            if (_hasAnchor[slot] && tick == _anchorTick[slot])
+            if (_slots[slot].hasAnchor && tick == _slots[slot].anchorTick)
             {
-                _hasAnchor[slot] = false;
-                _entries[slot]--;
+                _slots[slot].hasAnchor = false;
+                _slots[slot].entries--;
                 return true;
             }
 
-            if (!_any[slot] || tick < _first[slot] || tick > _last[slot])
+            if (!_slots[slot].any || tick < _slots[slot].first || tick > _slots[slot].last)
                 return false;
             int index = Index(tick, slot);
             if (!_written[index])
                 return false;
 
-            _entries[slot]--;
-            ulong first = _first[slot];
-            ulong last = _last[slot];
+            _slots[slot].entries--;
+            ulong first = _slots[slot].first;
+            ulong last = _slots[slot].last;
             if (first == last)
             {
-                _any[slot] = false;
+                _slots[slot].any = false;
                 return true;
             }
             if (tick == first)
             {
-                _first[slot] = OldestWrittenAtOrAfter(slot, tick + 1);
+                _slots[slot].first = OldestWrittenAtOrAfter(slot, tick + 1);
                 return true;
             }
             if (tick == last)
             {
-                _last[slot] = NewestWrittenAtOrBefore(slot, tick - 1);
+                _slots[slot].last = NewestWrittenAtOrBefore(slot, tick - 1);
                 return true;
             }
 
@@ -396,22 +402,22 @@ namespace PurrNet.Prediction
         }
 
         // Written entries of the range, without the anchor.
-        private int RangeEntries(int slot) => _entries[slot] - (_hasAnchor[slot] ? 1 : 0);
+        private int RangeEntries(int slot) => _slots[slot].entries - (_slots[slot].hasAnchor ? 1 : 0);
 
         // Every tick of the range was written, the usual case, so positions follow from ticks
         // without scanning rows that each sit a whole row apart.
-        private bool IsGapless(int slot) => (ulong)RangeEntries(slot) == _last[slot] - _first[slot] + 1;
+        private bool IsGapless(int slot) => (ulong)RangeEntries(slot) == _slots[slot].last - _slots[slot].first + 1;
 
         // Entries strictly before tick.
         internal int CountBefore(int slot, ulong tick)
         {
-            int count = _hasAnchor[slot] && _anchorTick[slot] < tick ? 1 : 0;
-            if (!_any[slot] || tick <= _first[slot])
+            int count = _slots[slot].hasAnchor && _slots[slot].anchorTick < tick ? 1 : 0;
+            if (!_slots[slot].any || tick <= _slots[slot].first)
                 return count;
             if (IsGapless(slot))
-                return count + (int)(Math.Min(tick, _last[slot] + 1) - _first[slot]);
-            ulong end = Math.Min(tick - 1, _last[slot]);
-            for (ulong t = _first[slot]; t <= end; t++)
+                return count + (int)(Math.Min(tick, _slots[slot].last + 1) - _slots[slot].first);
+            ulong end = Math.Min(tick - 1, _slots[slot].last);
+            for (ulong t = _slots[slot].first; t <= end; t++)
             {
                 if (_written[Index(t, slot)])
                     count++;
@@ -426,63 +432,63 @@ namespace PurrNet.Prediction
             if (count <= 0)
                 return 0;
             int rangeEntries = RangeEntries(slot);
-            if (_hasAnchor[slot])
+            if (_slots[slot].hasAnchor)
             {
-                _hasAnchor[slot] = false;
+                _slots[slot].hasAnchor = false;
                 removed++;
             }
-            if (removed < count && _any[slot] && (ulong)rangeEntries == _last[slot] - _first[slot] + 1)
+            if (removed < count && _slots[slot].any && (ulong)rangeEntries == _slots[slot].last - _slots[slot].first + 1)
             {
                 int take = Math.Min(count - removed, rangeEntries);
                 removed += take;
                 if (take == rangeEntries)
-                    _any[slot] = false;
+                    _slots[slot].any = false;
                 else
-                    _first[slot] += (ulong)take;
+                    _slots[slot].first += (ulong)take;
             }
-            while (removed < count && _any[slot])
+            while (removed < count && _slots[slot].any)
             {
-                ulong first = _first[slot];
+                ulong first = _slots[slot].first;
                 removed++;
-                if (first == _last[slot])
+                if (first == _slots[slot].last)
                 {
-                    _any[slot] = false;
+                    _slots[slot].any = false;
                     break;
                 }
-                _first[slot] = OldestWrittenAtOrAfter(slot, first + 1);
+                _slots[slot].first = OldestWrittenAtOrAfter(slot, first + 1);
             }
-            _entries[slot] -= removed;
+            _slots[slot].entries -= removed;
             return removed;
         }
 
         // Drops every entry after tick.
         internal void ClearFuture(int slot, ulong tick)
         {
-            if (_any[slot])
+            if (_slots[slot].any)
             {
-                if (tick < _first[slot])
+                if (tick < _slots[slot].first)
                 {
-                    _entries[slot] -= RangeEntries(slot);
-                    _any[slot] = false;
+                    _slots[slot].entries -= RangeEntries(slot);
+                    _slots[slot].any = false;
                 }
-                else if (tick < _last[slot])
+                else if (tick < _slots[slot].last)
                 {
                     if (IsGapless(slot))
                     {
-                        _entries[slot] -= (int)(_last[slot] - tick);
-                        _last[slot] = tick;
+                        _slots[slot].entries -= (int)(_slots[slot].last - tick);
+                        _slots[slot].last = tick;
                     }
                     else
                     {
-                        _entries[slot] -= CountRangeWritten(slot, tick + 1, _last[slot]);
-                        _last[slot] = NewestWrittenAtOrBefore(slot, tick);
+                        _slots[slot].entries -= CountRangeWritten(slot, tick + 1, _slots[slot].last);
+                        _slots[slot].last = NewestWrittenAtOrBefore(slot, tick);
                     }
                 }
             }
-            if (_hasAnchor[slot] && tick < _anchorTick[slot])
+            if (_slots[slot].hasAnchor && tick < _slots[slot].anchorTick)
             {
-                _hasAnchor[slot] = false;
-                _entries[slot]--;
+                _slots[slot].hasAnchor = false;
+                _slots[slot].entries--;
             }
         }
 
@@ -501,7 +507,7 @@ namespace PurrNet.Prediction
         // Removes at most maximumEntries, oldest first, and returns how many it removed.
         internal int PruneBeforeBaseline(int slot, ulong baselineTick, int maximumEntries = int.MaxValue)
         {
-            if (_entries[slot] <= 1 || maximumEntries <= 0 || OldestTick(slot) >= baselineTick)
+            if (_slots[slot].entries <= 1 || maximumEntries <= 0 || OldestTick(slot) >= baselineTick)
                 return 0;
             int before = CountBefore(slot, baselineTick);
             // The newest entry before the baseline stays unless the baseline itself is an entry.
@@ -528,14 +534,14 @@ namespace PurrNet.Prediction
         // The tick of the entry at position index, oldest first.
         internal ulong EntryTick(int slot, int index)
         {
-            if (_hasAnchor[slot])
+            if (_slots[slot].hasAnchor)
             {
                 if (index == 0)
-                    return _anchorTick[slot];
+                    return _slots[slot].anchorTick;
                 index--;
             }
-            ulong last = _last[slot];
-            for (ulong t = _first[slot]; t <= last; t++)
+            ulong last = _slots[slot].last;
+            for (ulong t = _slots[slot].first; t <= last; t++)
             {
                 if (_written[Index(t, slot)] && index-- == 0)
                     return t;
@@ -546,24 +552,24 @@ namespace PurrNet.Prediction
         // Replaces the value of an existing entry.
         internal void Overwrite(int slot, ulong tick, in T value)
         {
-            if (_hasAnchor[slot] && tick == _anchorTick[slot])
+            if (_slots[slot].hasAnchor && tick == _slots[slot].anchorTick)
             {
                 _anchorValue[slot] = value;
                 return;
             }
             _values[Index(tick, slot)] = value;
-            Propagate(slot, tick, _last[slot], value);
+            Propagate(slot, tick, _slots[slot].last, value);
         }
 
         // Copies every entry, oldest first, for an owner moving them elsewhere.
         internal void CopyEntries(int slot, List<(ulong tick, T value)> into)
         {
-            if (_hasAnchor[slot])
-                into.Add((_anchorTick[slot], _anchorValue[slot]));
-            if (!_any[slot])
+            if (_slots[slot].hasAnchor)
+                into.Add((_slots[slot].anchorTick, _anchorValue[slot]));
+            if (!_slots[slot].any)
                 return;
-            ulong last = _last[slot];
-            for (ulong t = _first[slot]; t <= last; t++)
+            ulong last = _slots[slot].last;
+            for (ulong t = _slots[slot].first; t <= last; t++)
             {
                 int index = Index(t, slot);
                 if (_written[index])
@@ -583,13 +589,8 @@ namespace PurrNet.Prediction
 
         private void GrowSlots(int stride)
         {
-            Array.Resize(ref _first, stride);
-            Array.Resize(ref _last, stride);
-            Array.Resize(ref _any, stride);
-            Array.Resize(ref _anchorTick, stride);
+            Array.Resize(ref _slots, stride);
             Array.Resize(ref _anchorValue, stride);
-            Array.Resize(ref _hasAnchor, stride);
-            Array.Resize(ref _entries, stride);
             Rebuild(_rows, stride);
         }
 
@@ -600,9 +601,9 @@ namespace PurrNet.Prediction
             int mask = rows - 1;
             for (int slot = 0; slot < _stride && slot < stride; slot++)
             {
-                if (!_any[slot])
+                if (!_slots[slot].any)
                     continue;
-                for (ulong tick = _first[slot]; tick <= _last[slot]; tick++)
+                for (ulong tick = _slots[slot].first; tick <= _slots[slot].last; tick++)
                 {
                     int target = ((int)tick & mask) * stride + slot;
                     int source = Index(tick, slot);
