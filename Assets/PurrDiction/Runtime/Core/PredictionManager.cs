@@ -1362,6 +1362,7 @@ namespace PurrNet.Prediction
 
         private readonly Dictionary<PredictedComponentID, int> _uploadPreviousInputIndex = new(PredictionIdComparers.Components);
         private readonly Dictionary<PredictedComponentID, int> _receivePreviousInputIndex = new(PredictionIdComparers.Components);
+        private readonly Dictionary<ulong, int> _uploadContentIndex = new(PredictionIdComparers.Ticks);
 
         private static void IndexInputSpans(List<InputHistorySpan> spans, Dictionary<PredictedComponentID, int> indices)
         {
@@ -1512,6 +1513,8 @@ namespace PurrNet.Prediction
             public uint relativeBaseStamp;
             public readonly BitPacker block = new (64);
             public readonly List<InputHistorySpan> spans = new ();
+            // Per span, the nearest earlier span of this tick with identical bits, or -1.
+            public readonly List<int> sameAs = new ();
             public readonly BitPacker standalone = new (64);
             public readonly BitPacker relative = new (64);
         }
@@ -1579,6 +1582,8 @@ namespace PurrNet.Prediction
             entry.relativeBaseStamp = 0;
             entry.block.ResetPositionAndMode(false);
             entry.spans.Clear();
+            entry.sameAs.Clear();
+            _uploadContentIndex.Clear();
 
             for (var ownedIdx = 0; ownedIdx < owned.Count; ownedIdx++)
             {
@@ -1587,11 +1592,23 @@ namespace PurrNet.Prediction
                 {
                     int origin = entry.block.positionInBits;
                     identity.WriteFirstInput(tick, entry.block);
+                    int length = entry.block.positionInBits - origin;
+                    var bits = new BitData(entry.block, origin, length);
+                    ulong hash = InputHistoryDelta.Hash(in bits);
+                    int sameAs = -1;
+                    if (_uploadContentIndex.TryGetValue(hash, out int candidate))
+                    {
+                        var earlier = entry.spans[candidate];
+                        if (new BitData(entry.block, earlier.bitOrigin, earlier.bitLength).Equals(bits))
+                            sameAs = candidate;
+                    }
+                    _uploadContentIndex[hash] = entry.spans.Count;
+                    entry.sameAs.Add(sameAs);
                     entry.spans.Add(new InputHistorySpan
                     {
                         id = identity.id,
                         bitOrigin = origin,
-                        bitLength = entry.block.positionInBits - origin
+                        bitLength = length
                     });
                 }
             }
@@ -1636,10 +1653,23 @@ namespace PurrNet.Prediction
                 Packer<bool>.Write(wire, repeat);
                 if (repeat)
                     continue;
+                if (WriteSameUploadSpan(entry, s, wire))
+                    continue;
 
                 Packer<PackedUInt>.Write(wire, (uint)span.bitLength);
                 wire.WriteBitDataWithoutConsumingIt(new BitData(entry.block, span.bitOrigin, span.bitLength));
             }
+        }
+
+        // An input identical to an earlier one of its tick refers back to it instead of being resent.
+        private static bool WriteSameUploadSpan(UploadTickBlock entry, int span, BitPacker wire)
+        {
+            int sameAs = entry.sameAs[span];
+            Packer<bool>.Write(wire, sameAs >= 0);
+            if (sameAs < 0)
+                return false;
+            Packer<PackedUInt>.Write(wire, (uint)(span - sameAs - 1));
+            return true;
         }
 
         private static bool SameInputRoster(List<InputHistorySpan> current, List<InputHistorySpan> previous)
@@ -1668,6 +1698,8 @@ namespace PurrNet.Prediction
                 bool repeat = current.Equals(before);
                 Packer<bool>.Write(wire, repeat);
                 if (repeat)
+                    continue;
+                if (WriteSameUploadSpan(entry, s, wire))
                     continue;
 
                 _uploadPatchScratch.ResetPositionAndMode(false);
@@ -3274,6 +3306,7 @@ namespace PurrNet.Prediction
 
                 using var expandedA = BitPackerPool.Get();
                 using var expandedB = BitPackerPool.Get();
+                using var sameScratch = BitPackerPool.Get();
                 var prevExpanded = expandedA;
                 var curExpanded = expandedB;
                 var prevSpans = _recvPrevSpans;
@@ -3316,7 +3349,7 @@ namespace PurrNet.Prediction
 
                     bool keptRoster = i > 0 && count.value > 0 && Packer<bool>.Read(payload);
                     if (keptRoster && !ExpandUploadPatches(payload, blockStart + (int)blockBits.value, count.value,
-                            prevExpanded, prevSpans, curExpanded, curSpans))
+                            prevExpanded, prevSpans, curExpanded, curSpans, sameScratch))
                         return;
 
                     for (uint e = 0; !keptRoster && e < count.value; e++)
@@ -3349,6 +3382,11 @@ namespace PurrNet.Prediction
                             }
 
                             if (origin < 0)
+                                return;
+                        }
+                        else if (Packer<bool>.Read(payload))
+                        {
+                            if (!TryCopySameUploadSpan(payload, (int)e, pid, curExpanded, curSpans, sameScratch))
                                 return;
                         }
                         else
@@ -3414,10 +3452,27 @@ namespace PurrNet.Prediction
             }
         }
 
+        // Copies the bits of an earlier input of the same tick, after the id already expanded for it.
+        // A packer cannot copy from itself, so the bits pass through the scratch packer.
+        private static bool TryCopySameUploadSpan(BitPacker payload, int entry, PredictedComponentID id,
+            BitPacker curExpanded, List<InputHistorySpan> curSpans, BitPacker scratch)
+        {
+            uint distance = Packer<PackedUInt>.Read(payload);
+            if (distance >= (uint)entry || entry - (int)distance - 1 >= curSpans.Count)
+                return false;
+            var earlier = curSpans[entry - (int)distance - 1];
+            scratch.ResetPositionAndMode(false);
+            scratch.WriteBitDataWithoutConsumingIt(new BitData(curExpanded, earlier.bitOrigin, earlier.bitLength));
+            int origin = curExpanded.positionInBits;
+            curExpanded.WriteBitsWithoutConsumingIt(scratch, earlier.bitLength);
+            curSpans.Add(new InputHistorySpan { id = id, bitOrigin = origin, bitLength = earlier.bitLength });
+            return true;
+        }
+
         // A tick that keeps the previous tick's roster repeats, patches or resends each input in order.
         private static bool ExpandUploadPatches(BitPacker payload, int blockEnd, uint count,
             BitPacker prevExpanded, List<InputHistorySpan> prevSpans, BitPacker curExpanded,
-            List<InputHistorySpan> curSpans)
+            List<InputHistorySpan> curSpans, BitPacker sameScratch)
         {
             if (count != (uint)prevSpans.Count)
                 return false;
@@ -3433,6 +3488,12 @@ namespace PurrNet.Prediction
                     int length = prevSpan.bitLength;
                     if (Packer<bool>.Read(payload))
                         curExpanded.WriteBitDataWithoutConsumingIt(before);
+                    else if (Packer<bool>.Read(payload))
+                    {
+                        if (!TryCopySameUploadSpan(payload, e, prevSpan.id, curExpanded, curSpans, sameScratch))
+                            return false;
+                        continue;
+                    }
                     else if (Packer<bool>.Read(payload))
                         InputHistoryDelta.Read(payload, blockEnd, in before, curExpanded);
                     else
