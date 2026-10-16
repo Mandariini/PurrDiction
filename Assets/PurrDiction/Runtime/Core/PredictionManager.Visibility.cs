@@ -26,10 +26,10 @@ namespace PurrNet.Prediction
         readonly Dictionary<ulong, VisibilityAcquisition> _visibilityAcquisitionTokens = new ();
         readonly List<ulong> _visibilityTokenScratch = new ();
         readonly HashSet<PlayerID> _visibilityDependencyRebuild = new ();
-        readonly HashSet<PredictedObjectID> _desiredVisibilityScratch = new ();
-        readonly HashSet<PredictedObjectID> _hiddenDependencyScratch = new ();
-        readonly HashSet<PredictedObjectID> _spawnedRootScratch = new ();
-        readonly HashSet<PredictedObjectID> _ownedRootScratch = new ();
+        readonly HashSet<PredictedObjectID> _desiredVisibilityScratch = new (PredictionIdComparers.Objects);
+        readonly HashSet<PredictedObjectID> _hiddenDependencyScratch = new (PredictionIdComparers.Objects);
+        readonly HashSet<PredictedObjectID> _spawnedRootScratch = new (PredictionIdComparers.Objects);
+        readonly HashSet<PredictedObjectID> _ownedRootScratch = new (PredictionIdComparers.Objects);
         readonly List<PredictedIdentity> _addressedSystemScratch = new ();
         readonly List<PredictedIdentity> _addressedReadSystemScratch = new ();
         readonly List<PredictedObjectID> _visibilityRootScratch = new ();
@@ -1377,7 +1377,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        readonly HashSet<PredictedComponentID> _recordDecodeQuarantine = new ();
+        readonly HashSet<PredictedComponentID> _recordDecodeQuarantine = new (PredictionIdComparers.Components);
         readonly Dictionary<PredictedComponentID, double> _recordFailureLogAt = new ();
         private bool _frameApplyHadRecordFailure;
         private bool _frameApplyHadBaselineFailure;

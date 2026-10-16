@@ -52,7 +52,7 @@ namespace PurrNet.Prediction
         private readonly Stack<Dictionary<PredictedComponentID, PredictedComponentID?>> _lifecycleParentBuilders = new();
         private ulong _latestLifecycleTick;
         private readonly Dictionary<PredictedObjectID, InstanceDetails> _previousLifecyclePieces = new(PredictionIdComparers.Objects);
-        private readonly HashSet<PredictedObjectID> _changedLifecyclePieces = new();
+        private readonly HashSet<PredictedObjectID> _changedLifecyclePieces = new(PredictionIdComparers.Objects);
         private readonly Stack<LifecycleTick> _lifecycleReplayPool = new();
         private readonly Stack<LifecycleReplay> _lifecycleReplays = new();
         private LifecycleTick _readingLifecycleBatch;

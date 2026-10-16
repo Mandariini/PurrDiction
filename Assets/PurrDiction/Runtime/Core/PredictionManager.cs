@@ -257,8 +257,8 @@ namespace PurrNet.Prediction
         readonly List<VerifiedStore> _verifiedStoreMaintenance = new ();
         readonly Dictionary<uint, Stack<VerifiedStore>> _recycledVerifiedStores = new ();
         readonly List<PredictedComponentID> _retiredVerifiedComponents = new ();
-        readonly HashSet<PredictedComponentID> _retiredVerifiedComponentSet = new ();
-        readonly HashSet<PredictedObjectID> _verifiedPieceScratch = new ();
+        readonly HashSet<PredictedComponentID> _retiredVerifiedComponentSet = new (PredictionIdComparers.Components);
+        readonly HashSet<PredictedObjectID> _verifiedPieceScratch = new (PredictionIdComparers.Objects);
         int _verifiedStoreMaintenanceCursor;
         const int VerifiedStoresInspectedPerFrame = 8;
         const int VerifiedStoreCompactionPayloadBudget = 64 * 1024;

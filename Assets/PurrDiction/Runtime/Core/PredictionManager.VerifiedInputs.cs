@@ -15,7 +15,7 @@ namespace PurrNet.Prediction
 
         private readonly List<VerifiedInputTick> _verifiedInputTicks = new();
         private readonly List<InputHistorySpan> _verifiedInputEntries = new();
-        private readonly HashSet<PredictedComponentID> _verifiedInputIds = new();
+        private readonly HashSet<PredictedComponentID> _verifiedInputIds = new(PredictionIdComparers.Components);
         private readonly List<bool> _verifiedInputRepeatScratch = new();
         private readonly List<bool> _verifiedInputDeltaScratch = new();
         private readonly List<bool> _verifiedInputRestoredScratch = new();
