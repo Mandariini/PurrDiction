@@ -89,7 +89,10 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            _samples.Insert(index, new Entry { tick = tick, value = value });
+            // Samples almost always arrive in tick order, so this is usually an append.
+            if (index == _samples.Count)
+                _samples.Add(new Entry { tick = tick, value = value });
+            else _samples.Insert(index, new Entry { tick = tick, value = value });
 
             while (_samples.Count > _capacity)
             {
