@@ -1326,7 +1326,10 @@ namespace PurrNet.Prediction
             try
             {
                 for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].RunLateSimulateTick(delta);
+                {
+                    if (_systems.Runs(i, PredictedIdentity.LateSimulatePhase))
+                        _systems[i].RunLateSimulateTick(delta);
+                }
             }
             catch (Exception e)
             {
@@ -1363,7 +1366,10 @@ namespace PurrNet.Prediction
             try
             {
                 for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].RunPostSimulate();
+                {
+                    if (_systems.Runs(i, PredictedIdentity.PostSimulatePhase))
+                        _systems[i].RunPostSimulate();
+                }
             }
             catch (Exception e)
             {
@@ -3331,7 +3337,10 @@ namespace PurrNet.Prediction
                 try
                 {
                     for (var j = 0; j < _systemsCount; j++)
-                        _systems[j].RunLateSimulateTick(delta);
+                    {
+                        if (_systems.Runs(j, PredictedIdentity.LateSimulatePhase))
+                            _systems[j].RunLateSimulateTick(delta);
+                    }
                 }
                 catch (Exception e) when (swallowsSimulationHookFailures)
                 {
@@ -3361,7 +3370,10 @@ namespace PurrNet.Prediction
                 try
                 {
                     for (var i = 0; i < _systemsCount; i++)
-                        _systems[i].RunPostSimulate();
+                    {
+                        if (_systems.Runs(i, PredictedIdentity.PostSimulatePhase))
+                            _systems[i].RunPostSimulate();
+                    }
                 }
                 catch (Exception e) when (swallowsSimulationHookFailures)
                 {
@@ -3712,6 +3724,9 @@ namespace PurrNet.Prediction
         }
 
         private uint _instanceMapVersion;
+
+        // A system's modules went from none to some or back, which changes its LateSimulate phase.
+        internal void RefreshSystemPhases(PredictedIdentity system) => _systems.RefreshPhases(system);
 
         private void HandleIncomingInput(in InputQueueValue entry, PlayerID sender, InputQueue queue)
         {

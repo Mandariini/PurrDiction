@@ -139,6 +139,7 @@ namespace PurrNet.Prediction
             module.registeredAtTick = isDynamic ? predictionManager.localTickInContext : 0;
             module.moduleIndex = _modules.Count;
             _modules.Add(module);
+            OnModulesChanged();
 
             if (predictionManager)
                 module.SetupInternal(this, predictionManager);
@@ -163,6 +164,7 @@ namespace PurrNet.Prediction
 
             module.OnRemovedInternal();
             _modules.RemoveAt(index);
+            OnModulesChanged();
             ReindexModulesFrom(index);
         }
 
@@ -499,6 +501,7 @@ namespace PurrNet.Prediction
             {
                 if (_modules.Count > staticCount)
                     _modules.RemoveRange(staticCount, _modules.Count - staticCount);
+                OnModulesChanged();
 
                 bool wasApplyingModuleDiff = _isApplyingModuleDiff;
                 _isApplyingModuleDiff = true;
@@ -530,6 +533,7 @@ namespace PurrNet.Prediction
 
                             module = candidate;
                             _modules.Add(module);
+                            OnModulesChanged();
                             module.moduleIndex = _modules.Count - 1;
                             break;
                         }
@@ -594,7 +598,9 @@ namespace PurrNet.Prediction
                 try
                 {
                     _modules.Clear();
+                    OnModulesChanged();
                     _modules.AddRange(liveModules);
+                    OnModulesChanged();
                     ReindexModulesFrom(0);
                 }
                 finally
@@ -641,6 +647,7 @@ namespace PurrNet.Prediction
             for (int i = _modules.Count - 1; i >= 0; i--)
                 _modules[i].OnRemovedInternal();
             _modules.Clear();
+            OnModulesChanged();
             _moduleHistory?.Clear();
         }
 
@@ -661,6 +668,7 @@ namespace PurrNet.Prediction
                 {
                     _modules[i].OnRemovedInternal();
                     _modules.RemoveAt(i);
+                    OnModulesChanged();
                 }
             }
             finally
@@ -732,6 +740,7 @@ namespace PurrNet.Prediction
                                 var module = _modules[start];
                                 module.OnRemovedInternal();
                                 _modules.RemoveAt(start);
+                                OnModulesChanged();
                             }
                             offset -= op.length;
                             break;
@@ -823,6 +832,7 @@ namespace PurrNet.Prediction
             }
 
             _modules.Insert(absoluteIndex, module);
+            OnModulesChanged();
             module.moduleIndex = absoluteIndex;
 
             try

@@ -11,6 +11,9 @@ namespace PurrNet.Prediction
     internal sealed class PredictedSystemList : IEnumerable<PredictedIdentity>
     {
         private PredictedIdentity[] _items = new PredictedIdentity[16];
+        // Each system's PredictedIdentity.simulationPhases, so a pass can skip the systems it
+        // has nothing to run on without touching them.
+        private byte[] _phases = new byte[16];
         private int _count;
 
         // Changes with every mutation, so per-tick scans can reuse rosters built from this list.
@@ -28,6 +31,16 @@ namespace PurrNet.Prediction
             get => _items[index];
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Runs(int index, byte phase) => (_phases[index] & phase) != 0;
+
+        public void RefreshPhases(PredictedIdentity item)
+        {
+            int index = IndexOf(item);
+            if (index >= 0)
+                _phases[index] = item.simulationPhases;
+        }
+
         public void Add(PredictedIdentity item) => Insert(_count, item);
 
         public void Insert(int index, PredictedIdentity item)
@@ -35,10 +48,17 @@ namespace PurrNet.Prediction
             if ((uint)index > (uint)_count)
                 throw new ArgumentOutOfRangeException(nameof(index));
             if (_count == _items.Length)
+            {
                 Array.Resize(ref _items, _items.Length * 2);
+                Array.Resize(ref _phases, _items.Length);
+            }
             if (index < _count)
+            {
                 Array.Copy(_items, index, _items, index + 1, _count - index);
+                Array.Copy(_phases, index, _phases, index + 1, _count - index);
+            }
             _items[index] = item;
+            _phases[index] = item ? item.simulationPhases : PredictedIdentity.AllSimulationPhases;
             _count++;
             revision++;
         }
@@ -49,7 +69,10 @@ namespace PurrNet.Prediction
                 throw new ArgumentOutOfRangeException(nameof(index));
             _count--;
             if (index < _count)
+            {
                 Array.Copy(_items, index + 1, _items, index, _count - index);
+                Array.Copy(_phases, index + 1, _phases, index, _count - index);
+            }
             _items[_count] = null;
             revision++;
         }
@@ -70,6 +93,7 @@ namespace PurrNet.Prediction
         public void Reverse()
         {
             Array.Reverse(_items, 0, _count);
+            Array.Reverse(_phases, 0, _count);
             revision++;
         }
 
