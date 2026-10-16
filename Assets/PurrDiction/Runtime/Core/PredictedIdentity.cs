@@ -588,7 +588,8 @@ namespace PurrNet.Prediction
         private void AssignOwner(PlayerID? player)
         {
             _owner = player;
-            _ownerIdValue = player.HasValue ? player.GetValueOrDefault().id.value : 0;
+            ownerIdValue = CompactIdentityState.OwnerId(player);
+            ownerFlags = CompactIdentityState.OwnerFlags(player);
         }
 
         private History<PredictedIdentityState> _metadataVerified;
@@ -798,7 +799,7 @@ namespace PurrNet.Prediction
         {
             var manager = predictionManager;
             if (manager is not null && manager.hasStableLocalPlayer)
-                return _owner.HasValue && _ownerIdValue == manager.stableLocalPlayerId;
+                return ownerFlags != 0 && ownerIdValue == manager.stableLocalPlayerId;
             return IsOwnerUncached(manager);
         }
 
