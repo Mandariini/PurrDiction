@@ -1879,6 +1879,8 @@ namespace PurrNet.Prediction
                 // Full and delta frames both end with this tick's complete visible input roster.
                 clientFrame.preparedInputCarryTick = localTick;
                 clientFrame.preparedInputCarry = timeline.isPassThrough;
+                clientFrame.sharedSectionIndex = -1;
+                clientFrame.sharedSectionBits = 0;
                 _clientFrames[j] = clientFrame;
                 BeginPreparingDesyncHeals(player);
 
@@ -1948,10 +1950,19 @@ namespace PurrNet.Prediction
                     deltaSectionHierarchyBitsTotal += (ulong)(frame.positionInBits - sectionStart);
 
                     sectionStart = frame.positionInBits;
+                    int sharedIndex;
                     using (WriteStateDeltasMarker.Auto())
-                        WriteLengthPrefixedStateSection(player, timeline, frame, localTick, baselineTick);
+                        WriteLengthPrefixedStateSection(player, timeline, frame, localTick, baselineTick, out sharedIndex);
                     deltaSectionStateBitsTotal += (ulong)(frame.positionInBits - sectionStart);
                     deltaFramesWrittenTotal++;
+                    if (sharedIndex >= 0)
+                    {
+                        var prepared = _clientFrames[j];
+                        prepared.sharedSectionIndex = sharedIndex;
+                        prepared.sharedSectionStart = (int)sectionStart;
+                        prepared.sharedSectionBits = frame.positionInBits - (int)sectionStart;
+                        _clientFrames[j] = prepared;
+                    }
                 }
             }
 
@@ -2105,7 +2116,32 @@ namespace PurrNet.Prediction
                 }
             }
 
-            SendFrameToRemote(player, frameTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, new BitPackerWithLength(deltaLen, packer));
+            int frameBits = packer.positionInBits;
+            using (var rest = BitPackerPool.Get())
+            {
+                int sharedStart = 0;
+                int sharedBits = 0;
+                var shared = _emptyFramePart;
+                if (!fullFrame && clientFrame.sharedSectionIndex >= 0 && clientFrame.sharedSectionBits > 0 &&
+                    TryGetCompressedSharedSection(clientFrame.sharedSectionIndex, frameTick,
+                        clientFrame.sharedSectionBits, out var compressedShared))
+                {
+                    sharedStart = clientFrame.sharedSectionStart;
+                    sharedBits = clientFrame.sharedSectionBits;
+                    shared = compressedShared;
+                    using var remainder = BitPackerPool.Get();
+                    remainder.WriteBitDataWithoutConsumingIt(new BitData(packer, 0, sharedStart));
+                    remainder.WriteBitDataWithoutConsumingIt(new BitData(packer, sharedStart + sharedBits,
+                        frameBits - sharedStart - sharedBits));
+                    remainder.PickleInto(rest);
+                }
+                else packer.PickleInto(rest);
+
+                SendFrameToRemote(player, frameTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin,
+                    hasInputSlack, inputSlackMs, (uint)frameBits, (uint)sharedStart, (uint)sharedBits,
+                    new BitPackerWithLength(rest.ToByteData().length, rest),
+                    new BitPackerWithLength(shared.ToByteData().length, shared));
+            }
 
             if (fullFrame)
             {
@@ -2285,10 +2321,55 @@ namespace PurrNet.Prediction
         readonly Queue<FrameDelta> _deltas = new ();
 
         // Every frame travels on one ordered reliable stream, so a delta can always use the frame before it.
-        [TargetRpc(channel: Channel.ReliableOrdered, compressionLevel: CompressionLevel.Fast)]
-        private void SendFrameToRemote([UsedImplicitly] PlayerID player, ulong serverTick, ulong baselineTick, ulong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack, PackedInt inputSlackMs, BitPackerWithLength delta)
+        // Frames compress here rather than in the RPC layer: the state section that pass-through
+        // receivers share is compressed once per tick, and only the rest of each frame per receiver.
+        [TargetRpc(channel: Channel.ReliableOrdered)]
+        private void SendFrameToRemote([UsedImplicitly] PlayerID player, PackedULong serverTick, PackedULong baselineTick,
+            PackedULong inputAck, bool fullFrame, bool hasInputMargin, PackedInt inputMargin, bool hasInputSlack,
+            PackedInt inputSlackMs, PackedUInt frameBits, PackedUInt sharedStart, PackedUInt sharedBits,
+            BitPackerWithLength rest, BitPackerWithLength shared)
         {
+            var delta = DecodeFrame(frameBits, sharedStart, sharedBits, rest, shared);
             HandleFrameFromServer(serverTick, baselineTick, inputAck, fullFrame, hasInputMargin, inputMargin, hasInputSlack, inputSlackMs, delta);
+        }
+
+        private readonly BitPacker _emptyFramePart = new (0);
+
+        /// <summary>
+        /// Rebuilds the frame a server wrote from its compressed parts: the frame without its shared
+        /// state section, and that section, which goes back at sharedStart. Takes ownership of both parts.
+        /// </summary>
+        internal static BitPackerWithLength DecodeFrame(uint frameBits, uint sharedStart, uint sharedBits,
+            BitPackerWithLength rest, BitPackerWithLength shared)
+        {
+            var remainder = BitPackerPool.Get();
+            try
+            {
+                rest.packer.SkipBytes(rest.originalLength);
+                remainder.UnpickleFrom(rest.packer);
+            }
+            finally
+            {
+                rest.Dispose();
+            }
+
+            var frame = remainder;
+            if (sharedBits > 0)
+            {
+                using var section = BitPackerPool.Get();
+                shared.packer.SkipBytes(shared.originalLength);
+                section.UnpickleFrom(shared.packer);
+                frame = BitPackerPool.Get();
+                frame.WriteBitDataWithoutConsumingIt(new BitData(remainder, 0, (int)sharedStart));
+                frame.WriteBitDataWithoutConsumingIt(new BitData(section, 0, (int)sharedBits));
+                frame.WriteBitDataWithoutConsumingIt(new BitData(remainder, (int)sharedStart,
+                    (int)(frameBits - sharedStart - sharedBits)));
+                remainder.Dispose();
+            }
+            shared.Dispose();
+
+            frame.ResetPosition();
+            return new BitPackerWithLength((int)((frameBits + 7) >> 3), frame);
         }
 
         /// <summary>

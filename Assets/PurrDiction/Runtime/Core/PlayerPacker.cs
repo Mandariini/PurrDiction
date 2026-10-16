@@ -21,6 +21,11 @@ namespace PurrNet.Prediction
         public bool preparedInputCarry;
         public ulong sentInputCarryTick;
         public bool sentInputCarry;
+        // Where the prepared frame holds a state section shared with other receivers of this
+        // tick, which is compressed once for all of them; -1 when it holds none.
+        public int sharedSectionIndex;
+        public int sharedSectionStart;
+        public int sharedSectionBits;
 
         public void BeginFullFrame(ulong tick)
         {

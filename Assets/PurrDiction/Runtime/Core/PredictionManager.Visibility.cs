@@ -951,12 +951,17 @@ namespace PurrNet.Prediction
             public bool eventHandlers;
             public ulong spawnBaselineRecords;
             public BitPacker bits;
+            // The length-prefixed section as frames carry it, compressed on first send.
+            public BitPacker compressed;
+            public int framedBits;
         }
 
         // Pass-through receivers of one baseline get bit-identical sections; only desync heals
         // add receiver-specific records. Write each section once per tick and copy it.
         readonly List<SharedStateSection> _sharedStateSections = new ();
         readonly List<BitPacker> _sharedStateSectionBuffers = new ();
+        readonly List<BitPacker> _sharedStateCompressedBuffers = new ();
+        readonly BitPacker _sharedStateFramedScratch = new (1024);
         ulong _sharedStateSectionTick = ulong.MaxValue;
 
         internal bool writingSharedStateSection { get; private set; }
@@ -972,7 +977,18 @@ namespace PurrNet.Prediction
             bool eventHandlers,
             BitPacker destination,
             bool lengthPrefixed = false)
+            => TryCopySharedStateSection(tick, baselineTick, fullFrame, eventHandlers, destination, lengthPrefixed, out _);
+
+        bool TryCopySharedStateSection(
+            ulong tick,
+            ulong baselineTick,
+            bool fullFrame,
+            bool eventHandlers,
+            BitPacker destination,
+            bool lengthPrefixed,
+            out int index)
         {
+            index = -1;
             if (_sharedStateSectionTick != tick)
             {
                 _sharedStateSections.Clear();
@@ -991,13 +1007,14 @@ namespace PurrNet.Prediction
                     Packer<PackedUInt>.Write(destination, (uint)section.bits.positionInBits);
                 destination.WriteBitsWithoutConsumingIt(section.bits, section.bits.positionInBits);
                 spawnBaselineRecordsTotal += section.spawnBaselineRecords;
+                index = i;
                 return true;
             }
 
             return false;
         }
 
-        void StoreSharedStateSection(
+        int StoreSharedStateSection(
             ulong baselineTick,
             bool fullFrame,
             bool eventHandlers,
@@ -1020,6 +1037,42 @@ namespace PurrNet.Prediction
                 spawnBaselineRecords = spawnBaselineRecords,
                 bits = bits
             });
+            return index;
+        }
+
+        // The compressed length-prefixed section that a frame prepared at tick carries in
+        // framedBits bits, built once and reused for every receiver of that section.
+        bool TryGetCompressedSharedSection(int index, ulong tick, int framedBits, out BitPacker compressed)
+        {
+            compressed = null;
+            if (_sharedStateSectionTick != tick || index < 0 || index >= _sharedStateSections.Count)
+                return false;
+
+            var section = _sharedStateSections[index];
+            if (section.fullFrame || section.eventHandlers)
+                return false;
+
+            if (section.compressed == null)
+            {
+                var framed = _sharedStateFramedScratch;
+                framed.ResetPositionAndMode(false);
+                Packer<PackedUInt>.Write(framed, (uint)section.bits.positionInBits);
+                framed.WriteBitsWithoutConsumingIt(section.bits, section.bits.positionInBits);
+
+                while (_sharedStateCompressedBuffers.Count <= index)
+                    _sharedStateCompressedBuffers.Add(BitPackerPool.Get());
+                var buffer = _sharedStateCompressedBuffers[index];
+                buffer.ResetPositionAndMode(false);
+                framed.PickleInto(buffer);
+                section.compressed = buffer;
+                section.framedBits = framed.positionInBits;
+                _sharedStateSections[index] = section;
+            }
+
+            if (section.framedBits != framedBits)
+                return false;
+            compressed = section.compressed;
+            return true;
         }
 
         void DisposeSharedStateSections()
@@ -1027,6 +1080,9 @@ namespace PurrNet.Prediction
             for (var i = 0; i < _sharedStateSectionBuffers.Count; i++)
                 _sharedStateSectionBuffers[i].Dispose();
             _sharedStateSectionBuffers.Clear();
+            for (var i = 0; i < _sharedStateCompressedBuffers.Count; i++)
+                _sharedStateCompressedBuffers[i].Dispose();
+            _sharedStateCompressedBuffers.Clear();
             _sharedStateSections.Clear();
             _sharedStateSectionTick = ulong.MaxValue;
         }
@@ -1072,9 +1128,20 @@ namespace PurrNet.Prediction
             BitPacker destination,
             ulong tick,
             ulong baselineTick)
+            => WriteLengthPrefixedStateSection(player, timeline, destination, tick, baselineTick, out _);
+
+        // sharedIndex names the shared section this receiver's copy came from, or -1.
+        void WriteLengthPrefixedStateSection(
+            PlayerID player,
+            PlayerVisibilityTimeline timeline,
+            BitPacker destination,
+            ulong tick,
+            ulong baselineTick,
+            out int sharedIndex)
         {
+            sharedIndex = -1;
             bool share = CanShareStateSection(player, timeline);
-            if (share && TryCopySharedStateSection(tick, baselineTick, false, false, destination, true))
+            if (share && TryCopySharedStateSection(tick, baselineTick, false, false, destination, true, out sharedIndex))
                 return;
 
             var section = _lengthPrefixedSectionScratch;
@@ -1092,7 +1159,7 @@ namespace PurrNet.Prediction
 
             if (share)
             {
-                StoreSharedStateSection(baselineTick, false, false, section, 0,
+                sharedIndex = StoreSharedStateSection(baselineTick, false, false, section, 0,
                     spawnBaselineRecordsTotal - spawnBaselineRecordsBefore);
             }
 
