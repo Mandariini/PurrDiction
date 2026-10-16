@@ -28,6 +28,12 @@ namespace PurrNet.Prediction
 
         bool m_contiguous = true;
 
+        // Ticks of the oldest and newest entries, valid while m_count > 0. Kept beside the
+        // count so bounds checks, lookups and pruning do not touch cold slots.
+        ulong m_firstTick;
+
+        ulong m_lastTick;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         int Phys(int index)
         {
@@ -77,7 +83,7 @@ namespace PurrNet.Prediction
         public ulong MostRecentTick
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => m_count == 0 ? 0 : m_values[Phys(m_count - 1)].tick;
+            get => m_count == 0 ? 0 : m_lastTick;
         }
 
         // Read only the newest entry, and reject it if it is ahead of the caller.
@@ -85,14 +91,10 @@ namespace PurrNet.Prediction
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal bool TryReadLatest(ulong maximumTick, out T result)
         {
-            if (m_count > 0)
+            if (m_count > 0 && m_lastTick <= maximumTick)
             {
-                int phys = Phys(m_count - 1);
-                if (m_values[phys].tick <= maximumTick)
-                {
-                    result = m_values[phys].value;
-                    return true;
-                }
+                result = m_values[Phys(m_count - 1)].value;
+                return true;
             }
             result = default;
             return false;
@@ -104,12 +106,12 @@ namespace PurrNet.Prediction
         public ulong OldestTick
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => m_count == 0 ? 0 : m_values[m_head].tick;
+            get => m_count == 0 ? 0 : m_firstTick;
         }
 
         // Availability checks need neither a search nor a copy of the retained value.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal bool HasAtOrBefore(ulong tick) => m_count > 0 && m_values[m_head].tick <= tick;
+        internal bool HasAtOrBefore(ulong tick) => m_count > 0 && m_firstTick <= tick;
 
         /// <summary>
         /// Gets the tick value for the index in the internal collection
@@ -195,7 +197,7 @@ namespace PurrNet.Prediction
         internal int PruneBeforeBaseline(ulong baselineTick, int maximumEntriesToRemove = int.MaxValue)
         {
             // An oldest entry at or after the baseline is already the anchor.
-            if (m_count <= 1 || maximumEntriesToRemove <= 0 || m_values[m_head].tick >= baselineTick)
+            if (m_count <= 1 || maximumEntriesToRemove <= 0 || m_firstTick >= baselineTick)
                 return 0;
             bool found = Find(baselineTick, out int index);
             int firstIndexToKeep = found ? index : Math.Max(0, index - 1);
@@ -242,9 +244,11 @@ namespace PurrNet.Prediction
         /// <param name="data">What is the state/data of the tick.</param>
         public void Write(ulong tick, in T data)
         {
-            if (m_count == 0 || tick > m_values[Phys(m_count - 1)].tick)
+            if (m_count == 0 || tick > m_lastTick)
             {
-                if (m_count > 0 && tick != m_values[Phys(m_count - 1)].tick + 1)
+                if (m_count == 0)
+                    m_firstTick = tick;
+                else if (tick != m_lastTick + 1)
                     m_contiguous = false;
 
                 if (m_count == m_values.Length)
@@ -252,6 +256,7 @@ namespace PurrNet.Prediction
 
                 m_values[Phys(m_count)] = new Slot { tick = tick, value = data };
                 m_count++;
+                m_lastTick = tick;
 
                 if (m_maxCount > 0)
                     TryToDownsize();
@@ -287,6 +292,8 @@ namespace PurrNet.Prediction
 
             m_values[Phys(index)] = new Slot { tick = tick, value = data };
             m_count++;
+            if (index == 0)
+                m_firstTick = tick;
         }
 
         private void TryToDownsize()
@@ -304,39 +311,75 @@ namespace PurrNet.Prediction
         // indexing after that gap has expired or been filled.
         private void RefreshContiguity()
         {
-            m_contiguous = m_count <= 1 ||
-                m_values[Phys(m_count - 1)].tick - m_values[m_head].tick == (ulong)(m_count - 1);
+            m_contiguous = m_count <= 1 || m_lastTick - m_firstTick == (ulong)(m_count - 1);
         }
 
         private void RemoveFront(int count)
         {
+            if (count <= 0)
+                return;
+
+            // Slots outside the live range are never read, so only references need clearing.
+            bool clear = RuntimeHelpers.IsReferenceOrContainsReferences<T>();
             for (int i = 0; i < count; i++)
             {
                 int phys = Phys(i);
                 m_values[phys].value.Dispose();
-                m_values[phys] = default;
+                if (clear)
+                    m_values[phys] = default;
             }
 
             m_head = Phys(count);
             m_count -= count;
 
-            if (!m_contiguous)
+            if (m_count == 0)
+            {
+                m_contiguous = true;
+                return;
+            }
+
+            if (m_contiguous)
+            {
+                m_firstTick += (ulong)count;
+            }
+            else
+            {
+                m_firstTick = m_values[m_head].tick;
                 RefreshContiguity();
+            }
         }
 
         private void RemoveBack(int count)
         {
+            if (count <= 0)
+                return;
+
+            bool clear = RuntimeHelpers.IsReferenceOrContainsReferences<T>();
             for (int i = m_count - count; i < m_count; i++)
             {
                 int phys = Phys(i);
                 m_values[phys].value.Dispose();
-                m_values[phys] = default;
+                if (clear)
+                    m_values[phys] = default;
             }
 
             m_count -= count;
 
-            if (!m_contiguous)
+            if (m_count == 0)
+            {
+                m_contiguous = true;
+                return;
+            }
+
+            if (m_contiguous)
+            {
+                m_lastTick -= (ulong)count;
+            }
+            else
+            {
+                m_lastTick = m_values[Phys(m_count - 1)].tick;
                 RefreshContiguity();
+            }
         }
 
         /// <summary>
@@ -493,7 +536,7 @@ namespace PurrNet.Prediction
                 return false;
             }
 
-            ulong first = m_values[m_head].tick;
+            ulong first = m_firstTick;
 
             if (tick < first)
             {
@@ -518,7 +561,7 @@ namespace PurrNet.Prediction
             // Delta baselines usually address one of the newest sparse entries.
             // Also resolve insertion points beyond or between those entries directly.
             int lastIndex = m_count - 1;
-            ulong last = m_values[Phys(lastIndex)].tick;
+            ulong last = m_lastTick;
             if (tick >= last)
             {
                 result = tick == last ? lastIndex : m_count;
@@ -590,6 +633,14 @@ namespace PurrNet.Prediction
 
             m_values[Phys(m_count - 1)] = default;
             m_count--;
+
+            if (m_count > 0)
+            {
+                if (index == 0)
+                    m_firstTick = m_values[m_head].tick;
+                if (index == m_count)
+                    m_lastTick = m_values[Phys(m_count - 1)].tick;
+            }
 
             RefreshContiguity();
         }
