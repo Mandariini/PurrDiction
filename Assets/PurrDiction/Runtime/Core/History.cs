@@ -1,8 +1,12 @@
 using System;
 using System.Runtime.CompilerServices;
+using Unity.IL2CPP.CompilerServices;
 
 namespace PurrNet.Prediction
 {
+    // Slot indices are always reduced into range, so IL2CPP's bounds checks only add a read of the
+    // array header, a cache line separate from the slot. The public indexer validates explicitly.
+    [Il2CppSetOption(Option.ArrayBoundsChecks, false)]
     public sealed class History<T> where T : struct, IDisposable
     {
         // A tick and its value share one slot, so each lookup touches a single cache line.
@@ -28,6 +32,9 @@ namespace PurrNet.Prediction
 
         bool m_contiguous = true;
 
+        // m_values.Length, kept beside the count so wrapping an index does not read the array header.
+        int m_capacity;
+
         // Tick of the oldest entry, valid while m_count > 0. Kept beside the count so lookups
         // and pruning do not touch the cold head slot, without growing past one cache line.
         ulong m_firstTick;
@@ -36,8 +43,8 @@ namespace PurrNet.Prediction
         int Phys(int index)
         {
             int phys = m_head + index;
-            if (phys >= m_values.Length)
-                phys -= m_values.Length;
+            if (phys >= m_capacity)
+                phys -= m_capacity;
             return phys;
         }
 
@@ -158,10 +165,12 @@ namespace PurrNet.Prediction
                 m_eagerCapacity = initialCapacity > 0 ? Math.Min(initialCapacity, m_limitToCut + 1) : m_limitToCut + 1;
                 m_growthBoundary = Math.Min(growthBoundary, m_limitToCut + 1);
                 m_values = new Slot[m_eagerCapacity];
+                m_capacity = m_eagerCapacity;
             }
             else
             {
                 m_values = new Slot[16];
+                m_capacity = 16;
             }
         }
 
@@ -236,6 +245,7 @@ namespace PurrNet.Prediction
                 Array.Copy(m_values, 0, newValues, firstChunk, remaining);
 
             m_values = newValues;
+            m_capacity = newCapacity;
             m_head = 0;
         }
 
@@ -254,7 +264,7 @@ namespace PurrNet.Prediction
                 else if (tick != last + 1)
                     m_contiguous = false;
 
-                if (m_count == m_values.Length)
+                if (m_count == m_capacity)
                     Grow();
 
                 m_values[Phys(m_count)] = new Slot { tick = tick, value = data };
@@ -282,7 +292,7 @@ namespace PurrNet.Prediction
 
         void InsertAt(int index, ulong tick, in T data)
         {
-            if (m_count == m_values.Length)
+            if (m_count == m_capacity)
                 Grow();
 
             for (int i = m_count; i > index; i--)
