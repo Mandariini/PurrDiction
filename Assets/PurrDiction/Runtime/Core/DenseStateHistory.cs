@@ -174,6 +174,16 @@ namespace PurrNet.Prediction
                 return false;
             }
 
+            // Extrapolation asks past the newest entry, which is then the closest: the anchor
+            // always lies before the range.
+            ref var state = ref _slots[slot];
+            if (state.any && tick > state.last)
+            {
+                value = _values[Index(state.last, slot)];
+                distance = tick - state.last;
+                return true;
+            }
+
             if (TryRead(slot, tick, out value))
             {
                 distance = 0;
