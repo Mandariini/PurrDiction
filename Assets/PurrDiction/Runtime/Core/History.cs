@@ -367,7 +367,7 @@ namespace PurrNet.Prediction
         {
             if (m_dense != null)
             {
-                if (m_dense.TryWrite(m_denseSlot, tick, in data))
+                if (m_dense.TryAppendNext(m_denseSlot, tick, in data) || m_dense.TryWrite(m_denseSlot, tick, in data))
                 {
                     if (m_maxCount > 0)
                     {

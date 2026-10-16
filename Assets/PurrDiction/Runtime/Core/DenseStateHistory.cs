@@ -100,7 +100,7 @@ namespace PurrNet.Prediction
             if (_slots[slot].any && tick >= _slots[slot].first && tick <= _slots[slot].last)
             {
                 int index = Index(tick, slot);
-                if (_written[index])
+                if (IsGapless(slot) || _written[index])
                 {
                     value = _values[index];
                     return true;
@@ -119,7 +119,7 @@ namespace PurrNet.Prediction
         internal bool Contains(int slot, ulong tick)
         {
             if (_slots[slot].any && tick >= _slots[slot].first && tick <= _slots[slot].last)
-                return _written[Index(tick, slot)];
+                return IsGapless(slot) || _written[Index(tick, slot)];
             return _slots[slot].hasAnchor && tick == _slots[slot].anchorTick;
         }
 
@@ -226,19 +226,25 @@ namespace PurrNet.Prediction
         /// Stores value at tick, keeping every other entry. Refused, without any change, when the
         /// range would span more rows than the window allows.
         /// </summary>
+        // The usual write: the tick after the newest, still inside the rows.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal bool TryAppendNext(int slot, ulong tick, in T value)
+        {
+            ref var state = ref _slots[slot];
+            if (!state.any || tick != state.last + 1 || tick - state.first >= (ulong)_rows)
+                return false;
+            int next = Index(tick, slot);
+            _values[next] = value;
+            _written[next] = true;
+            state.last = tick;
+            state.entries++;
+            return true;
+        }
+
         internal bool TryWrite(int slot, ulong tick, in T value)
         {
-            // The usual write: the tick after the newest, still inside the rows.
-            ref var state = ref _slots[slot];
-            if (state.any && tick == state.last + 1 && tick - state.first < (ulong)_rows)
-            {
-                int next = Index(tick, slot);
-                _values[next] = value;
-                _written[next] = true;
-                state.last = tick;
-                state.entries++;
+            if (TryAppendNext(slot, tick, in value))
                 return true;
-            }
 
             if (!_slots[slot].any)
             {
@@ -425,10 +431,12 @@ namespace PurrNet.Prediction
         }
 
         // Written entries of the range, without the anchor.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         private int RangeEntries(int slot) => _slots[slot].entries - (_slots[slot].hasAnchor ? 1 : 0);
 
         // Every tick of the range was written, the usual case, so positions follow from ticks
         // without scanning rows that each sit a whole row apart.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         private bool IsGapless(int slot) => (ulong)RangeEntries(slot) == _slots[slot].last - _slots[slot].first + 1;
 
         // Entries strictly before tick.
