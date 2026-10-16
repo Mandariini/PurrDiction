@@ -228,6 +228,8 @@ namespace PurrNet.Prediction
             return BackingStoragePayloadBytes;
         }
 
+        internal int BackingCapacity => m_capacity;
+
         internal bool HasEagerBackingStorage => m_maxCount > 0 && m_values.Length >= m_eagerCapacity;
 
         internal long BackingStoragePayloadBytes =>

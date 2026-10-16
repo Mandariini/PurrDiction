@@ -288,6 +288,18 @@ namespace PurrNet.Prediction
         // Prediction, verified view sampling and deterministic replay use separate histories.
         private int verifiedStoreCapacity => checked((int)verifiedHistoryWindowTicks);
 
+        private readonly Dictionary<Type, object> _denseStateHistories = new ();
+
+        // One row-per-tick predicted-state table per state type, shared by every identity of it.
+        internal DenseStateHistory<T> GetDenseStateHistory<T>(int window) where T : struct
+        {
+            if (_denseStateHistories.TryGetValue(typeof(T), out var table))
+                return (DenseStateHistory<T>)table;
+            var created = new DenseStateHistory<T>(initialLocalHistoryWindowTicks + 2, window);
+            _denseStateHistories.Add(typeof(T), created);
+            return created;
+        }
+
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, out bool created) where T : struct, IDisposable
         {
             return GetVerifiedHistory<T>(componentId, 0, out created);

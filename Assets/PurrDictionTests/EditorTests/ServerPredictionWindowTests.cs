@@ -45,13 +45,12 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(typeof(PredictionManager), world, "<tickRate>k__BackingField", rate);
                 Set(typeof(PredictedIdentity), probe, "<predictionManager>k__BackingField", world);
                 probe.PrewarmPredictionState(world);
-                var history = (History<FULL_STATE<CompactStateProbe>>)typeof(PredictedIdentity<CompactStateProbe>)
-                    .GetField("_stateHistory", Fields).GetValue(probe);
+                var storage = probe.predictedHistoryStorage;
                 var inputs = (History<ServerPredictionWindowInput>)typeof(PredictedIdentity<ServerPredictionWindowInput, CompactStateProbe>)
                     .GetField("_inputHistory", Fields).GetValue(probe);
                 int window = server ? (int)world.verifiedHistoryWindowTicks : rate * 10;
                 int inputWindow = server ? window : rate * 5;
-                Assert.That(history.Capacity, Is.EqualTo(window));
+                Assert.That(probe.predictedHistoryWindow, Is.EqualTo(window));
                 Assert.That(inputs.Capacity, Is.EqualTo(inputWindow));
                 for (ulong tick = 0; tick <= (ulong)(window * 3); tick++)
                 {
@@ -60,7 +59,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     probe.SaveStateInHistory(tick);
                     probe.lastVerifiedTick = tick;
                     ulong oldest = tick > (ulong)window ? tick - (ulong)window : 0;
-                    Assert.That(history.Read(oldest, out var baseline), Is.True);
+                    Assert.That(probe.TryReadPredictedState(oldest, out var baseline), Is.True);
                     Assert.That(baseline.state.a, Is.EqualTo((int)oldest));
                     Assert.That(probe.verifiedState.Value.a, Is.EqualTo((int)tick));
                     // Client entry-count histories guarantee inputWindow entries;
@@ -70,16 +69,16 @@ namespace PurrNet.Prediction.Tests.Editor
                     Assert.That(inputs.Read(oldestInput, out var input), Is.True);
                     Assert.That(input.sequence, Is.EqualTo((int)oldestInput));
                 }
-                Assert.That(((Array)typeof(History<FULL_STATE<CompactStateProbe>>)
-                    .GetField("m_values", Fields).GetValue(history)).Length, Is.EqualTo(window + 2));
+                // Storage covers the window and its anchor without growing past the next row block.
+                Assert.That(probe.predictedHistoryRows, Is.GreaterThanOrEqualTo(window + 1));
+                Assert.That(probe.predictedHistoryRows, Is.LessThanOrEqualTo(RowBlock(window + 2)));
                 int inputSlots = server ? inputWindow + 2 : Math.Max(inputWindow + 10, inputWindow + inputWindow / 2) + 1;
                 Assert.That(((Array)typeof(History<ServerPredictionWindowInput>)
                     .GetField("m_values", Fields).GetValue(inputs)).Length, Is.EqualTo(inputSlots));
                 probe.Rollback((ulong)(window * 2));
                 Assert.That(probe.currentState.a, Is.EqualTo(window * 2));
                 probe.PrewarmPredictionState(world);
-                Assert.That(typeof(PredictedIdentity<CompactStateProbe>).GetField("_stateHistory", Fields)
-                    .GetValue(probe), Is.SameAs(history));
+                Assert.That(probe.predictedHistoryStorage, Is.SameAs(storage));
                 Assert.That(typeof(PredictedIdentity<ServerPredictionWindowInput, CompactStateProbe>)
                     .GetField("_inputHistory", Fields).GetValue(probe), Is.SameAs(inputs));
                 Set(typeof(NetworkIdentity), world, "_isSpawnedServer", false);
@@ -123,19 +122,19 @@ namespace PurrNet.Prediction.Tests.Editor
                 }
                 else f.probe.PrepareInput(false, true, tick, false);
                 f.probe.SaveStateInHistory(tick);
-                Assert.That(f.history.ReadOrPrevious(floor, out var anchor), Is.True);
+                Assert.That(f.probe.ReadOrPreviousPredictedState(floor, out var anchor), Is.True);
                 Assert.That(anchor.state.a, Is.EqualTo(Value(floor)));
                 Assert.That(f.probe.verifiedState.Value.a, Is.EqualTo(Value(verified)));
                 Assert.That(f.Slots, Is.EqualTo(initialSlots));
                 Assert.That(f.InputSlots, Is.EqualTo(initialInputSlots));
                 Assert.That(f.inputs.Read(floor, out var input), Is.True);
                 Assert.That(input.sequence, Is.EqualTo(Value(floor)));
-                Assert.That(f.history.Count, Is.LessThanOrEqualTo(18));
+                Assert.That(f.probe.predictedHistoryCount, Is.LessThanOrEqualTo(18));
             }
             ulong finalFloor = (ulong)(rate * 20 - 16);
             f.probe.Rollback(finalFloor);
             Assert.That(f.probe.currentState.a, Is.EqualTo(Value(finalFloor)));
-            Assert.That(f.history.Capacity, Is.EqualTo(rate * 10), "unacknowledged history keeps its original limit");
+            Assert.That(f.probe.predictedHistoryWindow, Is.EqualTo(rate * 10), "unacknowledged history keeps its original limit");
             int Value(ulong tick) => (int)(sparse ? tick / 8 : tick);
         }
 
@@ -161,24 +160,24 @@ namespace PurrNet.Prediction.Tests.Editor
                 f.probe.PrepareInput(false, true, tick, false);
                 f.probe.SaveStateInHistory(tick);
 
-                Assert.That(f.history.Read(floor, out var anchor), Is.True);
+                Assert.That(f.probe.TryReadPredictedState(floor, out var anchor), Is.True);
                 Assert.That(anchor.state.a, Is.EqualTo((int)floor));
                 Assert.That(f.inputs.Read(floor, out var input), Is.True);
                 Assert.That(input.sequence, Is.EqualTo((int)floor));
                 Assert.That(f.probe.verifiedState.Value.a, Is.EqualTo((int)verified));
-                Assert.That(f.history.Read(tick, out var latest), Is.True);
+                Assert.That(f.probe.TryReadPredictedState(tick, out var latest), Is.True);
                 Assert.That(latest.state.a, Is.EqualTo((int)tick));
                 if (floor > 0)
                 {
-                    Assert.That(f.history.Read(floor - 1, out _), Is.False);
+                    Assert.That(f.probe.TryReadPredictedState(floor - 1, out _), Is.False);
                     Assert.That(f.inputs.Read(floor - 1, out _), Is.False);
                 }
             }
-            Assert.That(f.Slots, Is.GreaterThan(initialSlots));
+            Assert.That(f.Slots, Is.GreaterThanOrEqualTo((int)backlog + 1), "storage holds the whole unverified backlog");
             Assert.That(f.InputSlots, Is.GreaterThan(initialInputSlots));
-            Assert.That(f.Slots, Is.LessThanOrEqualTo(protocolWindow + 2));
+            Assert.That(f.Slots, Is.LessThanOrEqualTo(RowBlock(protocolWindow + 2)));
             Assert.That(f.InputSlots, Is.LessThanOrEqualTo(protocolWindow + 2));
-            Assert.That(f.history.Capacity, Is.EqualTo(rate * 10));
+            Assert.That(f.probe.predictedHistoryWindow, Is.EqualTo(rate * 10));
             Assert.That(f.inputs.Capacity, Is.EqualTo(rate * 5));
             f.probe.Rollback(backlog * 2);
             Assert.That(f.probe.currentState.a, Is.EqualTo((int)(backlog * 2)));
@@ -201,14 +200,23 @@ namespace PurrNet.Prediction.Tests.Editor
                 f.probe.SaveStateInHistory(tick);
                 Assert.That(f.probe.verifiedState.Value.a, Is.EqualTo((int)Math.Min(tick, 10)));
             }
-            Assert.That(f.history.Read(10, out var anchor), Is.True);
+            Assert.That(f.probe.TryReadPredictedState(10, out var anchor), Is.True);
             Assert.That(anchor.state.a, Is.EqualTo(10));
             Assert.That(f.inputs.Read(10, out var inputAnchor), Is.True);
             Assert.That(inputAnchor.sequence, Is.EqualTo(10));
             Assert.That(f.Slots, Is.GreaterThan(initialSlots), "a stalled component grows to retain its unverified states");
-            Assert.That(f.Slots, Is.LessThanOrEqualTo(rate * 10 + 2));
+            Assert.That(f.Slots, Is.LessThanOrEqualTo(RowBlock(rate * 10 + 2)));
             f.probe.Rollback(10);
             Assert.That(f.probe.currentState.a, Is.EqualTo(10));
+        }
+
+        // Dense predicted histories grow in power-of-two row blocks.
+        static int RowBlock(int rows)
+        {
+            int block = 1;
+            while (block < rows)
+                block <<= 1;
+            return block;
         }
 
         sealed class ClientFixture : IDisposable
@@ -219,7 +227,6 @@ namespace PurrNet.Prediction.Tests.Editor
             readonly NetworkManager network;
             readonly PredictionManager world;
             public readonly ServerPredictionWindowProbe probe;
-            public readonly History<FULL_STATE<CompactStateProbe>> history;
             public readonly History<ServerPredictionWindowInput> inputs;
 
             public ClientFixture(int rate)
@@ -233,14 +240,11 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(typeof(PredictionManager), world, "<tickRate>k__BackingField", rate);
                 Set(typeof(PredictedIdentity), probe, "<predictionManager>k__BackingField", world);
                 probe.PrewarmPredictionState(world);
-                history = (History<FULL_STATE<CompactStateProbe>>)typeof(PredictedIdentity<CompactStateProbe>)
-                    .GetField("_stateHistory", Fields).GetValue(probe);
                 inputs = (History<ServerPredictionWindowInput>)typeof(PredictedIdentity<ServerPredictionWindowInput, CompactStateProbe>)
                     .GetField("_inputHistory", Fields).GetValue(probe);
             }
 
-            public int Slots => ((Array)typeof(History<FULL_STATE<CompactStateProbe>>)
-                .GetField("m_values", Fields).GetValue(history)).Length;
+            public int Slots => probe.predictedHistoryRows;
 
             public int InputSlots => ((Array)typeof(History<ServerPredictionWindowInput>)
                 .GetField("m_values", Fields).GetValue(inputs)).Length;
