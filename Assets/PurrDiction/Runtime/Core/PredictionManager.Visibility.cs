@@ -942,7 +942,113 @@ namespace PurrNet.Prediction
             }
         }
 
+        struct SharedStateSection
+        {
+            public ulong baselineTick;
+            public bool fullFrame;
+            public bool eventHandlers;
+            public ulong spawnBaselineRecords;
+            public BitPacker bits;
+        }
+
+        // Pass-through receivers of one baseline get bit-identical sections; only desync heals
+        // add receiver-specific records. Write each section once per tick and copy it.
+        readonly List<SharedStateSection> _sharedStateSections = new ();
+        readonly List<BitPacker> _sharedStateSectionBuffers = new ();
+        ulong _sharedStateSectionTick = ulong.MaxValue;
+
+        bool CanShareStateSection(PlayerID player, PlayerVisibilityTimeline timeline)
+            => hasMultipleStateRecipients && timeline.isPassThrough &&
+               (!_pendingDesyncHeals.TryGetValue(player, out var pending) || pending.Count == 0);
+
+        bool TryCopySharedStateSection(
+            ulong tick,
+            ulong baselineTick,
+            bool fullFrame,
+            bool eventHandlers,
+            BitPacker destination)
+        {
+            if (_sharedStateSectionTick != tick)
+            {
+                _sharedStateSections.Clear();
+                _sharedStateSectionTick = tick;
+                return false;
+            }
+
+            for (var i = 0; i < _sharedStateSections.Count; i++)
+            {
+                var section = _sharedStateSections[i];
+                if (section.baselineTick != baselineTick || section.fullFrame != fullFrame ||
+                    section.eventHandlers != eventHandlers)
+                    continue;
+
+                destination.WriteBitsWithoutConsumingIt(section.bits, section.bits.positionInBits);
+                spawnBaselineRecordsTotal += section.spawnBaselineRecords;
+                return true;
+            }
+
+            return false;
+        }
+
+        void StoreSharedStateSection(
+            ulong baselineTick,
+            bool fullFrame,
+            bool eventHandlers,
+            BitPacker source,
+            int origin,
+            ulong spawnBaselineRecords)
+        {
+            int index = _sharedStateSections.Count;
+            if (index == _sharedStateSectionBuffers.Count)
+                _sharedStateSectionBuffers.Add(BitPackerPool.Get());
+
+            var bits = _sharedStateSectionBuffers[index];
+            bits.ResetPositionAndMode(false);
+            bits.WriteBitDataWithoutConsumingIt(new BitData(source, origin, source.positionInBits - origin));
+            _sharedStateSections.Add(new SharedStateSection
+            {
+                baselineTick = baselineTick,
+                fullFrame = fullFrame,
+                eventHandlers = eventHandlers,
+                spawnBaselineRecords = spawnBaselineRecords,
+                bits = bits
+            });
+        }
+
+        void DisposeSharedStateSections()
+        {
+            for (var i = 0; i < _sharedStateSectionBuffers.Count; i++)
+                _sharedStateSectionBuffers[i].Dispose();
+            _sharedStateSectionBuffers.Clear();
+            _sharedStateSections.Clear();
+            _sharedStateSectionTick = ulong.MaxValue;
+        }
+
         void WriteAddressedStateSection(
+            PlayerID player,
+            PlayerVisibilityTimeline timeline,
+            BitPacker destination,
+            ulong tick,
+            ulong baselineTick,
+            bool fullFrame,
+            bool eventHandlers)
+        {
+            bool share = CanShareStateSection(player, timeline);
+            if (share && TryCopySharedStateSection(tick, baselineTick, fullFrame, eventHandlers, destination))
+                return;
+
+            int sharedOrigin = destination.positionInBits;
+            ulong spawnBaselineRecordsBefore = spawnBaselineRecordsTotal;
+            WriteAddressedStateSectionRecords(player, timeline, destination, tick, baselineTick, fullFrame, eventHandlers);
+
+            if (share)
+            {
+                StoreSharedStateSection(baselineTick, fullFrame, eventHandlers, destination, sharedOrigin,
+                    spawnBaselineRecordsTotal - spawnBaselineRecordsBefore);
+            }
+        }
+
+        void WriteAddressedStateSectionRecords(
             PlayerID player,
             PlayerVisibilityTimeline timeline,
             BitPacker destination,

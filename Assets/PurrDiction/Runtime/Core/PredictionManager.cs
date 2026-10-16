@@ -679,6 +679,7 @@ namespace PurrNet.Prediction
             }
 
             DisposeCachedInputPayload();
+            DisposeSharedStateSections();
             ClearUploadedInputs();
         }
 
@@ -710,6 +711,7 @@ namespace PurrNet.Prediction
             DisposeLifecycleHistory();
             ClearVerifiedInputTranscript();
             DisposeCachedInputPayload();
+            DisposeSharedStateSections();
             ClearUploadedInputs();
             ResetLagCompensation();
             _nextSystemId = 0;
