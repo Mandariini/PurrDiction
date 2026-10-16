@@ -128,6 +128,21 @@ namespace PurrNet.Prediction
             return (byte)source.ReadBits(8);
         }
 
+        // Content hash for spotting identical inputs; equal hashes still need a bit comparison.
+        internal static ulong Hash(in BitData bits)
+        {
+            int length = (int)bits.bitLength.value;
+            int origin = (int)bits.bitOrigin.value;
+            var buffer = bits.packer.buffer;
+            ulong hash = 0x9E3779B97F4A7C15UL ^ (ulong)length;
+            for (int offset = 0; offset < length; offset += 64)
+            {
+                hash = (hash ^ PeekWord(buffer, origin + offset, Math.Min(64, length - offset))) * 0xFF51AFD7ED558CCDUL;
+                hash ^= hash >> 32;
+            }
+            return hash;
+        }
+
         // Up to 64 bits starting at an arbitrary bit, with the bits past the requested count cleared.
         private static unsafe ulong PeekWord(byte[] buffer, int bitPosition, int bits)
         {

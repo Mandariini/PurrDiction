@@ -190,6 +190,7 @@ namespace PurrNet.Prediction.Tests.Editor
                         for (var record = 0; record < 2; record++)
                         {
                             Assert.That(Packer<bool>.Read(frame), Is.False, "changing inputs are never encoded as repeats");
+                            Assert.That(Packer<bool>.Read(frame), Is.False, "distinct inputs never share an earlier entry");
                             deltas[record] = Packer<bool>.Read(frame);
                             if (!deltas[record])
                                 Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");

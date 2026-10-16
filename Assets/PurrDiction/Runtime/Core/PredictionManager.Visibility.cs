@@ -1341,6 +1341,8 @@ namespace PurrNet.Prediction
             }
             WriteTranscriptViewOffsets(frame, in block, allowOffsetRepeat && previousWroteOffsets);
 
+            // Every entry of a pass-through roster is visible, so an entry index is its position.
+            bool allowSame = sameRoster && timeline.isPassThrough;
             if (sameRoster)
             {
                 for (var i = 0; i < visible.Count; i++)
@@ -1349,6 +1351,13 @@ namespace PurrNet.Prediction
                     Packer<bool>.Write(frame, entry.repeatsPrevious);
                     if (entry.repeatsPrevious)
                         continue;
+                    bool same = allowSame && entry.sameAs >= 0;
+                    Packer<bool>.Write(frame, same);
+                    if (same)
+                    {
+                        Packer<PackedUInt>.Write(frame, (uint)(i - entry.sameAs - 1));
+                        continue;
+                    }
                     bool restored = entry.RestoredBy(player);
                     bool delta = !restored && entry.deltaLength > 0;
                     Packer<bool>.Write(frame, delta);
@@ -1361,7 +1370,8 @@ namespace PurrNet.Prediction
             for (var i = 0; i < visible.Count; i++)
             {
                 int index = visible[i];
-                if (sameRoster && (entries[index].repeatsPrevious || entries[index].RestoredBy(player)))
+                if (sameRoster && (entries[index].repeatsPrevious || allowSame && entries[index].sameAs >= 0 ||
+                                   entries[index].RestoredBy(player)))
                     continue;
                 WriteTranscriptEntry(frame, in block, index, sameRoster, player);
             }

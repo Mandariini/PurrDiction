@@ -300,6 +300,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     {
                         uint entryCount = Packer<PackedUInt>.Read(source).value;
                         var repeats = new bool[entryCount];
+                        var sameAs = new int[entryCount];
                         var deltas = new bool[entryCount];
                         bool sameRoster = false;
                         current.Clear();
@@ -320,8 +321,10 @@ namespace PurrNet.Prediction.Tests.Editor
                                 for (uint i = 0; i < entryCount; i++)
                                 {
                                     repeats[i] = Packer<bool>.Read(source);
-                                    deltas[i] = !repeats[i] && Packer<bool>.Read(source);
-                                    if (!repeats[i] && !deltas[i])
+                                    bool same = !repeats[i] && Packer<bool>.Read(source);
+                                    sameAs[i] = same ? (int)(i - Packer<PackedUInt>.Read(source).value - 1) : -1;
+                                    deltas[i] = !repeats[i] && !same && Packer<bool>.Read(source);
+                                    if (!repeats[i] && !same && !deltas[i])
                                         Assert.That(Packer<bool>.Read(source), Is.False, "no receiver-owned input to restore");
                                 }
                             source.SkipBits((8 - source.positionInBits % 8) % 8);
@@ -331,6 +334,13 @@ namespace PurrNet.Prediction.Tests.Editor
                             if (repeats[i])
                             {
                                 current.Add(previous[(int)i]);
+                                continue;
+                            }
+                            if (sameRoster && sameAs[i] >= 0)
+                            {
+                                var copy = BitPackerPool.Get();
+                                copy.WriteBitDataWithoutConsumingIt(new BitData(current[sameAs[i]].payload));
+                                current.Add((previous[(int)i].id, copy));
                                 continue;
                             }
                             var id = sameRoster ? previous[(int)i].id : Packer<PredictedComponentID>.Read(source);

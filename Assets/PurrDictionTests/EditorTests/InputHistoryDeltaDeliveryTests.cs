@@ -206,6 +206,8 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That((uint)Packer<PackedUInt>.Read(frame), Is.Zero, "view offset count");
                 bool repeats = afterFirst && Packer<bool>.Read(frame);
                 Assert.That(repeats, Is.EqualTo(afterFirst && value == values[(int)(tick - 11)]));
+                if (afterFirst && !repeats)
+                    Assert.That(Packer<bool>.Read(frame), Is.False, "a single input shares no earlier entry");
                 bool delta = afterFirst && !repeats && Packer<bool>.Read(frame);
                 if (afterFirst && !repeats)
                     Assert.That(delta, Is.EqualTo((value & 1) == (values[(int)(tick - 11)] & 1)),

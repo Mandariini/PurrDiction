@@ -78,6 +78,45 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void IdenticalInputsOfOneTickShareTheEarlierEntryInsteadOfResendingIt()
+        {
+            int SharedFrameBits(bool shareThird, out InputTranscriptFixture receiver,
+                out History<TrackedInput>[] received)
+            {
+                using var sender = new InputTranscriptFixture("sender");
+                receiver = new InputTranscriptFixture("receiver");
+                var sent = new[] { sender.AddInput(false, 690), sender.AddInput(false, 691), sender.AddInput(true, 692) };
+                received = new[] { receiver.AddInput(false, 690), receiver.AddInput(false, 691), receiver.AddInput(true, 692) };
+                for (ulong tick = 11; tick <= 14; tick++)
+                {
+                    sent[0].Write(tick, new TrackedInput((int)tick));
+                    sent[1].Write(tick, new TrackedInput(1000 + (int)tick));
+                    sent[2].Write(tick, new TrackedInput(shareThird ? (int)tick : 2000 + (int)tick));
+                    sender.Capture(tick);
+                }
+
+                using var frame = sender.Write(14, 10);
+                receiver.Read(frame, 14, 10);
+                return frame.positionInBits;
+            }
+
+            int distinctBits = SharedFrameBits(false, out var distinctReceiver, out _);
+            distinctReceiver.Dispose();
+            int sharedBits = SharedFrameBits(true, out var sharedReceiver, out var shared);
+            using (sharedReceiver)
+            {
+                for (ulong tick = 11; tick <= 14; tick++)
+                {
+                    AssertInput(shared[0], tick, (int)tick);
+                    AssertInput(shared[1], tick, 1000 + (int)tick);
+                    AssertInput(shared[2], tick, (int)tick);
+                }
+            }
+            Assert.That(sharedBits, Is.LessThan(distinctBits),
+                "an input equal to an earlier entry of its tick refers to it instead of carrying its own payload");
+        }
+
+        [Test]
         public void RepeatedDecodeReplacesEveryTickWithoutDuplicatingEntries()
         {
             using var sender = new InputTranscriptFixture("sender");
@@ -607,6 +646,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 if (tick > 11)
                 {
                     Assert.That(Packer<bool>.Read(frame), Is.False, "changing values never repeat");
+                    Assert.That(Packer<bool>.Read(frame), Is.False, "a single input shares no earlier entry");
                     Assert.That(Packer<bool>.Read(frame), Is.False, "uploaded inputs are restored, never patched");
                     Assert.That(Packer<bool>.Read(frame), Is.True, "restore flag");
                 }
@@ -760,6 +800,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(Packer<bool>.Read(frame), Is.True, "same roster");
             Assert.That(ReadPackedUInt(frame), Is.Zero);
             Assert.That(Packer<bool>.Read(frame), Is.False, "the substitute differs from tick 11");
+            Assert.That(Packer<bool>.Read(frame), Is.False, "a single input shares no earlier entry");
             Assert.That(Packer<bool>.Read(frame), Is.True, "the substitute is patched against tick 11");
             frame.SkipBits((8 - frame.positionInBits % 8) % 8);
             AssertRecord(frame, 682, 0, true, true, 11);
@@ -767,6 +808,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(Packer<bool>.Read(frame), Is.True, "same roster");
             Assert.That(ReadPackedUInt(frame), Is.Zero);
             Assert.That(Packer<bool>.Read(frame), Is.False);
+            Assert.That(Packer<bool>.Read(frame), Is.False, "a single input shares no earlier entry");
             Assert.That(Packer<bool>.Read(frame), Is.False);
             Assert.That(Packer<bool>.Read(frame), Is.True, "tick 13 was uploaded again");
             frame.SkipBits((8 - frame.positionInBits % 8) % 8);
@@ -901,6 +943,8 @@ namespace PurrNet.Prediction.Tests.Editor
                 for (int i = 0; i < count; i++)
                 {
                     repeats[i] = Packer<bool>.Read(frame);
+                    if (!repeats[i])
+                        Assert.That(Packer<bool>.Read(frame), Is.False, "distinct inputs never share an earlier entry");
                     deltas[i] = !repeats[i] && Packer<bool>.Read(frame);
                     if (!repeats[i] && !deltas[i])
                         Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");

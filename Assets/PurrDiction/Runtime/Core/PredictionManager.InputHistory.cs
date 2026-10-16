@@ -18,6 +18,8 @@ namespace PurrNet.Prediction
             public readonly bool repeatsPrevious;
             // The owner uploaded exactly these bits for this tick, so it can restore them itself.
             public readonly bool asUploaded;
+            // Index of the nearest earlier entry of this tick with identical bits, or -1.
+            public readonly int sameAs;
             private readonly byte _ownerFlags;
             private readonly ulong _ownerId;
 
@@ -33,7 +35,8 @@ namespace PurrNet.Prediction
                 int deltaOrigin,
                 int deltaLength,
                 PlayerID? owner,
-                bool asUploaded)
+                bool asUploaded,
+                int sameAs = -1)
             {
                 this.id = id;
                 this.rootId = rootId;
@@ -43,6 +46,7 @@ namespace PurrNet.Prediction
                 this.deltaOrigin = deltaOrigin;
                 this.deltaLength = deltaLength;
                 this.asUploaded = asUploaded;
+                this.sameAs = sameAs;
                 _ownerId = owner.HasValue ? owner.Value.id.value : 0;
                 _ownerFlags = owner.HasValue ? (byte)(1 | (owner.Value.isBot ? 2 : 0)) : (byte)0;
             }
@@ -65,6 +69,7 @@ namespace PurrNet.Prediction
         private CachedInputBlock[] _inputBlockCache;
         private CachedInputBlock _inputBlockScratch;
         private readonly Dictionary<PredictedComponentID, int> _previousInputEntryIndex = new(PredictionIdComparers.Components);
+        private readonly Dictionary<ulong, int> _inputContentIndex = new(PredictionIdComparers.Ticks);
         private ulong _latestCapturedInputTick;
         private bool _hasCapturedInputHistory;
 
@@ -104,6 +109,10 @@ namespace PurrNet.Prediction
 
             _previousInputEntryIndex.Clear();
             bool indexedPrevious = false;
+            _inputContentIndex.Clear();
+            // Pass-through receivers decode identical inputs from an earlier entry; filtered
+            // receivers may not see that entry, so they still need each entry's own delta.
+            bool deltaEveryEntry = HasVisibilityFilteredPlayer();
 
             for (var i = 0; i < _systemsCount; i++)
             {
@@ -121,6 +130,17 @@ namespace PurrNet.Prediction
                 if (!asUploaded)
                     system.WriteFirstInput(tick, scratch.packer);
                 int length = scratch.packer.positionInBits - origin;
+
+                int sameAs = -1;
+                var contentBits = new BitData(scratch.packer, origin, length);
+                ulong contentHash = InputHistoryDelta.Hash(in contentBits);
+                if (_inputContentIndex.TryGetValue(contentHash, out int candidate))
+                {
+                    var candidateEntry = scratch.entries[candidate];
+                    if (new BitData(scratch.packer, candidateEntry.bitOrigin, candidateEntry.bitLength).Equals(contentBits))
+                        sameAs = candidate;
+                }
+                _inputContentIndex[contentHash] = scratch.entries.Count;
 
                 bool repeats = false;
                 int deltaOrigin = scratch.deltas.positionInBits;
@@ -153,7 +173,8 @@ namespace PurrNet.Prediction
                         var currentBits = new BitData(scratch.packer, origin, length);
                         var previousBits = new BitData(previous.packer, previousEntry.bitOrigin, previousEntry.bitLength);
                         repeats = currentBits.Equals(previousBits);
-                        if (!repeats && InputHistoryDelta.TryWrite(scratch.deltas, in previousBits, in currentBits))
+                        if (!repeats && (sameAs < 0 || deltaEveryEntry) &&
+                            InputHistoryDelta.TryWrite(scratch.deltas, in previousBits, in currentBits))
                             deltaLength = scratch.deltas.positionInBits - deltaOrigin;
                     }
                 }
@@ -161,7 +182,7 @@ namespace PurrNet.Prediction
                 asUploaded = asUploaded || system.TryGetUploadedInputBits(tick, out var uploaded) &&
                              new BitData(scratch.packer, origin, length).Equals(uploaded);
                 scratch.entries.Add(new CachedInputEntry(id, rootId, origin, length, repeats, deltaOrigin, deltaLength,
-                    system.owner, asUploaded));
+                    system.owner, asUploaded, sameAs));
             }
 
             bool sameRoster = hasPrevious && previous.entries.Count == scratch.entries.Count;

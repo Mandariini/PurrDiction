@@ -19,6 +19,7 @@ namespace PurrNet.Prediction
         private readonly List<bool> _verifiedInputRepeatScratch = new();
         private readonly List<bool> _verifiedInputDeltaScratch = new();
         private readonly List<bool> _verifiedInputRestoredScratch = new();
+        private readonly List<int> _verifiedInputSameScratch = new();
         private readonly List<VerifiedInputTick> _verifiedViewOffsetTicks = new();
         private readonly List<PlayerViewOffset> _verifiedViewOffsets = new();
         private BitPacker _verifiedInputPayload;
@@ -35,6 +36,7 @@ namespace PurrNet.Prediction
             _verifiedInputRepeatScratch.Clear();
             _verifiedInputDeltaScratch.Clear();
             _verifiedInputRestoredScratch.Clear();
+            _verifiedInputSameScratch.Clear();
             _verifiedViewOffsetTicks.Clear();
             _verifiedViewOffsets.Clear();
         }
@@ -264,6 +266,7 @@ namespace PurrNet.Prediction
                 _verifiedInputRepeatScratch.Clear();
                 _verifiedInputDeltaScratch.Clear();
                 _verifiedInputRestoredScratch.Clear();
+                _verifiedInputSameScratch.Clear();
                 if (sameRoster)
                 {
                     if ((uint)previousBatch.count != entries || entries > (uint)(frameEndBit - frame.positionInBits))
@@ -272,15 +275,27 @@ namespace PurrNet.Prediction
                     for (uint e = 0; e < entries; e++)
                     {
                         bool repeats = ReadTranscriptFlag(frame, frameEndBit, tick);
-                        bool delta = !repeats && ReadTranscriptFlag(frame, frameEndBit, tick);
-                        bool restored = !repeats && !delta && ReadTranscriptFlag(frame, frameEndBit, tick);
+                        bool same = !repeats && ReadTranscriptFlag(frame, frameEndBit, tick);
+                        int sameAs = -1;
+                        if (same)
+                        {
+                            uint distance = Packer<PackedUInt>.Read(frame);
+                            if (frame.positionInBits > frameEndBit || distance >= e)
+                                throw new MissingPredictionBaselineException(
+                                    $"Authoritative input at tick {tick} repeats an entry outside its tick.");
+                            sameAs = (int)(e - distance - 1);
+                        }
+                        bool delta = !repeats && !same && ReadTranscriptFlag(frame, frameEndBit, tick);
+                        bool restored = !repeats && !same && !delta && ReadTranscriptFlag(frame, frameEndBit, tick);
                         _verifiedInputRepeatScratch.Add(repeats);
+                        _verifiedInputSameScratch.Add(sameAs);
                         _verifiedInputDeltaScratch.Add(delta);
                         _verifiedInputRestoredScratch.Add(restored);
                     }
                 }
                 SkipTranscriptPadding(frame, frameEndBit, tick);
 
+                int tickFirstEntry = _verifiedInputEntries.Count;
                 for (int e = 0; e < (int)entries; e++)
                 {
                     if (sameRoster && _verifiedInputRepeatScratch[e])
@@ -289,6 +304,13 @@ namespace PurrNet.Prediction
                         continue;
                     }
                     var previous = sameRoster ? _verifiedInputEntries[previousBatch.firstEntry + e] : default;
+                    if (sameRoster && _verifiedInputSameScratch[e] >= 0)
+                    {
+                        // Identical bits already staged for an earlier entry of this tick.
+                        var earlier = _verifiedInputEntries[tickFirstEntry + _verifiedInputSameScratch[e]];
+                        StageVerifiedInputSpan(tick, previous.id, earlier.bitOrigin, earlier.bitLength);
+                        continue;
+                    }
                     var id = sameRoster ? previous.id : Packer<PredictedComponentID>.Read(frame);
                     if (frame.positionInBits > frameEndBit)
                         throw new MissingPredictionBaselineException($"Truncated authoritative input for {id} at tick {tick}.");
