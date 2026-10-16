@@ -544,6 +544,7 @@ namespace PurrNet.Prediction
 
         protected override void OnEarlySpawn()
         {
+            _stableLocalPlayerBlocked = false;
             RegisterScene();
 
             tickRate = networkManager.tickModule.tickRate;
@@ -658,6 +659,8 @@ namespace PurrNet.Prediction
 
         protected override void OnDespawned()
         {
+            ForgetStableLocalPlayer();
+
             if (_tickManager != null)
             {
                 _tickManager.onPreTick -= OnPreTick;
@@ -671,6 +674,7 @@ namespace PurrNet.Prediction
 
         protected override void OnDestroy()
         {
+            ForgetStableLocalPlayer();
             base.OnDestroy();
 
             foreach (var packer in _clientFrames)
@@ -1104,6 +1108,29 @@ namespace PurrNet.Prediction
         readonly List<PlayerPacker> _clientFrames = new (16);
 
         public bool cachedIsServer { get; private set; }
+
+        // Once a spawned manager resolves its local player, that player stays fixed until the
+        // manager despawns, so ownership checks compare against this copy instead of going
+        // through the network identity on every call.
+        internal bool hasStableLocalPlayer;
+        internal ulong stableLocalPlayerId;
+        private bool _stableLocalPlayerBlocked;
+
+        internal void KeepStableLocalPlayer(PlayerID player)
+        {
+            if (_stableLocalPlayerBlocked)
+                return;
+            stableLocalPlayerId = player.id.value;
+            hasStableLocalPlayer = true;
+        }
+
+        // Despawn and destroy change what IsOwner answers, and a check made while they run must
+        // not cache the player again until the next spawn.
+        private void ForgetStableLocalPlayer()
+        {
+            hasStableLocalPlayer = false;
+            _stableLocalPlayerBlocked = true;
+        }
 
         private void OnPreTick()
         {

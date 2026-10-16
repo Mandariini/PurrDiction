@@ -13,6 +13,8 @@ namespace PurrNet.Prediction
         public PredictionManager predictionManager { get; protected set; }
 
         PlayerID? _owner;
+        // _owner's id, so ownership checks compare one field instead of unwrapping the player.
+        private ulong _ownerIdValue;
 
         /// <summary>
         /// The unique identifier for this object.

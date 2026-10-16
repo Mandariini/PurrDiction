@@ -39,7 +39,7 @@ namespace PurrNet.Prediction
                 if (predictionManager)
                     SetOwner(value);
                 else
-                    _owner = value;
+                    AssignOwner(value);
             }
         }
 
@@ -532,7 +532,7 @@ namespace PurrNet.Prediction
             _hasLastEffectivePredictionPolicy = false;
             _lastEffectivePredictionPolicy = default;
             lastVerifiedTick = null;
-            _owner = null;
+            AssignOwner(null);
             id = default;
             ResetModulesForPool();
             OnRemovedFromPool();
@@ -563,7 +563,7 @@ namespace PurrNet.Prediction
         internal void SetOwner(PlayerID? player, bool syncPolicySideEffects = true)
         {
             var previousOwner = _owner;
-            _owner = player;
+            AssignOwner(player);
             OnOwnerAssigned(player);
 
             if (syncPolicySideEffects)
@@ -584,6 +584,12 @@ namespace PurrNet.Prediction
         }
 
         protected virtual void OnOwnerAssigned(PlayerID? player) { }
+
+        private void AssignOwner(PlayerID? player)
+        {
+            _owner = player;
+            _ownerIdValue = player.HasValue ? player.GetValueOrDefault().id.value : 0;
+        }
 
         private History<PredictedIdentityState> _metadataVerified;
 
@@ -791,10 +797,19 @@ namespace PurrNet.Prediction
         public bool IsOwner()
         {
             var manager = predictionManager;
+            if (manager is not null && manager.hasStableLocalPlayer)
+                return _owner.HasValue && _ownerIdValue == manager.stableLocalPlayerId;
+            return IsOwnerUncached(manager);
+        }
+
+        private bool IsOwnerUncached(PredictionManager manager)
+        {
             if (!manager || !manager.isSpawned)
                 return false;
             // Lifted equality on two nullable ids, without copying through the nullable wrappers.
             var local = manager.localPlayer;
+            if (local.HasValue)
+                manager.KeepStableLocalPlayer(local.GetValueOrDefault());
             if (_owner.HasValue != local.HasValue)
                 return false;
             return !_owner.HasValue || _owner.GetValueOrDefault().id.value == local.GetValueOrDefault().id.value;
