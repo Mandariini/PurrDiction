@@ -602,6 +602,11 @@ namespace PurrNet.Prediction
                 newState.prediction = IdentityMetadataDelta.Read(packer, baseline.prediction);
                 ReadDeltaState(packer, in baseline.state, ref newState.state);
             }
+            else if (TryApplyUnchangedBaseline(tick, serverTick, baselineTick, ref baseline))
+            {
+                TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
+                return;
+            }
             else
             {
                 newState = baseline.DeepCopy();
@@ -609,6 +614,22 @@ namespace PurrNet.Prediction
 
             ApplyVerifiedState(tick, serverTick, ref newState, changed ? null : baselineTick);
             TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
+        }
+
+        // An unchanged record whose baseline is still the newest verified entry stays that entry,
+        // so it needs no copy when the replay history already holds the same state at its tick.
+        private bool TryApplyUnchangedBaseline(ulong tick, ulong serverTick, ulong baselineTick,
+            ref FULL_STATE<STATE> baseline)
+        {
+            if (isEventHandler || UsesSoftCorrectionTimeline() || baselineTick > serverTick ||
+                _verifiedHistory.Count == 0 || _verifiedHistory.MostRecentTick > baselineTick ||
+                !LatestHistoryMatches(tick, ref baseline))
+            {
+                return false;
+            }
+
+            StoreReceivedVerified(serverTick, ref baseline, baselineTick);
+            return true;
         }
 
         private void ApplyVerifiedState(ulong tick, ulong serverTick, ref FULL_STATE<STATE> newState,
@@ -663,6 +684,9 @@ namespace PurrNet.Prediction
                 throw new InvalidOperationException(
                     $"Missing verified state baseline at tick {baselineTick}.");
             }
+
+            if (TryApplyUnchangedBaseline(tick, serverTick, baselineTick, ref baseline))
+                return;
 
             var newState = baseline.DeepCopy();
             ApplyVerifiedState(tick, serverTick, ref newState, baselineTick);
