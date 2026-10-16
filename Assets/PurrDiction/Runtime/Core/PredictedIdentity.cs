@@ -935,11 +935,23 @@ namespace PurrNet.Prediction
             _uploadedInputPending = true;
         }
 
-        internal void ConsumeUploadedInputBits(ulong tick, bool used)
+        internal void ConsumeUploadedInputBits(ulong tick, bool used, bool verbatim = false)
         {
             _hasUploadedInputBits = used && _uploadedInputPending;
+            _uploadedInputVerbatim = verbatim && _hasUploadedInputBits;
             _uploadedInputTick = tick;
             _uploadedInputPending = false;
+        }
+
+        // The tick's input is the decoded upload itself, so the uploaded bits decode to it on every peer.
+        private bool _uploadedInputVerbatim;
+
+        internal bool TryWriteVerbatimUploadedInput(ulong tick, BitPacker packer)
+        {
+            if (!_uploadedInputVerbatim || _uploadedInputTick != tick)
+                return false;
+            packer.WriteBitDataWithoutConsumingIt(new BitData(_uploadedInputBits, 0, _uploadedInputBits.positionInBits));
+            return true;
         }
 
         internal bool TryGetUploadedInputBits(ulong tick, out BitData bits)
@@ -956,6 +968,7 @@ namespace PurrNet.Prediction
             _uploadedInputBits = null;
             _uploadedInputPending = false;
             _hasUploadedInputBits = false;
+            _uploadedInputVerbatim = false;
         }
 
         public GameObject GetRoot()

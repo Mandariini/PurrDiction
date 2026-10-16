@@ -84,6 +84,25 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void UnsanitizedUploadIsCapturedFromItsUploadedBitsWithoutReserializing()
+        {
+            using var fixture = new Fixture();
+            var identity = fixture.Add(820);
+            using var upload = BitPackerPool.Get();
+            Packer<bool>.Write(upload, true);
+            // The registered writer throws for this value, so capture must copy the received bits.
+            Packer<int>.Write(upload, int.MinValue);
+            upload.ResetPositionAndMode(true);
+            identity.QueueInput(upload, new PlayerID(5, false));
+            identity.PrepareInput(true, false, 10, false);
+            fixture.Capture(10);
+
+            var entries = Get<IList>(fixture.Block(10), "entries");
+            Assert.That(Get<bool>(entries[0], "asUploaded"), Is.True, "the owner restores its own upload");
+            fixture.AssertInput(10, 820, int.MinValue);
+        }
+
+        [Test]
         public void IdentityUploadedBufferGrowsAndIsReusedForLargerInputs()
         {
             using var fixture = new Fixture();

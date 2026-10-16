@@ -117,7 +117,9 @@ namespace PurrNet.Prediction
                 var id = system.id;
                 var rootId = system.rootObjectId;
                 int origin = scratch.packer.positionInBits;
-                system.WriteFirstInput(tick, scratch.packer);
+                bool asUploaded = system.TryWriteVerbatimUploadedInput(tick, scratch.packer);
+                if (!asUploaded)
+                    system.WriteFirstInput(tick, scratch.packer);
                 int length = scratch.packer.positionInBits - origin;
 
                 bool repeats = false;
@@ -156,8 +158,8 @@ namespace PurrNet.Prediction
                     }
                 }
 
-                bool asUploaded = system.TryGetUploadedInputBits(tick, out var uploaded) &&
-                                  new BitData(scratch.packer, origin, length).Equals(uploaded);
+                asUploaded = asUploaded || system.TryGetUploadedInputBits(tick, out var uploaded) &&
+                             new BitData(scratch.packer, origin, length).Equals(uploaded);
                 scratch.entries.Add(new CachedInputEntry(id, rootId, origin, length, repeats, deltaOrigin, deltaLength,
                     system.owner, asUploaded));
             }

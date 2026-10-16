@@ -1,3 +1,4 @@
+using System.Reflection;
 using PurrNet.Logging;
 using PurrNet.Modules;
 using PurrNet.Packing;
@@ -181,7 +182,9 @@ namespace PurrNet.Prediction
             }
             else if (isServer)
             {
-                ConsumeUploadedInputBits(tick, _queuedInput != null);
+                // Without a sanitizer the queued input is the decoded upload, exactly as received.
+                ConsumeUploadedInputBits(tick, _queuedInput != null,
+                    _queuedInput != null && _queuedInputUploaded && !sanitizesInput);
                 if (_queuedInput == null)
                 {
                     if (!extrapolate)
@@ -276,6 +279,33 @@ namespace PurrNet.Prediction
         }
 
         private INPUT? _queuedInput;
+        private bool _queuedInputUploaded;
+
+        // Whether this type replaces the empty SanitizeInput, resolved once per concrete type.
+        private static readonly System.Collections.Generic.Dictionary<System.Type, bool> s_sanitizers = new ();
+        private int _sanitizerState;
+
+        private bool sanitizesInput
+        {
+            get
+            {
+                if (_sanitizerState == 0)
+                    _sanitizerState = ResolveSanitizer(GetType()) ? 1 : -1;
+                return _sanitizerState > 0;
+            }
+        }
+
+        private static bool ResolveSanitizer(System.Type type)
+        {
+            if (s_sanitizers.TryGetValue(type, out bool sanitizes))
+                return sanitizes;
+            var method = type.GetMethod(nameof(SanitizeInput),
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null,
+                new[] { typeof(INPUT).MakeByRefType() }, null);
+            sanitizes = method == null || method.DeclaringType != typeof(PredictedIdentity<INPUT, STATE>);
+            s_sanitizers[type] = sanitizes;
+            return sanitizes;
+        }
 
         /// <summary>
         /// Sanitize the input before using it.
@@ -286,8 +316,10 @@ namespace PurrNet.Prediction
         internal override void QueueInput(BitPacker packer, PlayerID sender)
         {
             int pos = packer.positionInBits;
+            _queuedInputUploaded = false;
             if (Packer<bool>.Read(packer))
             {
+                _queuedInputUploaded = true;
                 INPUT input = default;
                 Packer<INPUT>.Read(packer, ref input);
 
