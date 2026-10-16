@@ -3182,7 +3182,7 @@ namespace PurrNet.Prediction
             public ulong lastConsumedTick;
             public double pendingInputSlackMs;
             public bool hasPendingInputSlack;
-            public readonly Dictionary<ulong, InputQueueValue> byTick = new ();
+            public readonly Dictionary<ulong, InputQueueValue> byTick = new (PredictionIdComparers.Ticks);
             public int Count => byTick.Count;
 
             // Expansion of the newest accepted upload tick. Accepted inputs never change, so a
@@ -3205,7 +3205,7 @@ namespace PurrNet.Prediction
             }
         }
 
-        readonly Dictionary<PlayerID, InputQueue> _clientTicks = new ();
+        readonly Dictionary<PlayerID, InputQueue> _clientTicks = new (PredictionIdComparers.Players);
 
         [ServerRpc(requireOwnership: false, channel: Channel.Unreliable, mtuExceeded: MTUBehaviour.Fragment, immediate: true)]
         private void SendInputToServerFragmented(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)

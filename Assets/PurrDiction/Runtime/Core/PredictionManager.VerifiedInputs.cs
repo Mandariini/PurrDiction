@@ -123,7 +123,7 @@ namespace PurrNet.Prediction
             public List<InputHistorySpan> spans;
         }
 
-        private readonly Dictionary<ulong, UploadedInputTick> _uploadedInputs = new();
+        private readonly Dictionary<ulong, UploadedInputTick> _uploadedInputs = new(PredictionIdComparers.Ticks);
         private readonly List<ulong> _uploadedInputPruneScratch = new();
         private BitPacker _spareUploadedInputBits;
 
