@@ -759,6 +759,7 @@ namespace PurrNet.Prediction
             }
 
             _instanceMap.Clear();
+            _instanceMapVersion++;
             _queue.Clear();
             _systems.Clear();
             _replayFrozenSystems.Clear();
@@ -989,6 +990,7 @@ namespace PurrNet.Prediction
 
             var pid = new PredictedComponentID(objectId, componentId);
             _instanceMap[pid] = system;
+            _instanceMapVersion++;
             system.SetSoftCorrectionReplaySimulation(false);
             system.SetSkipReplaySpawnInitialization(false);
             system.SetPreserveStateOnSetup(preserveState);
@@ -1043,6 +1045,7 @@ namespace PurrNet.Prediction
                 ReferenceEquals(mapped, predictedIdentity))
             {
                 _instanceMap.Remove(predictedIdentity.id);
+                _instanceMapVersion++;
                 _recordDecodeQuarantine.Remove(predictedIdentity.id);
                 _recordFailureLogAt.Remove(predictedIdentity.id);
                 RetireVerifiedStores(predictedIdentity.id);
@@ -1385,8 +1388,8 @@ namespace PurrNet.Prediction
                 if (queue.byTick.Remove(localTick, out var entry))
                 {
                     RecordViewOffset(player, localTick, entry.viewOffset);
-                    HandleIncomingInput(entry.inputPacket, entry.count, player);
-                    entry.inputPacket.Dispose();
+                    HandleIncomingInput(entry, player, queue);
+                    entry.Dispose();
                     queue.lastConsumedTick = localTick;
                 }
 
@@ -1410,7 +1413,7 @@ namespace PurrNet.Prediction
             for (var i = 0; i < _staleInputScratch.Count; i++)
             {
                 if (queue.byTick.Remove(_staleInputScratch[i], out var stale))
-                    stale.inputPacket.Dispose();
+                    stale.Dispose();
             }
         }
 
@@ -3388,6 +3391,16 @@ namespace PurrNet.Prediction
             public BitPacker inputPacket;
             public ulong clientTick;
             public uint viewOffset;
+            // Where each input's bits sit in inputPacket; identical inputs share one span's bits.
+            internal List<InputHistorySpan> spans;
+
+            internal void Dispose()
+            {
+                inputPacket?.Dispose();
+                if (spans != null)
+                    ListPool<InputHistorySpan>.Destroy(spans);
+                spans = null;
+            }
         }
 
         public class InputQueue
@@ -3401,6 +3414,11 @@ namespace PurrNet.Prediction
             public readonly Dictionary<ulong, InputQueueValue> byTick = new (PredictionIdComparers.Ticks);
             public int Count => byTick.Count;
 
+            // The identities of this sender's last applied roster, valid while the instance map
+            // is unchanged, so a repeated roster resolves without a lookup per input.
+            internal readonly List<PredictedIdentity> roster = new ();
+            internal uint rosterVersion;
+
             // Expansion of the newest accepted upload tick. Accepted inputs never change, so a
             // later upload's repeats can resolve against it without re-expanding older blocks.
             internal BitPacker expandedTail;
@@ -3411,8 +3429,9 @@ namespace PurrNet.Prediction
             public void Clear()
             {
                 foreach (var entry in byTick.Values)
-                    entry.inputPacket.Dispose();
+                    entry.Dispose();
                 byTick.Clear();
+                roster.Clear();
                 rawHighestReceivedTick = 0;
                 pendingInputSlackMs = 0;
                 hasPendingInputSlack = false;
@@ -3490,7 +3509,6 @@ namespace PurrNet.Prediction
 
                 using var expandedA = BitPackerPool.Get();
                 using var expandedB = BitPackerPool.Get();
-                using var sameScratch = BitPackerPool.Get();
                 var prevExpanded = expandedA;
                 var curExpanded = expandedB;
                 var prevSpans = _recvPrevSpans;
@@ -3533,7 +3551,7 @@ namespace PurrNet.Prediction
 
                     bool keptRoster = i > 0 && count.value > 0 && Packer<bool>.Read(payload);
                     if (keptRoster && !ExpandUploadPatches(payload, blockStart + (int)blockBits.value, count.value,
-                            prevExpanded, prevSpans, curExpanded, curSpans, sameScratch))
+                            prevExpanded, prevSpans, curExpanded, curSpans))
                         return;
 
                     for (uint e = 0; !keptRoster && e < count.value; e++)
@@ -3541,8 +3559,6 @@ namespace PurrNet.Prediction
                         PredictedComponentID pid = default;
                         Packer<PredictedComponentID>.Read(payload, ref pid);
                         bool repeat = Packer<bool>.Read(payload);
-
-                        Packer<PredictedComponentID>.Write(curExpanded, pid);
 
                         int payloadLength;
                         int origin = -1;
@@ -3570,7 +3586,7 @@ namespace PurrNet.Prediction
                         }
                         else if (Packer<bool>.Read(payload))
                         {
-                            if (!TryCopySameUploadSpan(payload, (int)e, pid, curExpanded, curSpans, sameScratch))
+                            if (!TryShareSameUploadSpan(payload, (int)e, pid, curSpans))
                                 return;
                         }
                         else
@@ -3609,12 +3625,15 @@ namespace PurrNet.Prediction
                         if (tick > ticks.highestReceivedTick)
                             ticks.highestReceivedTick = tick;
 
+                        var spans = ListPool<InputHistorySpan>.Instantiate();
+                        spans.AddRange(curSpans);
                         ticks.byTick[tick] = new InputQueueValue
                         {
                             count = count,
                             inputPacket = slice,
                             clientTick = tick,
-                            viewOffset = viewOffset
+                            viewOffset = viewOffset,
+                            spans = spans
                         };
                     }
 
@@ -3636,27 +3655,22 @@ namespace PurrNet.Prediction
             }
         }
 
-        // Copies the bits of an earlier input of the same tick, after the id already expanded for it.
-        // A packer cannot copy from itself, so the bits pass through the scratch packer.
-        private static bool TryCopySameUploadSpan(BitPacker payload, int entry, PredictedComponentID id,
-            BitPacker curExpanded, List<InputHistorySpan> curSpans, BitPacker scratch)
+        // An input identical to an earlier one of the same tick reads that input's bits.
+        private static bool TryShareSameUploadSpan(BitPacker payload, int entry, PredictedComponentID id,
+            List<InputHistorySpan> curSpans)
         {
             uint distance = Packer<PackedUInt>.Read(payload);
             if (distance >= (uint)entry || entry - (int)distance - 1 >= curSpans.Count)
                 return false;
             var earlier = curSpans[entry - (int)distance - 1];
-            scratch.ResetPositionAndMode(false);
-            scratch.WriteBitDataWithoutConsumingIt(new BitData(curExpanded, earlier.bitOrigin, earlier.bitLength));
-            int origin = curExpanded.positionInBits;
-            curExpanded.WriteBitsWithoutConsumingIt(scratch, earlier.bitLength);
-            curSpans.Add(new InputHistorySpan { id = id, bitOrigin = origin, bitLength = earlier.bitLength });
+            curSpans.Add(new InputHistorySpan { id = id, bitOrigin = earlier.bitOrigin, bitLength = earlier.bitLength });
             return true;
         }
 
         // A tick that keeps the previous tick's roster repeats, patches or resends each input in order.
         private static bool ExpandUploadPatches(BitPacker payload, int blockEnd, uint count,
             BitPacker prevExpanded, List<InputHistorySpan> prevSpans, BitPacker curExpanded,
-            List<InputHistorySpan> curSpans, BitPacker sameScratch)
+            List<InputHistorySpan> curSpans)
         {
             if (count != (uint)prevSpans.Count)
                 return false;
@@ -3667,14 +3681,13 @@ namespace PurrNet.Prediction
                 {
                     var prevSpan = prevSpans[e];
                     var before = new BitData(prevExpanded, prevSpan.bitOrigin, prevSpan.bitLength);
-                    Packer<PredictedComponentID>.Write(curExpanded, prevSpan.id);
                     int origin = curExpanded.positionInBits;
                     int length = prevSpan.bitLength;
                     if (Packer<bool>.Read(payload))
                         curExpanded.WriteBitDataWithoutConsumingIt(before);
                     else if (Packer<bool>.Read(payload))
                     {
-                        if (!TryCopySameUploadSpan(payload, e, prevSpan.id, curExpanded, curSpans, sameScratch))
+                        if (!TryShareSameUploadSpan(payload, e, prevSpan.id, curSpans))
                             return false;
                         continue;
                     }
@@ -3698,19 +3711,50 @@ namespace PurrNet.Prediction
             return true;
         }
 
-        private void HandleIncomingInput(BitPacker inputPacket, PackedUInt count, PlayerID sender)
+        private uint _instanceMapVersion;
+
+        private void HandleIncomingInput(in InputQueueValue entry, PlayerID sender, InputQueue queue)
         {
+            var spans = entry.spans;
+            if (spans == null)
+                return;
+
+            var inputPacket = entry.inputPacket;
+            var roster = queue.roster;
+            if (queue.rosterVersion != _instanceMapVersion)
+            {
+                roster.Clear();
+                queue.rosterVersion = _instanceMapVersion;
+            }
+
             try
             {
                 bool senderIsServer = sender == default;
+                int count = spans.Count;
 
                 for (var i = 0; i < count; i++)
                 {
-                    PredictedComponentID pid = default;
-                    Packer<PredictedComponentID>.Read(inputPacket, ref pid);
-
-                    if (_instanceMap.TryGetValue(pid, out var system) && system.IsOwner(sender, senderIsServer))
+                    var span = spans[i];
+                    var pid = span.id;
+                    PredictedIdentity system;
+                    bool known;
+                    if (i < roster.Count && roster[i] is { } cached && cached.id.Equals(pid))
                     {
+                        system = cached;
+                        known = true;
+                    }
+                    else
+                    {
+                        known = _instanceMap.TryGetValue(pid, out system);
+                        if (i < roster.Count)
+                            roster[i] = system;
+                        else if (i == roster.Count)
+                            roster.Add(system);
+                    }
+
+                    if (known && system.IsOwner(sender, senderIsServer))
+                    {
+                        inputPacket.SetBitPosition(span.bitOrigin);
                         system.QueueInput(inputPacket, sender);
                     }
                     else

@@ -1000,10 +1000,11 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             var packet = entry.inputPacket;
             var result = new List<DecodedInputEntry>();
-            for (uint i = 0; i < entry.count.value; i++)
+            Assert.That(entry.spans.Count, Is.EqualTo((int)entry.count.value));
+            foreach (var span in entry.spans)
             {
-                PredictedComponentID pid = default;
-                Packer<PredictedComponentID>.Read(packet, ref pid);
+                var pid = span.id;
+                packet.SetBitPosition(span.bitOrigin);
                 bool hasInput = Packer<bool>.Read(packet);
                 int value = 0;
                 if (hasInput)
