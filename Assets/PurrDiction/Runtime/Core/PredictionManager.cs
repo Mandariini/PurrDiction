@@ -216,7 +216,11 @@ namespace PurrNet.Prediction
             internal int maintenanceIndex;
             internal VerifiedStore nextForComponent;
 
+            internal bool inTable;
+
             public abstract void Clear();
+            // A store that will not be reused gives its table slot back.
+            public abstract void Discard();
             public abstract bool CanRecycle(int capacity);
             public abstract bool TryMaintainBackingStorage(int maximumPayloadBytes, bool pruneBeforeBaseline, ulong baselineTick,
                 out int prunedEntries, out int prunedPayloadBytes, out int allocatedPayloadBytes);
@@ -234,7 +238,15 @@ namespace PurrNet.Prediction
                 history = History<T>.ForTickWindow(capacity, initialWindow);
             }
 
+            public VerifiedStateStore(int capacity, int initialWindow, DenseStateHistory<T> table)
+            {
+                history = History<T>.InTable(table, capacity, initialWindow);
+                inTable = true;
+            }
+
             public override void Clear() => history.Clear();
+
+            public override void Discard() => history.LeaveTable();
 
             public override bool CanRecycle(int capacity) => history.Capacity == capacity && history.HasEagerBackingStorage;
 
@@ -256,6 +268,7 @@ namespace PurrNet.Prediction
         readonly Dictionary<PredictedComponentID, VerifiedStore> _verifiedStoresByComponent = new (PredictionIdComparers.Components);
         readonly List<VerifiedStore> _verifiedStoreMaintenance = new ();
         readonly Dictionary<uint, Stack<VerifiedStore>> _recycledVerifiedStores = new ();
+        readonly Dictionary<uint, Stack<VerifiedStore>> _recycledTableVerifiedStores = new ();
         readonly List<PredictedComponentID> _retiredVerifiedComponents = new ();
         readonly HashSet<PredictedComponentID> _retiredVerifiedComponentSet = new (PredictionIdComparers.Components);
         readonly HashSet<PredictedObjectID> _verifiedPieceScratch = new (PredictionIdComparers.Objects);
@@ -289,23 +302,46 @@ namespace PurrNet.Prediction
         private int verifiedStoreCapacity => checked((int)verifiedHistoryWindowTicks);
 
         private readonly Dictionary<Type, object> _denseStateHistories = new ();
+        private readonly Dictionary<Type, object> _verifiedStateTables = new ();
 
-        // One row-per-tick predicted-state table per state type, shared by every identity of it.
+        // One row-per-tick table of predicted states or inputs per type, shared by every identity of it.
         internal DenseStateHistory<T> GetDenseStateHistory<T>(int window) where T : struct
+            => GetTable<T>(_denseStateHistories, window);
+
+        // Verified histories advance on server ticks and keep their own rows.
+        private DenseStateHistory<T> GetVerifiedStateTable<T>() where T : struct
+            => GetTable<T>(_verifiedStateTables, verifiedStoreCapacity);
+
+        private DenseStateHistory<T> GetTable<T>(Dictionary<Type, object> tables, int window) where T : struct
         {
-            if (_denseStateHistories.TryGetValue(typeof(T), out var table))
-                return (DenseStateHistory<T>)table;
+            if (tables.TryGetValue(typeof(T), out var table))
+            {
+                var existing = (DenseStateHistory<T>)table;
+                existing.AllowWindow(window);
+                return existing;
+            }
             var created = new DenseStateHistory<T>(initialLocalHistoryWindowTicks + 2, window);
-            _denseStateHistories.Add(typeof(T), created);
+            tables.Add(typeof(T), created);
             return created;
         }
 
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, out bool created) where T : struct, IDisposable
         {
-            return GetVerifiedHistory<T>(componentId, 0, out created);
+            return GetVerifiedHistory<T>(componentId, 0, false, out created);
         }
 
         internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, int subKey, out bool created) where T : struct, IDisposable
+        {
+            return GetVerifiedHistory<T>(componentId, subKey, false, out created);
+        }
+
+        // A plain value type may keep its verified history in the world's shared verified table.
+        internal History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, bool inTable, out bool created) where T : struct, IDisposable
+        {
+            return GetVerifiedHistory<T>(componentId, 0, inTable, out created);
+        }
+
+        private History<T> GetVerifiedHistory<T>(PredictedComponentID componentId, int subKey, bool inTable, out bool created) where T : struct, IDisposable
         {
             var typeHash = Hasher<T>.stableHash;
             var key = (typeHash, componentId, subKey);
@@ -321,8 +357,8 @@ namespace PurrNet.Prediction
             }
 
             int capacity = verifiedStoreCapacity;
-            var newStore = TakeRecycledVerifiedStore(typeHash, capacity) as VerifiedStateStore<T> ??
-                           new VerifiedStateStore<T>(capacity, initialLocalHistoryWindowTicks);
+            var newStore = TakeRecycledVerifiedStore(typeHash, capacity, inTable) as VerifiedStateStore<T> ??
+                           NewVerifiedStateStore<T>(capacity, inTable);
             verifiedHistoryRestoredArrayPayloadBytesTotal += newStore.history.RestoreEagerBackingStorage(
                 initialLocalHistoryWindowTicks + 2);
             newStore.typeHash = typeHash;
@@ -338,9 +374,15 @@ namespace PurrNet.Prediction
             return newStore.history;
         }
 
-        private VerifiedStore TakeRecycledVerifiedStore(uint typeHash, int capacity)
+        private VerifiedStateStore<T> NewVerifiedStateStore<T>(int capacity, bool inTable) where T : struct, IDisposable
+            => inTable
+                ? new VerifiedStateStore<T>(capacity, initialLocalHistoryWindowTicks, GetVerifiedStateTable<T>())
+                : new VerifiedStateStore<T>(capacity, initialLocalHistoryWindowTicks);
+
+        private VerifiedStore TakeRecycledVerifiedStore(uint typeHash, int capacity, bool inTable)
         {
-            if (!_recycledVerifiedStores.TryGetValue(typeHash, out var recycled))
+            var pools = inTable ? _recycledTableVerifiedStores : _recycledVerifiedStores;
+            if (!pools.TryGetValue(typeHash, out var recycled))
                 return null;
 
             while (recycled.Count > 0)
@@ -348,7 +390,10 @@ namespace PurrNet.Prediction
                 var store = recycled.Pop();
                 // A client adopts the server's tick rate from its first full frame.
                 if (!store.CanRecycle(capacity))
+                {
+                    store.Discard();
                     continue;
+                }
                 verifiedHistoryRecycledStoresTotal++;
                 return store;
             }
@@ -364,6 +409,9 @@ namespace PurrNet.Prediction
             _verifiedStoresByComponent.Clear();
             _verifiedStoreMaintenance.Clear();
             _recycledVerifiedStores.Clear();
+            _recycledTableVerifiedStores.Clear();
+            // Every slot belonged to a store dropped above.
+            _verifiedStateTables.Clear();
             _retiredVerifiedComponents.Clear();
             _retiredVerifiedComponentSet.Clear();
             _verifiedStoreMaintenanceCursor = 0;
@@ -462,30 +510,30 @@ namespace PurrNet.Prediction
                 store.componentId = default;
                 verifiedHistoryReleasedStoresTotal++;
 
-                if (store.CanRecycle(capacity))
-                {
-                    var recycled = RecycledVerifiedStores(store.typeHash);
-                    if (recycled.Count < RecycledVerifiedStoresPerType)
-                        recycled.Push(store);
-                }
+                var recycled = store.CanRecycle(capacity) ? RecycledVerifiedStores(store.typeHash, store.inTable) : null;
+                if (recycled != null && recycled.Count < RecycledVerifiedStoresPerType)
+                    recycled.Push(store);
+                else
+                    store.Discard();
 
                 store = next;
             }
         }
 
-        internal void PrewarmVerifiedStore<T>() where T : struct, IDisposable
+        internal void PrewarmVerifiedStore<T>(bool inTable = false) where T : struct, IDisposable
         {
-            var recycled = RecycledVerifiedStores(Hasher<T>.stableHash);
+            var recycled = RecycledVerifiedStores(Hasher<T>.stableHash, inTable);
             if (recycled.Count < RecycledVerifiedStoresPerType)
-                recycled.Push(new VerifiedStateStore<T>(verifiedStoreCapacity, initialLocalHistoryWindowTicks));
+                recycled.Push(NewVerifiedStateStore<T>(verifiedStoreCapacity, inTable));
         }
 
-        private Stack<VerifiedStore> RecycledVerifiedStores(uint typeHash)
+        private Stack<VerifiedStore> RecycledVerifiedStores(uint typeHash, bool inTable = false)
         {
-            if (!_recycledVerifiedStores.TryGetValue(typeHash, out var recycled))
+            var pools = inTable ? _recycledTableVerifiedStores : _recycledVerifiedStores;
+            if (!pools.TryGetValue(typeHash, out var recycled))
             {
                 recycled = new Stack<VerifiedStore>();
-                _recycledVerifiedStores.Add(typeHash, recycled);
+                pools.Add(typeHash, recycled);
             }
 
             return recycled;

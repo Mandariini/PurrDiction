@@ -36,8 +36,6 @@ namespace PurrNet.Prediction
         private ulong _viewSpawnTick;
 
         private ulong viewTeleportTick => predictionManager ? predictionManager.localTickInContext : 0;
-        private static readonly bool s_denseCapable =
-            !System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences<FULL_STATE<STATE>>();
 
         // Codegen enables this for ordinary value states; mutable containers stay uncached.
         protected virtual bool SupportsStateDeltaCaching() => false;
@@ -144,7 +142,7 @@ namespace PurrNet.Prediction
             if (preserveSoftCorrection)
             {
                 fullPredictedState.prediction.owner = owner;
-                _verifiedHistory = world.GetVerifiedHistory<FULL_STATE<STATE>>(id, out _);
+                _verifiedHistory = world.GetVerifiedHistory<FULL_STATE<STATE>>(id, StoresHistoryInTables, out _);
                 return;
             }
 
@@ -168,7 +166,7 @@ namespace PurrNet.Prediction
             HistoryClear();
             HistoryWrite(0, fullPredictedState.DeepCopy());
 
-            _verifiedHistory = world.GetVerifiedHistory<FULL_STATE<STATE>>(id, out _);
+            _verifiedHistory = world.GetVerifiedHistory<FULL_STATE<STATE>>(id, StoresHistoryInTables, out _);
         }
 
         private static int ViewBufferCapacity(PredictionManager world)
@@ -189,8 +187,9 @@ namespace PurrNet.Prediction
             => world.GetDenseStateHistory<FULL_STATE<STATE>>(StateHistoryCapacity(world));
 
         // Table rows are copied bitwise and never disposed, so only plain value states qualify:
-        // a reference-free state can still own native memory through a pointer.
-        private bool StoresHistoryInTables => s_denseCapable && !isEventHandler && SupportsStateDeltaCaching();
+        // a reference-free state can still own native memory through a pointer. Event batches
+        // need an entry per tick and keep their own rings.
+        private bool StoresHistoryInTables => PlainValue<FULL_STATE<STATE>>.isPlain && !isEventHandler;
 
         private void EnsureStateHistory(PredictionManager world)
         {
@@ -269,7 +268,7 @@ namespace PurrNet.Prediction
 
             EnsureStateHistory(world);
 
-            world.PrewarmVerifiedStore<FULL_STATE<STATE>>();
+            world.PrewarmVerifiedStore<FULL_STATE<STATE>>(StoresHistoryInTables);
         }
 
         private void RestartedView(PredictionManager world)

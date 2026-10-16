@@ -22,7 +22,7 @@ namespace PurrNet.Prediction
         private int _rows;
         private int _rowMask;
         private int _stride;
-        private readonly int _maxRows;
+        private int _maxRows;
 
         private ulong[] _first = Array.Empty<ulong>();
         private ulong[] _last = Array.Empty<ulong>();
@@ -44,6 +44,10 @@ namespace PurrNet.Prediction
             _rowMask = _rows - 1;
             _maxRows = RoundUpToPowerOfTwo(Math.Max(_rows, window + 2));
         }
+
+        // Owners with a longer window may share the table; ranges may then span its rows.
+        internal void AllowWindow(int window)
+            => _maxRows = Math.Max(_maxRows, RoundUpToPowerOfTwo(window + 2));
 
         internal int AllocateSlot()
         {
@@ -391,12 +395,21 @@ namespace PurrNet.Prediction
             return true;
         }
 
+        // Written entries of the range, without the anchor.
+        private int RangeEntries(int slot) => _entries[slot] - (_hasAnchor[slot] ? 1 : 0);
+
+        // Every tick of the range was written, the usual case, so positions follow from ticks
+        // without scanning rows that each sit a whole row apart.
+        private bool IsGapless(int slot) => (ulong)RangeEntries(slot) == _last[slot] - _first[slot] + 1;
+
         // Entries strictly before tick.
         internal int CountBefore(int slot, ulong tick)
         {
             int count = _hasAnchor[slot] && _anchorTick[slot] < tick ? 1 : 0;
             if (!_any[slot] || tick <= _first[slot])
                 return count;
+            if (IsGapless(slot))
+                return count + (int)(Math.Min(tick, _last[slot] + 1) - _first[slot]);
             ulong end = Math.Min(tick - 1, _last[slot]);
             for (ulong t = _first[slot]; t <= end; t++)
             {
@@ -412,10 +425,20 @@ namespace PurrNet.Prediction
             int removed = 0;
             if (count <= 0)
                 return 0;
+            int rangeEntries = RangeEntries(slot);
             if (_hasAnchor[slot])
             {
                 _hasAnchor[slot] = false;
                 removed++;
+            }
+            if (removed < count && _any[slot] && (ulong)rangeEntries == _last[slot] - _first[slot] + 1)
+            {
+                int take = Math.Min(count - removed, rangeEntries);
+                removed += take;
+                if (take == rangeEntries)
+                    _any[slot] = false;
+                else
+                    _first[slot] += (ulong)take;
             }
             while (removed < count && _any[slot])
             {
@@ -439,13 +462,21 @@ namespace PurrNet.Prediction
             {
                 if (tick < _first[slot])
                 {
-                    _entries[slot] -= CountRangeWritten(slot, _first[slot], _last[slot]);
+                    _entries[slot] -= RangeEntries(slot);
                     _any[slot] = false;
                 }
                 else if (tick < _last[slot])
                 {
-                    _entries[slot] -= CountRangeWritten(slot, tick + 1, _last[slot]);
-                    _last[slot] = NewestWrittenAtOrBefore(slot, tick);
+                    if (IsGapless(slot))
+                    {
+                        _entries[slot] -= (int)(_last[slot] - tick);
+                        _last[slot] = tick;
+                    }
+                    else
+                    {
+                        _entries[slot] -= CountRangeWritten(slot, tick + 1, _last[slot]);
+                        _last[slot] = NewestWrittenAtOrBefore(slot, tick);
+                    }
                 }
             }
             if (_hasAnchor[slot] && tick < _anchorTick[slot])

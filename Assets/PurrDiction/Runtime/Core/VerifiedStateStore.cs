@@ -28,10 +28,9 @@ namespace PurrNet.Prediction
         public static void StoreReceived(History<T> history, ulong serverTick, ref T state,
             ulong? unchangedBaselineTick, bool trustUnchangedBaseline)
         {
-            int lastIndex = history.Count - 1;
             if (trustUnchangedBaseline && unchangedBaselineTick.HasValue &&
-                unchangedBaselineTick.Value <= serverTick && lastIndex >= 0 &&
-                history.GetEntryTick(lastIndex) <= unchangedBaselineTick.Value)
+                unchangedBaselineTick.Value <= serverTick && history.Count > 0 &&
+                history.MostRecentTick <= unchangedBaselineTick.Value)
                 return;
 
             history.Write(serverTick, state.DeepCopy());

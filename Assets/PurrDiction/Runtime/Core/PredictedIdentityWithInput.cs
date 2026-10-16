@@ -58,12 +58,19 @@ namespace PurrNet.Prediction
         private void EnsureInputHistory(PredictionManager world)
         {
             int capacity = world.isServer ? checked((int)world.verifiedHistoryWindowTicks) : world.tickRate * 5;
-            if (_inputHistory != null && _inputHistory.Capacity == capacity)
+            // Plain inputs share one row-per-tick table per world; a history in another world's
+            // table would share that world's rows.
+            if (_inputHistory != null && _inputHistory.Capacity == capacity &&
+                (!_inputHistory.isInTable || ReferenceEquals(_inputHistory.table, world.GetDenseStateHistory<INPUT>(capacity))))
                 return;
 
             _inputHistory?.Clear();
-            _inputHistory = History<INPUT>.ForTickWindow(capacity, world.initialLocalHistoryWindowTicks,
-                checked((int)world.verifiedHistoryWindowTicks));
+            _inputHistory?.LeaveTable();
+            _inputHistory = PlainValue<INPUT>.isPlain
+                ? History<INPUT>.InTable(world.GetDenseStateHistory<INPUT>(capacity), capacity,
+                    world.initialLocalHistoryWindowTicks, checked((int)world.verifiedHistoryWindowTicks))
+                : History<INPUT>.ForTickWindow(capacity, world.initialLocalHistoryWindowTicks,
+                    checked((int)world.verifiedHistoryWindowTicks));
         }
 
         internal override void ReleasePredictionStateForPool()
@@ -76,6 +83,7 @@ namespace PurrNet.Prediction
         {
             base.OnDestroy();
             DisposeInputStorage();
+            _inputHistory?.LeaveTable();
         }
 
         private void DisposeInputStorage()

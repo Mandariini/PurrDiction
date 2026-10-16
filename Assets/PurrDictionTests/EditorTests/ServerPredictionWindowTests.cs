@@ -72,9 +72,13 @@ namespace PurrNet.Prediction.Tests.Editor
                 // Storage covers the window and its anchor without growing past the next row block.
                 Assert.That(probe.predictedHistoryRows, Is.GreaterThanOrEqualTo(window + 1));
                 Assert.That(probe.predictedHistoryRows, Is.LessThanOrEqualTo(RowBlock(window + 2)));
+                // Plain inputs share the world's row table, which grows in row blocks to hold what a
+                // ring of this window would: the window and its anchor on servers, the entry-count
+                // cut limit on clients.
                 int inputSlots = server ? inputWindow + 2 : Math.Max(inputWindow + 10, inputWindow + inputWindow / 2) + 1;
-                Assert.That(((Array)typeof(History<ServerPredictionWindowInput>)
-                    .GetField("m_values", Fields).GetValue(inputs)).Length, Is.EqualTo(inputSlots));
+                Assert.That(inputs.isInTable, Is.True);
+                Assert.That(inputs.BackingCapacity, Is.GreaterThanOrEqualTo(inputWindow + 1));
+                Assert.That(inputs.BackingCapacity, Is.LessThanOrEqualTo(RowBlock(inputSlots)));
                 probe.Rollback((ulong)(window * 2));
                 Assert.That(probe.currentState.a, Is.EqualTo(window * 2));
                 probe.PrewarmPredictionState(world);
@@ -174,9 +178,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 }
             }
             Assert.That(f.Slots, Is.GreaterThanOrEqualTo((int)backlog + 1), "storage holds the whole unverified backlog");
-            Assert.That(f.InputSlots, Is.GreaterThan(initialInputSlots));
+            Assert.That(f.InputSlots, Is.GreaterThanOrEqualTo((int)backlog + 1), "input storage holds the whole unverified backlog");
             Assert.That(f.Slots, Is.LessThanOrEqualTo(RowBlock(protocolWindow + 2)));
-            Assert.That(f.InputSlots, Is.LessThanOrEqualTo(protocolWindow + 2));
+            Assert.That(f.InputSlots, Is.LessThanOrEqualTo(RowBlock(protocolWindow + 2)));
             Assert.That(f.probe.predictedHistoryWindow, Is.EqualTo(rate * 10));
             Assert.That(f.inputs.Capacity, Is.EqualTo(rate * 5));
             f.probe.Rollback(backlog * 2);
@@ -288,8 +292,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
             public int Slots => probe.predictedHistoryRows;
 
-            public int InputSlots => ((Array)typeof(History<ServerPredictionWindowInput>)
-                .GetField("m_values", Fields).GetValue(inputs)).Length;
+            public int InputSlots => inputs.BackingCapacity;
 
             public void Floor(ulong tick) => Set(typeof(PredictionManager), world, "_verifiedHistoryBaselineFloor", tick);
 
@@ -323,9 +326,6 @@ namespace PurrNet.Prediction.Tests.Editor
 
     public sealed class ServerPredictionWindowProbe : PredictedIdentity<ServerPredictionWindowInput, CompactStateProbe>
     {
-        // Codegen skips editor assemblies; this is what it emits for a plain value state.
-        protected override bool SupportsStateDeltaCaching() => true;
-
         protected override void GetFinalInput(ref ServerPredictionWindowInput input) => input.sequence = currentState.a;
         protected override void Simulate(ServerPredictionWindowInput input, ref CompactStateProbe state, float delta) { }
     }

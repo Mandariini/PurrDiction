@@ -215,6 +215,9 @@ namespace PurrNet.Prediction
 
             if (table != null)
             {
+                // A ring holds up to its cut limit before trimming, so the table must span as much.
+                if (m_maxCount > 0)
+                    table.AllowWindow(m_limitToCut);
                 m_dense = table;
                 m_denseSlot = table.AllocateSlot();
                 m_values = Array.Empty<Slot>();
