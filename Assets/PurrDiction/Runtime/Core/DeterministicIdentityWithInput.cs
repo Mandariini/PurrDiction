@@ -207,7 +207,7 @@ namespace PurrNet.Prediction
 
         internal override bool HasInputAt(ulong tick)
         {
-            return _inputHistory != null && _inputHistory.TryGet(tick, out _);
+            return _inputHistory != null && _inputHistory.Contains(tick);
         }
 
         public override void WriteFirstInput(ulong localTick, BitPacker packer)

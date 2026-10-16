@@ -427,6 +427,10 @@ namespace PurrNet.Prediction
             return Read(tick, out result);
         }
 
+        // Membership tests need neither the slot nor a copy of its value.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal bool Contains(ulong tick) => Find(tick, out _);
+
         /// <summary>
         /// Returns the data at the specified tick, or if no exact match exists,
         /// returns the closest previous entry (the most recent entry before the tick).
