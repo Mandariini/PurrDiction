@@ -544,7 +544,8 @@ namespace PurrNet.Prediction
                 return false;
             }
 
-            bool cacheDelta = predictionManager.hasMultipleStateRecipients && !isEventHandler && SupportsStateDeltaCaching();
+            bool cacheDelta = predictionManager.hasMultipleStateRecipients && !predictionManager.writingSharedStateSection &&
+                              !isEventHandler && SupportsStateDeltaCaching();
             if (cacheDelta)
             {
                 _stateDeltaCache ??= new StateDeltaCache<FULL_STATE<STATE>>();

@@ -956,6 +956,8 @@ namespace PurrNet.Prediction
         readonly List<BitPacker> _sharedStateSectionBuffers = new ();
         ulong _sharedStateSectionTick = ulong.MaxValue;
 
+        internal bool writingSharedStateSection { get; private set; }
+
         bool CanShareStateSection(PlayerID player, PlayerVisibilityTimeline timeline)
             => hasMultipleStateRecipients && timeline.isPassThrough &&
                (!_pendingDesyncHeals.TryGetValue(player, out var pending) || pending.Count == 0);
@@ -1038,7 +1040,16 @@ namespace PurrNet.Prediction
 
             int sharedOrigin = destination.positionInBits;
             ulong spawnBaselineRecordsBefore = spawnBaselineRecordsTotal;
-            WriteAddressedStateSectionRecords(player, timeline, destination, tick, baselineTick, fullFrame, eventHandlers);
+            // Other pass-through receivers copy this section, so per-record delta caching would only add work.
+            writingSharedStateSection = share;
+            try
+            {
+                WriteAddressedStateSectionRecords(player, timeline, destination, tick, baselineTick, fullFrame, eventHandlers);
+            }
+            finally
+            {
+                writingSharedStateSection = false;
+            }
 
             if (share)
             {
