@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Unity.IL2CPP.CompilerServices;
 
@@ -39,6 +40,12 @@ namespace PurrNet.Prediction
         // and pruning do not touch the cold head slot, without growing past one cache line.
         ulong m_firstTick;
 
+        // Set while the entries live in a slot of a table shared by the histories of one type,
+        // one row per tick. Every operation then gives exactly the results of the ring above;
+        // a write the table cannot hold moves the entries back into the ring.
+        DenseStateHistory<T> m_dense;
+        int m_denseSlot;
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         int Phys(int index)
         {
@@ -55,17 +62,27 @@ namespace PurrNet.Prediction
         {
             get
             {
-                if (index < 0 || index >= m_count)
+                if (index < 0 || index >= Count)
                 {
-                    throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {m_count - 1} is valid.");
+                    throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {Count - 1} is valid.");
+                }
+                if (m_dense != null)
+                {
+                    m_dense.TryRead(m_denseSlot, m_dense.EntryTick(m_denseSlot, index), out var value);
+                    return value;
                 }
                 return m_values[Phys(index)].value;
             }
             set
             {
-                if (index < 0 || index >= m_count)
+                if (index < 0 || index >= Count)
                 {
-                    throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {m_count - 1} is valid.");
+                    throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {Count - 1} is valid.");
+                }
+                if (m_dense != null)
+                {
+                    m_dense.Overwrite(m_denseSlot, m_dense.EntryTick(m_denseSlot, index), value);
+                    return;
                 }
                 m_values[Phys(index)].value = value;
             }
@@ -77,7 +94,7 @@ namespace PurrNet.Prediction
         public int Count
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => m_count;
+            get => m_dense != null ? m_dense.Count(m_denseSlot) : m_count;
         }
 
         public int Capacity => m_maxCount;
@@ -88,7 +105,12 @@ namespace PurrNet.Prediction
         public ulong MostRecentTick
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => m_count == 0 ? 0 : m_values[Phys(m_count - 1)].tick;
+            get
+            {
+                if (m_dense != null)
+                    return m_dense.MostRecentTick(m_denseSlot);
+                return m_count == 0 ? 0 : m_values[Phys(m_count - 1)].tick;
+            }
         }
 
         // Read only the newest entry, and reject it if it is ahead of the caller.
@@ -96,6 +118,8 @@ namespace PurrNet.Prediction
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal bool TryReadLatest(ulong maximumTick, out T result)
         {
+            if (m_dense != null)
+                return m_dense.TryReadLatest(m_denseSlot, maximumTick, out result);
             if (m_count > 0)
             {
                 int phys = Phys(m_count - 1);
@@ -115,12 +139,22 @@ namespace PurrNet.Prediction
         public ulong OldestTick
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => m_count == 0 ? 0 : m_firstTick;
+            get
+            {
+                if (m_dense != null)
+                    return m_dense.OldestTick(m_denseSlot);
+                return m_count == 0 ? 0 : m_firstTick;
+            }
         }
 
         // Availability checks need neither a search nor a copy of the retained value.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal bool HasAtOrBefore(ulong tick) => m_count > 0 && m_firstTick <= tick;
+        internal bool HasAtOrBefore(ulong tick)
+        {
+            if (m_dense != null)
+                return m_dense.Count(m_denseSlot) > 0 && m_dense.OldestTick(m_denseSlot) <= tick;
+            return m_count > 0 && m_firstTick <= tick;
+        }
 
         /// <summary>
         /// Gets the tick value for the index in the internal collection
@@ -128,10 +162,12 @@ namespace PurrNet.Prediction
         /// <returns>Tick number</returns>
         public ulong GetEntryTick(int index)
         {
-            if (index < 0 || index >= m_count)
+            if (index < 0 || index >= Count)
             {
-                throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {m_count - 1} is valid.");
+                throw new IndexOutOfRangeException($"Index {index} is out of range. Only from 0 to {Count - 1} is valid.");
             }
+            if (m_dense != null)
+                return m_dense.EntryTick(m_denseSlot, index);
             return m_values[Phys(index)].tick;
         }
 
@@ -155,7 +191,18 @@ namespace PurrNet.Prediction
                 maxEntries > 0 ? Math.Min(maxEntries, initialWindow) + 2 : -1,
                 maxEntries > 0 ? Math.Min(maxEntries, growthWindow) + 2 : 0);
 
-        private History(int maxEntries, int initialCapacity, int growthBoundary = 0)
+        // The same histories, kept in a slot of a shared row-per-tick table. Only for types that
+        // copy bitwise and whose Dispose does nothing: the table neither copies nor disposes.
+        internal static History<T> InTable(DenseStateHistory<T> table, int maxEntries, int initialWindow)
+            => new History<T>(maxEntries, maxEntries > 0 ? Math.Min(maxEntries, initialWindow) + 2 : -1, 0, table);
+
+        internal static History<T> InTable(DenseStateHistory<T> table, int maxEntries, int initialWindow, int growthWindow)
+            => new History<T>(maxEntries,
+                maxEntries > 0 ? Math.Min(maxEntries, initialWindow) + 2 : -1,
+                maxEntries > 0 ? Math.Min(maxEntries, growthWindow) + 2 : 0,
+                table);
+
+        private History(int maxEntries, int initialCapacity, int growthBoundary = 0, DenseStateHistory<T> table = null)
         {
             m_maxCount = maxEntries;
 
@@ -164,14 +211,66 @@ namespace PurrNet.Prediction
                 m_limitToCut = Math.Max(m_maxCount + 10, m_maxCount + m_maxCount / 2);
                 m_eagerCapacity = initialCapacity > 0 ? Math.Min(initialCapacity, m_limitToCut + 1) : m_limitToCut + 1;
                 m_growthBoundary = Math.Min(growthBoundary, m_limitToCut + 1);
-                m_values = new Slot[m_eagerCapacity];
-                m_capacity = m_eagerCapacity;
             }
-            else
+
+            if (table != null)
             {
-                m_values = new Slot[16];
-                m_capacity = 16;
+                m_dense = table;
+                m_denseSlot = table.AllocateSlot();
+                m_values = Array.Empty<Slot>();
+                return;
             }
+
+            AllocateRing();
+        }
+
+        private void AllocateRing()
+        {
+            int capacity = m_maxCount > 0 ? m_eagerCapacity : 16;
+            m_values = new Slot[capacity];
+            m_capacity = capacity;
+            m_head = 0;
+        }
+
+        internal bool isInTable => m_dense != null;
+
+        internal DenseStateHistory<T> table => m_dense;
+
+        // Returns the table slot; the history continues, empty, in its own ring.
+        internal void LeaveTable()
+        {
+            if (m_dense == null)
+                return;
+            m_dense.ReleaseSlot(m_denseSlot);
+            m_dense = null;
+            m_count = 0;
+            m_contiguous = true;
+            AllocateRing();
+        }
+
+        // The table cannot hold this slot's range: carry its entries into a ring of its own.
+        private void MoveOutOfTable()
+        {
+            var entries = new List<(ulong tick, T value)>();
+            m_dense.CopyEntries(m_denseSlot, entries);
+            m_dense.ReleaseSlot(m_denseSlot);
+            m_dense = null;
+
+            // Trimming keeps the count below the cut limit, so the ring always has room left.
+            int capacity = m_maxCount > 0 ? m_eagerCapacity : 16;
+            while (capacity <= entries.Count)
+                capacity *= 2;
+            if (m_maxCount > 0)
+                capacity = Math.Min(capacity, m_limitToCut + 1);
+            m_values = new Slot[capacity];
+            m_capacity = capacity;
+            m_head = 0;
+            m_count = entries.Count;
+            for (int i = 0; i < entries.Count; i++)
+                m_values[i] = new Slot { tick = entries[i].tick, value = entries[i].value };
+            if (m_count > 0)
+                m_firstTick = m_values[0].tick;
+            RefreshContiguity();
         }
 
         void Grow()
@@ -194,7 +293,7 @@ namespace PurrNet.Prediction
         // Compaction must preserve every baseline and value without disposing ownership.
         internal bool TryCompactBackingStorage(int maximumPayloadBytes)
         {
-            if (m_maxCount <= 0)
+            if (m_maxCount <= 0 || m_dense != null)
                 return false;
             int newCapacity = Math.Max(1, m_count);
             if (newCapacity >= m_values.Length ||
@@ -207,6 +306,8 @@ namespace PurrNet.Prediction
         // Keep the baseline's latest preceding entry as an anchor, even with a removal budget.
         internal int PruneBeforeBaseline(ulong baselineTick, int maximumEntriesToRemove = int.MaxValue)
         {
+            if (m_dense != null)
+                return m_dense.PruneBeforeBaseline(m_denseSlot, baselineTick, maximumEntriesToRemove);
             // An oldest entry at or after the baseline is already the anchor.
             if (m_count <= 1 || maximumEntriesToRemove <= 0 || m_firstTick >= baselineTick)
                 return 0;
@@ -221,6 +322,8 @@ namespace PurrNet.Prediction
         // Restore capacity before Setup to avoid deferring growth into later simulation.
         internal long RestoreEagerBackingStorage(int minimumCapacity = 0)
         {
+            if (m_dense != null)
+                return 0;
             int capacity = Math.Min(m_limitToCut + 1, Math.Max(m_eagerCapacity, minimumCapacity));
             if (m_maxCount <= 0 || m_values.Length >= capacity)
                 return 0;
@@ -228,10 +331,11 @@ namespace PurrNet.Prediction
             return BackingStoragePayloadBytes;
         }
 
-        internal int BackingCapacity => m_capacity;
+        internal int BackingCapacity => m_dense != null ? m_dense.rows : m_capacity;
 
-        internal bool HasEagerBackingStorage => m_maxCount > 0 && m_values.Length >= m_eagerCapacity;
+        internal bool HasEagerBackingStorage => m_maxCount > 0 && (m_dense != null || m_values.Length >= m_eagerCapacity);
 
+        // A table slot's rows belong to the shared table, not to this history.
         internal long BackingStoragePayloadBytes =>
             (long)m_values.Length * (Unsafe.SizeOf<T>() + sizeof(ulong));
 
@@ -258,6 +362,21 @@ namespace PurrNet.Prediction
         /// <param name="data">What is the state/data of the tick.</param>
         public void Write(ulong tick, in T data)
         {
+            if (m_dense != null)
+            {
+                if (m_dense.TryWrite(m_denseSlot, tick, in data))
+                {
+                    if (m_maxCount > 0)
+                    {
+                        int count = m_dense.Count(m_denseSlot);
+                        if (count >= m_limitToCut)
+                            m_dense.RemoveOldest(m_denseSlot, count - m_maxCount);
+                    }
+                    return;
+                }
+                MoveOutOfTable();
+            }
+
             ulong last = m_count == 0 ? 0 : m_values[Phys(m_count - 1)].tick;
             if (m_count == 0 || tick > last)
             {
@@ -395,7 +514,7 @@ namespace PurrNet.Prediction
         /// </summary>
         public void PruneByTickWindow(ulong currentTick)
         {
-            if (m_maxCount <= 0 || m_count <= 1)
+            if (m_maxCount <= 0 || Count <= 1)
                 return;
 
             ulong window = (ulong)m_maxCount;
@@ -412,6 +531,15 @@ namespace PurrNet.Prediction
         /// <param name="inclusive">Include the tick number in the clear</param>
         public void ClearPast(ulong tick, bool inclusive = false)
         {
+            if (m_dense != null)
+            {
+                int before = m_dense.CountBefore(m_denseSlot, tick);
+                if (inclusive && m_dense.Contains(m_denseSlot, tick))
+                    before++;
+                m_dense.RemoveOldest(m_denseSlot, before);
+                return;
+            }
+
             if (Find(tick, out var index) && inclusive)
             {
                 index += 1;
@@ -427,6 +555,17 @@ namespace PurrNet.Prediction
         /// <param name="inclusive">Include the tick number in the clear</param>
         public void ClearFuture(ulong tick, bool inclusive = false)
         {
+            if (m_dense != null)
+            {
+                if (!inclusive)
+                    m_dense.ClearFuture(m_denseSlot, tick);
+                else if (tick == 0)
+                    m_dense.Clear(m_denseSlot);
+                else
+                    m_dense.ClearFuture(m_denseSlot, tick - 1);
+                return;
+            }
+
             if (Find(tick, out var index) && !inclusive)
             {
                 index += 1;
@@ -437,6 +576,12 @@ namespace PurrNet.Prediction
 
         public void Clear()
         {
+            if (m_dense != null)
+            {
+                m_dense.Clear(m_denseSlot);
+                return;
+            }
+
             RemoveFront(m_count);
             m_head = 0;
             m_contiguous = true;
@@ -449,6 +594,9 @@ namespace PurrNet.Prediction
         /// <param name="result">The data stored or default if not found.</param>
         public bool Read(ulong tick, out T result)
         {
+            if (m_dense != null)
+                return m_dense.TryRead(m_denseSlot, tick, out result);
+
             if (Find(tick, out var index))
             {
                 result = m_values[Phys(index)].value;
@@ -461,7 +609,8 @@ namespace PurrNet.Prediction
 
         public T ReadOrDefault(ulong tick)
         {
-            return Find(tick, out var index) ? m_values[Phys(index)].value : default;
+            Read(tick, out var result);
+            return result;
         }
 
         public bool TryGet(ulong tick, out T result)
@@ -471,7 +620,8 @@ namespace PurrNet.Prediction
 
         // Membership tests need neither the slot nor a copy of its value.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal bool Contains(ulong tick) => Find(tick, out _);
+        internal bool Contains(ulong tick)
+            => m_dense != null ? m_dense.Contains(m_denseSlot, tick) : Find(tick, out _);
 
         /// <summary>
         /// Returns the data at the specified tick, or if no exact match exists,
@@ -482,6 +632,9 @@ namespace PurrNet.Prediction
         /// <returns>True if an exact or previous entry was found.</returns>
         public bool ReadOrPrevious(ulong tick, out T result)
         {
+            if (m_dense != null)
+                return m_dense.ReadOrPrevious(m_denseSlot, tick, out result);
+
             if (Find(tick, out var index))
             {
                 result = m_values[Phys(index)].value;
@@ -506,6 +659,9 @@ namespace PurrNet.Prediction
 
         public bool TryGetClosest(ulong tick, out T result, out ulong tickDifference)
         {
+            if (m_dense != null)
+                return m_dense.TryGetClosest(m_denseSlot, tick, out result, out tickDifference);
+
             if (m_count == 0)
             {
                 result = default;
@@ -537,6 +693,12 @@ namespace PurrNet.Prediction
         /// <returns>Returns if a match was found or not.</returns>
         public bool Find(ulong tick, out int result)
         {
+            if (m_dense != null)
+            {
+                result = m_dense.CountBefore(m_denseSlot, tick);
+                return m_dense.Contains(m_denseSlot, tick);
+            }
+
             if (m_count == 0)
             {
                 result = 0;
@@ -617,7 +779,7 @@ namespace PurrNet.Prediction
         /// </summary>
         public void TrimExcessMemory()
         {
-            if (m_maxCount > 0 || m_count > m_values.Length / 2 || m_values.Length <= 16)
+            if (m_dense != null || m_maxCount > 0 || m_count > m_values.Length / 2 || m_values.Length <= 16)
                 return;
 
             ResizeBackingStorage(Math.Max(16, m_count));
@@ -625,6 +787,12 @@ namespace PurrNet.Prediction
 
         public void Remove(ulong tick)
         {
+            if (m_dense != null)
+            {
+                m_dense.Remove(m_denseSlot, tick);
+                return;
+            }
+
             if (!Find(tick, out var index))
                 return;
 

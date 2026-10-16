@@ -232,9 +232,9 @@ namespace PurrNet.Prediction.Tests.Editor
                 plain.PrewarmPredictionState(world);
                 pointer.PrewarmPredictionState(world);
 
-                Assert.That(plain.predictedHistoryStorage, Is.InstanceOf<DenseStateHistory<FULL_STATE<CompactStateProbe>>>());
+                Assert.That(plain.predictedHistoryInTable, Is.True);
                 // Rows are copied bitwise and never disposed, which a state owning native memory cannot afford.
-                Assert.That(pointer.predictedHistoryStorage, Is.InstanceOf<History<FULL_STATE<PointerStateProbe.State>>>());
+                Assert.That(pointer.predictedHistoryInTable, Is.False);
 
                 pointer.currentState.handle = new IntPtr(7);
                 pointer.SaveStateInHistory(1);

@@ -252,21 +252,15 @@ namespace PurrNet.Prediction.Tests.Editor
 
             internal int LiveCount(PredictionManager manager) => Get<PredictedSystemList>(manager, "_systems").Count;
 
-            static readonly string[] BufferFields = { "_stateHistory", "_denseHistory", "_interpolatedState", "_inputHistory" };
+            static readonly string[] BufferFields = { "_stateHistory", "_interpolatedState", "_inputHistory" };
 
             internal static object[] Buffers(PredictedIdentity identity)
             {
                 var result = new List<object>();
-                // A reference-free state keeps its predicted history in the world's dense table instead.
-                bool dense = false;
-                for (var type = identity.GetType(); type != null; type = type.BaseType)
-                    dense |= type.GetField("_denseHistory", Fields | BindingFlags.DeclaredOnly)?.GetValue(identity) != null;
                 for (var type = identity.GetType(); type != null; type = type.BaseType)
                 {
                     foreach (var name in BufferFields)
                     {
-                        if (name == (dense ? "_stateHistory" : "_denseHistory"))
-                            continue;
                         var field = type.GetField(name, Fields | BindingFlags.DeclaredOnly);
                         if (field != null)
                             result.Add(field.GetValue(identity));

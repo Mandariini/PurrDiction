@@ -14,10 +14,7 @@ namespace PurrNet.Prediction
     public abstract class PredictedIdentity<STATE> : PredictedIdentity where STATE : struct, IPredictedData<STATE>
     {
         // Read every tick: declared first so they share cache lines (see PredictedIdentity.Fields.cs).
-        // Reference-free persistent states share one row-per-tick table per world instead of _stateHistory.
-        private DenseStateHistory<FULL_STATE<STATE>> _denseHistory;
-        private int _denseSlot = -1;
-        private ulong _denseWindow;
+        // Plain value states keep it in one row-per-tick table per world (see StoresHistoryInTables).
         private History<FULL_STATE<STATE>> _stateHistory;
         private History<FULL_STATE<STATE>> _verifiedHistory;
         private StateDeltaCache<FULL_STATE<STATE>> _stateDeltaCache;
@@ -64,7 +61,7 @@ namespace PurrNet.Prediction
         {
             base.OnDestroy();
             DisposeStateStorage();
-            ReleaseDenseHistory();
+            _stateHistory?.LeaveTable();
             _stateDeltaCache?.Dispose();
             _stateDeltaCache = null;
         }
@@ -142,7 +139,7 @@ namespace PurrNet.Prediction
             bool preserveSoftCorrection = preservesStateOnSetup &&
                                           UsesSoftCorrectionTimeline() &&
                                           _interpolatedState != null &&
-                                          (_stateHistory != null || _denseHistory != null);
+                                          _stateHistory != null;
 
             if (preserveSoftCorrection)
             {
@@ -181,50 +178,46 @@ namespace PurrNet.Prediction
             => _interpolatedState != null && _interpolatedState.capacity == ViewBufferCapacity(world);
 
         private bool HasStateHistoryFor(PredictionManager world)
-            => _denseHistory != null
-                ? ReferenceEquals(_denseHistory, DenseHistoryFor(world))
-                : _stateHistory != null && _stateHistory.Capacity == StateHistoryCapacity(world);
+        {
+            if (_stateHistory == null || _stateHistory.Capacity != StateHistoryCapacity(world))
+                return false;
+            // A history in another world's table would share that world's rows.
+            return !_stateHistory.isInTable || ReferenceEquals(_stateHistory.table, PredictedStateTable(world));
+        }
 
-        private DenseStateHistory<FULL_STATE<STATE>> DenseHistoryFor(PredictionManager world)
+        private DenseStateHistory<FULL_STATE<STATE>> PredictedStateTable(PredictionManager world)
             => world.GetDenseStateHistory<FULL_STATE<STATE>>(StateHistoryCapacity(world));
+
+        // Table rows are copied bitwise and never disposed, so only plain value states qualify:
+        // a reference-free state can still own native memory through a pointer.
+        private bool StoresHistoryInTables => s_denseCapable && !isEventHandler && SupportsStateDeltaCaching();
 
         private void EnsureStateHistory(PredictionManager world)
         {
             if (HasStateHistoryFor(world))
                 return;
 
-            // Rows are copied bitwise and never disposed, so only plain value states qualify:
-            // a reference-free state can still own native memory through a pointer.
-            if (s_denseCapable && !isEventHandler && SupportsStateDeltaCaching())
-            {
-                ReleaseDenseHistory();
-                _stateHistory?.Clear();
-                _stateHistory = null;
-                _denseHistory = DenseHistoryFor(world);
-                _denseSlot = _denseHistory.AllocateSlot();
-                _denseWindow = (ulong)StateHistoryCapacity(world);
-                return;
-            }
-
             _stateHistory?.Clear();
-            _stateHistory = CreateStateHistory(world);
+            _stateHistory?.LeaveTable();
+            _stateHistory = StoresHistoryInTables
+                ? History<FULL_STATE<STATE>>.InTable(PredictedStateTable(world), StateHistoryCapacity(world),
+                    world.initialLocalHistoryWindowTicks, checked((int)world.verifiedHistoryWindowTicks))
+                : CreateStateHistory(world);
         }
 
-        // Whichever predicted-history store this identity uses, for tests and diagnostics.
-        internal object predictedHistoryStorage => _denseHistory != null ? _denseHistory : _stateHistory;
+        // The predicted-history store, for tests and diagnostics.
+        internal object predictedHistoryStorage => _stateHistory;
+
+        internal bool predictedHistoryInTable => _stateHistory != null && _stateHistory.isInTable;
 
         internal int predictedHistoryCount => HistoryCount();
 
-        internal int predictedHistoryWindow
-            => _denseHistory != null ? (int)_denseWindow : _stateHistory?.Capacity ?? 0;
+        internal int predictedHistoryWindow => _stateHistory?.Capacity ?? 0;
 
-        internal int predictedHistoryRows
-            => _denseHistory != null ? _denseHistory.rows : _stateHistory?.BackingCapacity ?? 0;
+        internal int predictedHistoryRows => _stateHistory?.BackingCapacity ?? 0;
 
         internal bool TryReadPredictedState(ulong tick, out FULL_STATE<STATE> state)
         {
-            if (_denseHistory != null)
-                return _denseHistory.TryRead(_denseSlot, tick, out state);
             if (_stateHistory != null)
                 return _stateHistory.Read(tick, out state);
             state = default;
@@ -234,38 +227,14 @@ namespace PurrNet.Prediction
         internal bool ReadOrPreviousPredictedState(ulong tick, out FULL_STATE<STATE> state)
             => HistoryReadOrPrevious(tick, out state);
 
-        private void ReleaseDenseHistory()
-        {
-            if (_denseHistory == null)
-                return;
-            _denseHistory.ReleaseSlot(_denseSlot);
-            _denseHistory = null;
-            _denseSlot = -1;
-        }
+        private void HistoryClear() => _stateHistory?.Clear();
 
-        private void HistoryClear()
-        {
-            if (_denseHistory != null)
-                _denseHistory.Clear(_denseSlot);
-            else
-                _stateHistory?.Clear();
-        }
+        private void HistoryWrite(ulong tick, in FULL_STATE<STATE> state) => _stateHistory.Write(tick, state);
 
-        private void HistoryWrite(ulong tick, in FULL_STATE<STATE> state)
-        {
-            if (_denseHistory != null)
-                _denseHistory.Write(_denseSlot, tick, in state);
-            else
-                _stateHistory.Write(tick, state);
-        }
-
-        private int HistoryCount()
-            => _denseHistory != null ? _denseHistory.Count(_denseSlot) : _stateHistory?.Count ?? 0;
+        private int HistoryCount() => _stateHistory?.Count ?? 0;
 
         private bool HistoryReadOrPrevious(ulong tick, out FULL_STATE<STATE> state)
         {
-            if (_denseHistory != null)
-                return _denseHistory.ReadOrPrevious(_denseSlot, tick, out state);
             if (_stateHistory != null)
                 return _stateHistory.ReadOrPrevious(tick, out state);
             state = default;
@@ -273,9 +242,7 @@ namespace PurrNet.Prediction
         }
 
         private bool HistoryTryReadLatest(ulong tick, out FULL_STATE<STATE> state)
-            => _denseHistory != null
-                ? _denseHistory.TryReadLatest(_denseSlot, tick, out state)
-                : _stateHistory.TryReadLatest(tick, out state);
+            => _stateHistory.TryReadLatest(tick, out state);
 
         // Server baselines cannot outlive the retained network transcript. Clients
         // keep the longer local timeline for prediction lead and delayed verification.
@@ -353,11 +320,11 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            // A dense row holds every tick anyway, so storing beats comparing first.
-            if (_denseHistory != null)
+            // A table row holds every tick anyway, so storing beats comparing first.
+            if (_stateHistory.isInTable)
             {
                 PruneStateHistory(tick);
-                _denseHistory.Write(_denseSlot, tick, fullPredictedState.DeepCopy());
+                _stateHistory.Write(tick, fullPredictedState.DeepCopy());
                 return;
             }
 
@@ -379,10 +346,10 @@ namespace PurrNet.Prediction
 
         private void WriteOwnedAuthoritativeState(ulong tick, FULL_STATE<STATE> state)
         {
-            if (_denseHistory != null)
+            if (_stateHistory.isInTable)
             {
                 PruneStateHistory(tick);
-                _denseHistory.Write(_denseSlot, tick, in state);
+                _stateHistory.Write(tick, state);
                 return;
             }
 
@@ -401,13 +368,6 @@ namespace PurrNet.Prediction
         private void PruneStateHistory(ulong tick)
         {
             ulong floor = GetAcceptedHistoryRetentionFloor(tick);
-            if (_denseHistory != null)
-            {
-                if (floor > 0)
-                    _denseHistory.PruneBeforeBaseline(_denseSlot, floor);
-                _denseHistory.PruneByTickWindow(_denseSlot, tick, _denseWindow);
-                return;
-            }
             if (floor > 0 && _stateHistory.Count > 1 && _stateHistory.OldestTick < floor)
                 _stateHistory.PruneBeforeBaseline(floor);
             _stateHistory.PruneByTickWindow(tick);
@@ -1009,10 +969,7 @@ namespace PurrNet.Prediction
 
         internal override void ClearFuture(ulong stateTick)
         {
-            if (_denseHistory != null)
-                _denseHistory.ClearFuture(_denseSlot, stateTick);
-            else
-                _stateHistory.ClearFuture(stateTick);
+            _stateHistory.ClearFuture(stateTick);
         }
 
         public override void ReadFirstInput(ulong localTick, BitPacker packer) {}
