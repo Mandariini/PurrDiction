@@ -167,16 +167,29 @@ namespace PurrNet.Prediction
             }
         }
 
+        // Transcripts restore a tick's inputs in the same order they were uploaded, so resume
+        // the search after the previous match instead of rescanning the tick from its start.
+        private ulong _uploadedLookupTick = ulong.MaxValue;
+        private int _uploadedLookupNext;
+
         private bool TryGetUploadedInput(ulong tick, PredictedComponentID id, out BitData bits)
         {
             bits = default;
             if (!_uploadedInputs.TryGetValue(tick, out var entry))
                 return false;
-            for (int i = 0; i < entry.spans.Count; i++)
+            var spans = entry.spans;
+            int count = spans.Count;
+            int start = _uploadedLookupTick == tick && _uploadedLookupNext < count ? _uploadedLookupNext : 0;
+            for (int n = 0; n < count; n++)
             {
-                var span = entry.spans[i];
+                int i = start + n;
+                if (i >= count)
+                    i -= count;
+                var span = spans[i];
                 if (!span.id.Equals(id))
                     continue;
+                _uploadedLookupTick = tick;
+                _uploadedLookupNext = i + 1;
                 bits = new BitData(entry.bits, span.bitOrigin, span.bitLength);
                 return true;
             }
