@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Reflection;
 using JetBrains.Annotations;
 using PurrNet.Logging;
 using PurrNet.Modules;
@@ -768,7 +770,8 @@ namespace PurrNet.Prediction
 
         internal override void LateUpdateView(float deltaTime)
         {
-            LateUpdateView(viewState, verifiedState);
+            if ((viewHooks & ViewHookLate) != 0)
+                LateUpdateView(viewState, verifiedState);
         }
 
         internal override void UpdateView(float deltaTime)
@@ -786,13 +789,51 @@ namespace PurrNet.Prediction
 
             viewState = _interpolatedState.Sample(predictionManager.viewTick).state;
 
+            int hooks = viewHooks;
             if (_firstViewUpdate)
             {
-                ViewStart(viewState, verifiedState);
+                if ((hooks & ViewHookStart) != 0)
+                    ViewStart(viewState, verifiedState);
                 _firstViewUpdate = false;
             }
 
-            UpdateView(viewState, verifiedState);
+            if ((hooks & ViewHookUpdate) != 0)
+                UpdateView(viewState, verifiedState);
+        }
+
+        // The view hooks below are the only per-frame readers of verifiedState, a history lookup.
+        // Types that keep their empty defaults skip both the lookup and the call.
+        private const int ViewHooksResolved = 1;
+        private const int ViewHookUpdate = 2;
+        private const int ViewHookLate = 4;
+        private const int ViewHookStart = 8;
+        private static readonly Dictionary<Type, int> s_viewHooks = new ();
+        private int _viewHooks;
+
+        private int viewHooks => _viewHooks != 0 ? _viewHooks : _viewHooks = ResolveViewHooks(GetType());
+
+        private static int ResolveViewHooks(Type type)
+        {
+            if (s_viewHooks.TryGetValue(type, out int hooks))
+                return hooks;
+
+            var args = new[] { typeof(STATE), typeof(STATE?) };
+            hooks = ViewHooksResolved;
+            if (OverridesViewHook(type, nameof(UpdateView), args))
+                hooks |= ViewHookUpdate;
+            if (OverridesViewHook(type, nameof(LateUpdateView), args))
+                hooks |= ViewHookLate;
+            if (OverridesViewHook(type, nameof(ViewStart), args))
+                hooks |= ViewHookStart;
+            s_viewHooks[type] = hooks;
+            return hooks;
+        }
+
+        private static bool OverridesViewHook(Type type, string name, Type[] args)
+        {
+            var method = type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+                null, args, null);
+            return method == null || method.DeclaringType != typeof(PredictedIdentity<STATE>);
         }
 
         protected virtual void LateUpdateView(STATE viewState, STATE? verified) {}
