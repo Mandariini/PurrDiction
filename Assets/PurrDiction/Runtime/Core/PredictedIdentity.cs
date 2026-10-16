@@ -786,6 +786,10 @@ namespace PurrNet.Prediction
         {
             get
             {
+                var manager = predictionManager;
+                if (manager is not null && manager.hasStableLocalPlayer)
+                    return IsOwnerById(manager.stableLocalPlayerId, manager.cachedIsServer);
+
                 if (!predictionManager)
                     return false;
 
@@ -816,28 +820,34 @@ namespace PurrNet.Prediction
             return !_owner.HasValue || _owner.GetValueOrDefault().id.value == local.GetValueOrDefault().id.value;
         }
 
+        // PlayerID equality compares ids only, so these compare the mirrored owner id.
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID player)
         {
-            return owner == player;
+            return ownerFlags != 0 && ownerIdValue == player.id.value;
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID? player)
         {
-            return owner == player;
+            return player.HasValue ? IsOwner(player.GetValueOrDefault()) : ownerFlags == 0;
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID player, bool asServer)
         {
-            if (owner.HasValue)
-            {
-                if (owner.Value.isBot)
-                    return asServer;
-                return owner == player;
-            }
-            return asServer;
+            return IsOwnerById(player.id.value, asServer);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private bool IsOwnerById(ulong playerId, bool asServer)
+        {
+            if (ownerFlags == 0)
+                return asServer;
+            // Bots are driven by the server.
+            if ((ownerFlags & 2) != 0)
+                return asServer;
+            return ownerIdValue == playerId;
         }
 
         internal abstract void SimulateTick(ulong tick, float delta);
