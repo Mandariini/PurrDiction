@@ -15,6 +15,9 @@ namespace PurrNet.Prediction
         // Marks the state section that last decoded a record for this identity.
         internal uint addressedReadStamp;
 
+        // Marks the verified tick whose authoritative input was last applied to this identity.
+        internal uint verifiedInputStamp;
+
         public virtual string GetExtraString()
         {
             return string.Empty;

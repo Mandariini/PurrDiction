@@ -392,7 +392,9 @@ namespace PurrNet.Prediction
             }
 
             var batch = _verifiedInputTicks[tickIndex];
-            _verifiedInputIds.Clear();
+            if (++_verifiedInputStamp == 0)
+                _verifiedInputStamp = 1;
+            uint stamp = _verifiedInputStamp;
             using var payload = BitPackerPool.Get();
             for (int i = batch.firstEntry; i < batch.firstEntry + batch.count; i++)
             {
@@ -416,16 +418,23 @@ namespace PurrNet.Prediction
                 if (payload.positionInBits != entry.bitLength || !system.HasInputAt(tick))
                     throw new MissingPredictionBaselineException(
                         $"Incomplete authoritative input for {entry.id} at tick {tick}.");
-                _verifiedInputIds.Add(entry.id);
+                system.verifiedInputStamp = stamp;
             }
 
             for (int i = 0; i < _systemsCount; i++)
             {
                 var system = _systems[i];
-                if (system.hasInput && !system.SkipsCurrentSimulationPhase() && !_verifiedInputIds.Contains(system.id))
+                if (system.hasInput && system.verifiedInputStamp != stamp && !system.SkipsCurrentSimulationPhase() &&
+                    !VerifiedInputAppliedTo(system.id, stamp))
                     throw new MissingPredictionBaselineException(
                         $"Missing authoritative input for {system.id} at tick {tick}.");
             }
         }
+
+        private uint _verifiedInputStamp;
+
+        // Inputs apply to the identity registered under their id, which a stale registration can shadow.
+        private bool VerifiedInputAppliedTo(PredictedComponentID id, uint stamp)
+            => _instanceMap.TryGetValue(id, out var mapped) && mapped && mapped.verifiedInputStamp == stamp;
     }
 }
