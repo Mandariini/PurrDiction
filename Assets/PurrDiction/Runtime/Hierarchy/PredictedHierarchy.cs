@@ -10,6 +10,29 @@ namespace PurrNet.Prediction
     {
         readonly List<InstanceDetails> _spawnedPrefabs = new ();
         readonly Dictionary<PredictedObjectID, InstanceDetails> _recordsById = new (PredictionIdComparers.Objects);
+
+        /// <summary>
+        /// Bumped on every record change, so identities can cache the root their piece resolves to.
+        /// </summary>
+        internal uint recordsRevision { get; private set; } = 1;
+
+        private void SetRecord(PredictedObjectID id, in InstanceDetails record)
+        {
+            _recordsById[id] = record;
+            recordsRevision++;
+        }
+
+        private bool RemoveRecordEntry(PredictedObjectID id)
+        {
+            recordsRevision++;
+            return _recordsById.Remove(id);
+        }
+
+        private void ClearRecords()
+        {
+            _recordsById.Clear();
+            recordsRevision++;
+        }
         readonly Dictionary<PredictedObjectID, GameObject> _instanceMap = new (PredictionIdComparers.Objects);
         readonly Dictionary<GameObject, PredictedObjectID> _goToId = new ();
         readonly HashSet<PredictedObjectID> _isSceneObject = new ();
@@ -399,13 +422,13 @@ namespace PurrNet.Prediction
             }
 
             _spawnedPrefabs.Clear();
-            _recordsById.Clear();
+            ClearRecords();
 
             for (var i = 0; i < target.Count; i++)
             {
                 var record = target[i];
                 _spawnedPrefabs.Add(record);
-                _recordsById[record.instanceId] = record;
+                SetRecord(record.instanceId, record);
             }
 
             _nextInstanceId = state.nextInstanceId;
@@ -774,7 +797,7 @@ namespace PurrNet.Prediction
             {
                 var record = _recordBuildScratch[k];
                 _spawnedPrefabs.Add(record);
-                _recordsById[record.instanceId] = record;
+                SetRecord(record.instanceId, record);
             }
 
             NotifyInstanceParentChanged(rootGo);
@@ -1415,7 +1438,7 @@ namespace PurrNet.Prediction
                     _instanceMap.Add(pieceId, pieceGo);
                     _goToId.Add(pieceGo, pieceId);
                     _spawnedPrefabs.Add(record);
-                    _recordsById[pieceId] = record;
+                    SetRecord(pieceId, record);
 
                     predictionManager.RegisterInstance(pieceGo, pieceId, null, false, false);
                 }
@@ -1725,7 +1748,7 @@ namespace PurrNet.Prediction
                     position, rotation, record.owner, null, record.networkId);
 
                 _spawnedPrefabs[i] = rebased;
-                _recordsById[record.instanceId] = rebased;
+                SetRecord(record.instanceId, rebased);
                 changed = true;
             }
 
@@ -1794,7 +1817,7 @@ namespace PurrNet.Prediction
                 var promoted = new InstanceDetails(record.prefabId, record.pieceIndex.value, record.instanceId, pos, rot, rootRecord.owner, record.parent, record.networkId);
 
                 _spawnedPrefabs[i] = promoted;
-                _recordsById[record.instanceId] = promoted;
+                SetRecord(record.instanceId, promoted);
             }
         }
 
@@ -1820,7 +1843,7 @@ namespace PurrNet.Prediction
                         _instanceMap.Remove(record.instanceId);
                         if (removeRecords)
                         {
-                            _recordsById.Remove(record.instanceId);
+                            RemoveRecordEntry(record.instanceId);
                             _removedRecordScratch.Add(record.instanceId);
                         }
                         memberSet.Remove(record.instanceId);
@@ -1887,7 +1910,7 @@ namespace PurrNet.Prediction
 
                 if (removeRecords)
                 {
-                    _recordsById.Remove(piece.id);
+                    RemoveRecordEntry(piece.id);
                     _removedRecordScratch.Add(piece.id);
                 }
             }
@@ -1940,7 +1963,7 @@ namespace PurrNet.Prediction
 
         private void RemoveRecord(PredictedObjectID id)
         {
-            if (!_recordsById.Remove(id))
+            if (!RemoveRecordEntry(id))
                 return;
 
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
@@ -2253,7 +2276,7 @@ namespace PurrNet.Prediction
             _instanceMap.Clear();
             _goToId.Clear();
             _spawnedPrefabs.Clear();
-            _recordsById.Clear();
+            ClearRecords();
             _isSceneObject.Clear();
             _reservedSceneObjects.Clear();
             _pendingSceneReservations.Clear();

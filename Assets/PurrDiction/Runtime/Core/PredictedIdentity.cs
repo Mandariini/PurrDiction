@@ -75,11 +75,34 @@ namespace PurrNet.Prediction
             get
             {
                 var manager = predictionManager;
-                if (manager && manager.hierarchy && manager.hierarchy.TryGetRootId(id.objectId, out var rootId))
-                    return rootId;
-                return id.objectId;
+                var hierarchy = manager ? manager.hierarchy : null;
+                return hierarchy ? ResolveRootIn(hierarchy) : id.objectId;
             }
         }
+
+        // Roots only move when a hierarchy record changes, so reuse the last lookup until then.
+        internal PredictedObjectID ResolveRootIn(PredictedHierarchy hierarchy)
+        {
+            var objectId = id.objectId;
+            if (ReferenceEquals(_rootCacheHierarchy, hierarchy) &&
+                _rootCacheRevision == hierarchy.recordsRevision &&
+                _rootCacheObjectId.Equals(objectId))
+            {
+                return _rootCacheId;
+            }
+
+            var root = hierarchy.TryGetRootId(objectId, out var rootId) ? rootId : objectId;
+            _rootCacheHierarchy = hierarchy;
+            _rootCacheRevision = hierarchy.recordsRevision;
+            _rootCacheObjectId = objectId;
+            _rootCacheId = root;
+            return root;
+        }
+
+        private PredictedHierarchy _rootCacheHierarchy;
+        private uint _rootCacheRevision;
+        private PredictedObjectID _rootCacheObjectId;
+        private PredictedObjectID _rootCacheId;
 
         internal bool isFreshSpawn = true;
         internal bool preservesStateOnSetup { get; private set; }

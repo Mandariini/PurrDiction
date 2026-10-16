@@ -123,6 +123,9 @@ namespace PurrNet.Prediction
             return objectId;
         }
 
+        PredictedObjectID ResolveVisibilityRoot(PredictedIdentity system)
+            => hierarchy ? system.ResolveRootIn(hierarchy) : system.id.objectId;
+
         internal PlayerVisibilityTimeline PreparePlayerVisibility(
             PlayerID player,
             ulong tick,
@@ -530,7 +533,7 @@ namespace PurrNet.Prediction
                     continue;
                 }
 
-                _ownedRootScratch.Add(ResolveVisibilityRoot(system.id.objectId));
+                _ownedRootScratch.Add(ResolveVisibilityRoot(system));
             }
         }
 
@@ -571,7 +574,7 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            var rootId = ResolveVisibilityRoot(system.id.objectId);
+            var rootId = ResolveVisibilityRoot(system);
             if (previousOwner.HasValue)
                 MarkVisibilityDirtyForOwnership(previousOwner.Value, rootId);
             if (currentOwner.HasValue)
@@ -590,7 +593,7 @@ namespace PurrNet.Prediction
 
             MarkVisibilityDirtyForOwnership(
                 system.owner.Value,
-                ResolveVisibilityRoot(system.id.objectId));
+                ResolveVisibilityRoot(system));
         }
 
         internal void HandleVisibilityTopologyChanged()
@@ -704,7 +707,7 @@ namespace PurrNet.Prediction
             if (!system || system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return true;
 
-            var rootId = ResolveVisibilityRoot(system.id.objectId);
+            var rootId = ResolveVisibilityRoot(system);
             return timeline.IsVisible(rootId);
         }
 
@@ -718,7 +721,7 @@ namespace PurrNet.Prediction
             if (!system || system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return true;
 
-            var rootId = ResolveVisibilityRoot(system.id.objectId);
+            var rootId = ResolveVisibilityRoot(system);
             return timeline.WasVisibleAt(rootId, tick);
         }
 
@@ -734,7 +737,7 @@ namespace PurrNet.Prediction
                 firstTick <= baselineTick || firstTick >= tick || !IsLifecycleEntrant(firstTick, system.id))
                 return false;
             if (!timeline.isPassThrough &&
-                !timeline.HasContinuousVisibilityFrom(ResolveVisibilityRoot(system.id.objectId), firstTick))
+                !timeline.HasContinuousVisibilityFrom(ResolveVisibilityRoot(system), firstTick))
                 return false;
             enteringTick = firstTick;
             return true;
@@ -751,7 +754,7 @@ namespace PurrNet.Prediction
             if (system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return false;
 
-            var rootId = ResolveVisibilityRoot(system.id.objectId);
+            var rootId = ResolveVisibilityRoot(system);
             return !timeline.HasContinuousVisibilityFrom(rootId, baselineTick) ||
                    !hasHierarchyBaseline ||
                    !baselineRoots.Contains(rootId) ||
