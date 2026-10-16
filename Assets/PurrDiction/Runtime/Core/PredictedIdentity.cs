@@ -10,20 +10,10 @@ namespace PurrNet.Prediction
 {
     public abstract partial class PredictedIdentity : MonoBehaviour
     {
-        public ulong? lastVerifiedTick { get; internal set; }
-
-        // Marks the state section that last decoded a record for this identity.
-        internal uint addressedReadStamp;
-
-        // Marks the verified tick whose authoritative input was last applied to this identity.
-        internal uint verifiedInputStamp;
-
         public virtual string GetExtraString()
         {
             return string.Empty;
         }
-
-        protected readonly ProfilerMarker simulateMarker;
 
         private static readonly Dictionary<Type, ProfilerMarker> _simulateMarkers = new ();
 
@@ -36,8 +26,6 @@ namespace PurrNet.Prediction
                 _simulateMarkers.Add(type, simulateMarker);
             }
         }
-
-        public PredictionManager predictionManager { get; protected set; }
 
         /// <summary>
         /// Represents the identifier of the owner associated with this object.
@@ -54,15 +42,6 @@ namespace PurrNet.Prediction
                     _owner = value;
             }
         }
-
-        PlayerID? _owner;
-
-        /// <summary>
-        /// The unique identifier for this object.
-        /// Can be used to identify the object across the network.
-        /// </summary>
-        [NonSerialized]
-        public PredictedComponentID id;
 
         /// <summary>
         /// Id of the root piece of the spawn instance this component belongs to.
@@ -99,10 +78,6 @@ namespace PurrNet.Prediction
             return root;
         }
 
-        private PredictedHierarchy _rootCacheHierarchy;
-        private uint _rootCacheRevision;
-        private PredictedObjectID _rootCacheObjectId;
-        private PredictedObjectID _rootCacheId;
 
         internal bool isFreshSpawn = true;
         internal bool preservesStateOnSetup { get; private set; }
@@ -130,16 +105,8 @@ namespace PurrNet.Prediction
         [SerializeField, Tooltip("Local prediction policy used when this identity overrides its scope, or when no PredictionPolicyScope is found.")]
         private PredictionPolicy _predictionPolicy = PredictionPolicy.FullPrediction;
 
-        /// <summary>
-        /// How this identity participates in client-side prediction and reconciliation.
-        /// See <see cref="PredictionPolicy"/> for the semantics of each mode.
-        /// </summary>
-        public PredictionPolicy predictionPolicy { get; private set; }
-
         private PredictionPolicy _lastRegisteredEffectivePredictionPolicy;
         private bool _hasLastRegisteredPredictionPolicy;
-        private PredictionPolicy _lastEffectivePredictionPolicy;
-        private bool _hasLastEffectivePredictionPolicy;
         private bool _hasPendingSetupPolicyChange;
         private PredictionPolicy _pendingSetupOldPolicy;
         private PredictionPolicy _pendingSetupNewPolicy;
@@ -941,13 +908,6 @@ namespace PurrNet.Prediction
 
         internal abstract void QueueInput(BitPacker packer, PlayerID sender);
 
-        // Bits of the owner's upload that the server consumed for a tick, kept so the
-        // transcript can tell that owner to restore them instead of echoing them.
-        private BitPacker _uploadedInputBits;
-        private ulong _uploadedInputTick;
-        private bool _uploadedInputPending;
-        private bool _hasUploadedInputBits;
-
         internal void RecordUploadedInputBits(BitPacker packer, int origin)
         {
             // This identity retains one input, not a whole packet. Keep its storage out
@@ -965,9 +925,6 @@ namespace PurrNet.Prediction
             _uploadedInputTick = tick;
             _uploadedInputPending = false;
         }
-
-        // The tick's input is the decoded upload itself, so the uploaded bits decode to it on every peer.
-        private bool _uploadedInputVerbatim;
 
         internal bool TryWriteVerbatimUploadedInput(ulong tick, BitPacker packer)
         {

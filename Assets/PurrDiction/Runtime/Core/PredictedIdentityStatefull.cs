@@ -13,6 +13,21 @@ namespace PurrNet.Prediction
 {
     public abstract class PredictedIdentity<STATE> : PredictedIdentity where STATE : struct, IPredictedData<STATE>
     {
+        // Read every tick: declared first so they share cache lines (see PredictedIdentity.Fields.cs).
+        // Reference-free persistent states share one row-per-tick table per world instead of _stateHistory.
+        private DenseStateHistory<FULL_STATE<STATE>> _denseHistory;
+        private int _denseSlot = -1;
+        private ulong _denseWindow;
+        private History<FULL_STATE<STATE>> _stateHistory;
+        private History<FULL_STATE<STATE>> _verifiedHistory;
+        private StateDeltaCache<FULL_STATE<STATE>> _stateDeltaCache;
+        internal FULL_STATE<STATE> fullPredictedState;
+        protected Type myType;
+        // All receivers read the same pre-simulation value, so compare and store it once per tick.
+        private ulong _liveVerifiedThroughTick;
+        private PredictedViewBuffer<FULL_STATE<STATE>> _interpolatedState;
+        private int _viewHooks;
+
         public PredictedHierarchy hierarchy { get; private set; }
 
         public override string ToString()
@@ -20,20 +35,12 @@ namespace PurrNet.Prediction
             return currentState.ToString();
         }
 
-        private PredictedViewBuffer<FULL_STATE<STATE>> _interpolatedState;
         private ulong _viewStateTick;
         private ulong _viewSpawnTick;
 
         private ulong viewTeleportTick => predictionManager ? predictionManager.localTickInContext : 0;
-        private History<FULL_STATE<STATE>> _stateHistory;
-        // Reference-free persistent states share one row-per-tick table per world instead.
-        private DenseStateHistory<FULL_STATE<STATE>> _denseHistory;
-        private int _denseSlot = -1;
-        private ulong _denseWindow;
         private static readonly bool s_denseCapable =
             !System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences<FULL_STATE<STATE>>();
-        private History<FULL_STATE<STATE>> _verifiedHistory;
-        private StateDeltaCache<FULL_STATE<STATE>> _stateDeltaCache;
 
         // Codegen enables this for ordinary value states; mutable containers stay uncached.
         protected virtual bool SupportsStateDeltaCaching() => false;
@@ -97,14 +104,11 @@ namespace PurrNet.Prediction
             };
         }
 
-        internal FULL_STATE<STATE> fullPredictedState;
-
         public ref STATE currentState
         {
             get => ref fullPredictedState.state;
         }
 
-        protected Type myType;
 
         private void ResetStateToInitialState()
         {
@@ -504,8 +508,6 @@ namespace PurrNet.Prediction
             baseline.Dispose();
         }
 
-        // All receivers read the same pre-simulation value, so compare and store it once per tick.
-        private ulong _liveVerifiedThroughTick;
 
         internal void RefreshVerifiedFromLive(ulong tick)
         {
@@ -959,7 +961,6 @@ namespace PurrNet.Prediction
         private const int ViewHookLate = 4;
         private const int ViewHookStart = 8;
         private static readonly Dictionary<Type, int> s_viewHooks = new ();
-        private int _viewHooks;
 
         private int viewHooks => _viewHooks != 0 ? _viewHooks : _viewHooks = ResolveViewHooks(GetType());
 

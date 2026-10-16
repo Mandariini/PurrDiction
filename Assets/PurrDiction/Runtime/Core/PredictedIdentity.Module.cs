@@ -21,8 +21,6 @@ namespace PurrNet.Prediction
 
     public abstract partial class PredictedIdentity
     {
-        private readonly List<PredictedModule> _modules = new();
-
         private History<DisposableList<uint>> _moduleSetVerified;
 
         private History<DisposableList<uint>> moduleSetVerified
