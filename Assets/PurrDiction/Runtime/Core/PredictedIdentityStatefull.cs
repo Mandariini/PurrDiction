@@ -24,6 +24,12 @@ namespace PurrNet.Prediction
         private ulong _liveVerifiedThroughTick;
         private PredictedViewBuffer<FULL_STATE<STATE>> _interpolatedState;
         private int _viewHooks;
+        // The view latch is written every tick and read every frame, next to the state it copies.
+        FULL_STATE<STATE>? _viewState;
+        private ulong _viewStateTick;
+        private bool _viewAwaitsReplaySample;
+        private bool _firstViewUpdate = true;
+        public STATE viewState;
 
         public PredictedHierarchy hierarchy { get; private set; }
 
@@ -32,7 +38,6 @@ namespace PurrNet.Prediction
             return currentState.ToString();
         }
 
-        private ulong _viewStateTick;
         private ulong _viewSpawnTick;
 
         private ulong viewTeleportTick => predictionManager ? predictionManager.localTickInContext : 0;
@@ -41,7 +46,6 @@ namespace PurrNet.Prediction
         protected virtual bool SupportsStateDeltaCaching() => false;
 
         protected TickManager tickModule { get; private set; }
-        private bool _firstViewUpdate = true;
 
         public override void ResetInterpolation()
         {
@@ -280,8 +284,6 @@ namespace PurrNet.Prediction
             _viewAwaitsReplaySample = world.isReplaying;
         }
 
-        private bool _viewAwaitsReplaySample;
-
         protected virtual void GetUnityState(ref STATE state) {}
 
         internal override void GetLatestUnityState()
@@ -378,8 +380,6 @@ namespace PurrNet.Prediction
             ulong window = (ulong)Math.Max(0, history.Capacity);
             return window > 0 && tick > window ? tick - window : 0;
         }
-
-        FULL_STATE<STATE>? _viewState;
 
         public override void UpdateRollbackInterpolationState(float delta, bool accumulateError)
         {
@@ -833,8 +833,6 @@ namespace PurrNet.Prediction
         }
 
         internal override void QueueInput(BitPacker packer, PlayerID sender) { }
-
-        public STATE viewState;
 
         /// <summary>
         /// Number of view samples currently buffered ahead of the rendered pose, or -1 before
