@@ -28,11 +28,9 @@ namespace PurrNet.Prediction
 
         bool m_contiguous = true;
 
-        // Ticks of the oldest and newest entries, valid while m_count > 0. Kept beside the
-        // count so bounds checks, lookups and pruning do not touch cold slots.
+        // Tick of the oldest entry, valid while m_count > 0. Kept beside the count so lookups
+        // and pruning do not touch the cold head slot, without growing past one cache line.
         ulong m_firstTick;
-
-        ulong m_lastTick;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         int Phys(int index)
@@ -83,7 +81,7 @@ namespace PurrNet.Prediction
         public ulong MostRecentTick
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => m_count == 0 ? 0 : m_lastTick;
+            get => m_count == 0 ? 0 : m_values[Phys(m_count - 1)].tick;
         }
 
         // Read only the newest entry, and reject it if it is ahead of the caller.
@@ -91,10 +89,14 @@ namespace PurrNet.Prediction
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal bool TryReadLatest(ulong maximumTick, out T result)
         {
-            if (m_count > 0 && m_lastTick <= maximumTick)
+            if (m_count > 0)
             {
-                result = m_values[Phys(m_count - 1)].value;
-                return true;
+                int phys = Phys(m_count - 1);
+                if (m_values[phys].tick <= maximumTick)
+                {
+                    result = m_values[phys].value;
+                    return true;
+                }
             }
             result = default;
             return false;
@@ -244,11 +246,12 @@ namespace PurrNet.Prediction
         /// <param name="data">What is the state/data of the tick.</param>
         public void Write(ulong tick, in T data)
         {
-            if (m_count == 0 || tick > m_lastTick)
+            ulong last = m_count == 0 ? 0 : m_values[Phys(m_count - 1)].tick;
+            if (m_count == 0 || tick > last)
             {
                 if (m_count == 0)
                     m_firstTick = tick;
-                else if (tick != m_lastTick + 1)
+                else if (tick != last + 1)
                     m_contiguous = false;
 
                 if (m_count == m_values.Length)
@@ -256,7 +259,6 @@ namespace PurrNet.Prediction
 
                 m_values[Phys(m_count)] = new Slot { tick = tick, value = data };
                 m_count++;
-                m_lastTick = tick;
 
                 if (m_maxCount > 0)
                     TryToDownsize();
@@ -311,7 +313,7 @@ namespace PurrNet.Prediction
         // indexing after that gap has expired or been filled.
         private void RefreshContiguity()
         {
-            m_contiguous = m_count <= 1 || m_lastTick - m_firstTick == (ulong)(m_count - 1);
+            m_contiguous = m_count <= 1 || m_values[Phys(m_count - 1)].tick - m_firstTick == (ulong)(m_count - 1);
         }
 
         private void RemoveFront(int count)
@@ -371,15 +373,8 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            if (m_contiguous)
-            {
-                m_lastTick -= (ulong)count;
-            }
-            else
-            {
-                m_lastTick = m_values[Phys(m_count - 1)].tick;
+            if (!m_contiguous)
                 RefreshContiguity();
-            }
         }
 
         /// <summary>
@@ -561,7 +556,7 @@ namespace PurrNet.Prediction
             // Delta baselines usually address one of the newest sparse entries.
             // Also resolve insertion points beyond or between those entries directly.
             int lastIndex = m_count - 1;
-            ulong last = m_lastTick;
+            ulong last = m_values[Phys(lastIndex)].tick;
             if (tick >= last)
             {
                 result = tick == last ? lastIndex : m_count;
@@ -638,8 +633,6 @@ namespace PurrNet.Prediction
             {
                 if (index == 0)
                     m_firstTick = m_values[m_head].tick;
-                if (index == m_count)
-                    m_lastTick = m_values[Phys(m_count - 1)].tick;
             }
 
             RefreshContiguity();
