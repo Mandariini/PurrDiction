@@ -79,17 +79,22 @@ namespace PurrNet.Prediction
 
         internal int rows => _rows;
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal int Count(int slot) => _slots[slot].entries;
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal ulong OldestTick(int slot)
             => _slots[slot].hasAnchor ? _slots[slot].anchorTick : _slots[slot].any ? _slots[slot].first : 0;
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal ulong MostRecentTick(int slot)
             => _slots[slot].any ? _slots[slot].last : _slots[slot].hasAnchor ? _slots[slot].anchorTick : 0;
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         private int Index(ulong tick, int slot) => ((int)tick & _rowMask) * _stride + slot;
 
         // The entry written at exactly tick.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool TryRead(int slot, ulong tick, out T value)
         {
             if (_slots[slot].any && tick >= _slots[slot].first && tick <= _slots[slot].last)
@@ -110,6 +115,7 @@ namespace PurrNet.Prediction
             return false;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool Contains(int slot, ulong tick)
         {
             if (_slots[slot].any && tick >= _slots[slot].first && tick <= _slots[slot].last)
@@ -118,6 +124,7 @@ namespace PurrNet.Prediction
         }
 
         // The newest entry, unless it lies ahead of maximumTick.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool TryReadLatest(int slot, ulong maximumTick, out T value)
         {
             if (_slots[slot].any)
@@ -139,6 +146,7 @@ namespace PurrNet.Prediction
         }
 
         // The entry at tick, or the newest one before it.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool ReadOrPrevious(int slot, ulong tick, out T value)
         {
             if (_slots[slot].any && tick >= _slots[slot].first)
@@ -220,6 +228,18 @@ namespace PurrNet.Prediction
         /// </summary>
         internal bool TryWrite(int slot, ulong tick, in T value)
         {
+            // The usual write: the tick after the newest, still inside the rows.
+            ref var state = ref _slots[slot];
+            if (state.any && tick == state.last + 1 && tick - state.first < (ulong)_rows)
+            {
+                int next = Index(tick, slot);
+                _values[next] = value;
+                _written[next] = true;
+                state.last = tick;
+                state.entries++;
+                return true;
+            }
+
             if (!_slots[slot].any)
             {
                 if (_slots[slot].hasAnchor && tick <= _slots[slot].anchorTick)
@@ -344,9 +364,12 @@ namespace PurrNet.Prediction
         {
             ulong last = _slots[slot].last;
             EnsureSpan(tick - _slots[slot].first + 1);
-            var previous = _values[Index(last, slot)];
-            for (ulong filled = last + 1; filled < tick; filled++)
-                Fill(Index(filled, slot), previous);
+            if (tick > last + 1)
+            {
+                var previous = _values[Index(last, slot)];
+                for (ulong filled = last + 1; filled < tick; filled++)
+                    Fill(Index(filled, slot), previous);
+            }
             int index = Index(tick, slot);
             _values[index] = value;
             _written[index] = true;
