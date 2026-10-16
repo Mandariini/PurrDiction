@@ -32,7 +32,6 @@ namespace PurrNet.Prediction
         readonly HashSet<PredictedObjectID> _ownedRootScratch = new ();
         readonly List<PredictedIdentity> _addressedSystemScratch = new ();
         readonly List<PredictedIdentity> _addressedReadSystemScratch = new ();
-        readonly HashSet<PredictedComponentID> _addressedReadIdsScratch = new ();
         readonly List<PredictedObjectID> _visibilityRootScratch = new ();
 
         ulong _nextVisibilityAcquisitionToken = 1;
@@ -1355,9 +1354,11 @@ namespace PurrNet.Prediction
             public bool fullFrame;
             public bool eventHandlers;
             public bool deferUnityApply;
+            public uint stamp;
         }
 
         private AddressedReadContext _addressedRead;
+        private uint _addressedReadStamp;
         private AddressedPredictionRecords.ReadRecord _readHierarchyRecord;
         private AddressedPredictionRecords.ReadRecord _readStateRecord;
         private AddressedPredictionRecords.RecordFailure _addressedRecordFailure;
@@ -1434,7 +1435,9 @@ namespace PurrNet.Prediction
             bool eventHandlers)
         {
             _addressedReadSystemScratch.Clear();
-            _addressedReadIdsScratch.Clear();
+            if (++_addressedReadStamp == 0)
+                _addressedReadStamp = 1;
+            uint stamp = _addressedReadStamp;
 
             if (!fullFrame && baselineTick > 0)
             {
@@ -1459,7 +1462,8 @@ namespace PurrNet.Prediction
                 baselineTick = baselineTick,
                 serverTick = serverTick,
                 fullFrame = fullFrame,
-                eventHandlers = eventHandlers
+                eventHandlers = eventHandlers,
+                stamp = stamp
             };
             try
             {
@@ -1480,7 +1484,7 @@ namespace PurrNet.Prediction
             {
                 var system = _addressedReadSystemScratch[i];
                 if (!system ||
-                    _addressedReadIdsScratch.Contains(system.id) ||
+                    system.addressedReadStamp == stamp ||
                     _recordDecodeQuarantine.Contains(system.id) ||
                     !_instanceMap.TryGetValue(system.id, out var current) ||
                     current != system)
@@ -1543,11 +1547,12 @@ namespace PurrNet.Prediction
             if (_recordDecodeQuarantine.Contains(id))
                 return;
 
-            if (!_addressedReadIdsScratch.Add(id))
+            if (system.addressedReadStamp == read.stamp)
             {
                 throw new InvalidOperationException(
                     $"Duplicate addressed state record {id}.");
             }
+            system.addressedReadStamp = read.stamp;
 
             bool full = read.fullFrame || isFullState;
             ulong recordBaseline = read.baselineTick;

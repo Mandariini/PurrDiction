@@ -12,6 +12,9 @@ namespace PurrNet.Prediction
     {
         public ulong? lastVerifiedTick { get; internal set; }
 
+        // Marks the state section that last decoded a record for this identity.
+        internal uint addressedReadStamp;
+
         public virtual string GetExtraString()
         {
             return string.Empty;
