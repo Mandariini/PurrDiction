@@ -36,6 +36,68 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(exception.InnerException, Is.TypeOf<ApplicationException>());
         }
 
+        [Test]
+        public void InPlaceSectionsReadAndRecoverLikeStagedSections()
+        {
+            var ids = new[]
+            {
+                new PredictedComponentID(new PredictedObjectID(5), 0),
+                new PredictedComponentID(new PredictedObjectID(6), 1),
+                new PredictedComponentID(new PredictedObjectID(7), 2),
+                new PredictedComponentID(new PredictedObjectID(8), 0)
+            };
+            // Exact, skipped, short and throwing readers in turn, at every frame bit offset.
+            for (int offset = 0; offset < 8; offset++)
+            foreach (bool inPlace in new[] { false, true })
+            {
+                using var frame = BitPackerPool.Get();
+                Prefix(offset, frame);
+                AddressedPredictionRecords.WriteSectionCount(ids.Length, frame);
+                for (int i = 0; i < ids.Length; i++)
+                {
+                    using var payload = BitPackerPool.Get();
+                    payload.WriteBits(0x2D5UL + (ulong)i, 10);
+                    payload.WriteBits((0x7A3C1E5UL * (ulong)(i + 1)) & ((1UL << 27) - 1), 27);
+                    AddressedPredictionRecords.WriteRecord(frame, ids[i], i == 1, payload);
+                }
+                frame.WriteBits(0x4A7, 11);
+                frame.ResetPositionAndMode(true);
+                frame.SetBitPosition(offset);
+
+                var seen = new System.Collections.Generic.List<string>();
+                var failures = new System.Collections.Generic.List<string>();
+                AddressedPredictionRecords.ReadRecord reader = (id, full, packer, bits) =>
+                {
+                    int record = Array.IndexOf(ids, id);
+                    Assert.That(bits, Is.EqualTo(37));
+                    Assert.That(full, Is.EqualTo(record == 1));
+                    if (record == 1)
+                        return;
+                    ulong head = packer.ReadBits(10);
+                    seen.Add($"{record}:{head:X}");
+                    if (record == 3)
+                        throw new ApplicationException("bad state");
+                    if (record == 0)
+                        Assert.That(packer.ReadBits(27), Is.EqualTo(0x7A3C1E5UL));
+                };
+                AddressedPredictionRecords.RecordFailure onFailure = (id, error, declared, consumed) =>
+                    failures.Add($"{Array.IndexOf(ids, id)}:{declared}:{consumed}:{error.GetType().Name}");
+
+                if (inPlace)
+                    AddressedPredictionRecords.ReadSectionInPlace(reader, frame, onFailure);
+                else
+                    AddressedPredictionRecords.ReadSection(reader, frame, onFailure);
+
+                Assert.That(seen, Is.EqualTo(new[] { "0:2D5", "2:2D7", "3:2D8" }), $"offset {offset}, in place {inPlace}");
+                Assert.That(failures, Is.EqualTo(new[]
+                {
+                    "2:37:10:InvalidOperationException",
+                    "3:37:10:ApplicationException"
+                }), $"offset {offset}, in place {inPlace}");
+                Assert.That(frame.ReadBits(11), Is.EqualTo(0x4A7UL), "the section ends where its records end");
+            }
+        }
+
         [TestCase(0)]
         [TestCase(1)]
         [TestCase(2)]

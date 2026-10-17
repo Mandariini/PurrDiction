@@ -128,6 +128,49 @@ namespace PurrNet.Prediction
                 ReadOne(readRecord, source, boundedPayload, onRecordFailure);
         }
 
+        // Decodes each payload straight from the frame instead of staging it. Readers see the
+        // payload at its frame bit offset, so they must read forward from the current position
+        // and never address the payload from bit zero.
+        internal static void ReadSectionInPlace(ReadRecord readRecord, BitPacker source,
+            RecordFailure onRecordFailure = null)
+        {
+            PackedUInt count = default;
+            Packer<PackedUInt>.Read(source, ref count);
+            for (uint i = 0; i < count.value; i++)
+                ReadOneInPlace(readRecord, source, onRecordFailure);
+        }
+
+        static void ReadOneInPlace(ReadRecord readRecord, BitPacker source, RecordFailure onRecordFailure)
+        {
+            PredictedComponentID id = default;
+            Packer<PredictedComponentID>.Read(source, ref id);
+
+            bool isFullState = default;
+            Packer<bool>.Read(source, ref isFullState);
+
+            PackedUInt payloadBits = default;
+            Packer<PackedUInt>.Read(source, ref payloadBits);
+
+            int payloadLength = checked((int)payloadBits.value);
+            int origin = source.positionInBits;
+            int end = checked(origin + payloadLength);
+            Exception failure = null;
+
+            try
+            {
+                readRecord?.Invoke(id, isFullState, source, payloadLength);
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+
+            int consumedBits = source.positionInBits - origin;
+            source.SetBitPosition(end);
+            if (failure != null || (consumedBits != payloadLength && consumedBits != 0))
+                ReportFailure(id, failure, payloadLength, consumedBits, onRecordFailure);
+        }
+
         // Gap replay needs the trailing event transcript before ordinary states are decoded.
         internal static void SkipSection(BitPacker source, int endBit, uint maximumRecords = uint.MaxValue)
         {
@@ -183,8 +226,12 @@ namespace PurrNet.Prediction
                 failure = exception;
             }
 
-            int consumedBits = boundedPayload.positionInBits;
+            ReportFailure(id, failure, payloadLength, boundedPayload.positionInBits, onRecordFailure);
+        }
 
+        static void ReportFailure(PredictedComponentID id, Exception failure, int payloadLength,
+            int consumedBits, RecordFailure onRecordFailure)
+        {
             if (failure == null && consumedBits != payloadLength && consumedBits != 0)
             {
                 failure = new InvalidOperationException(

@@ -1617,7 +1617,8 @@ namespace PurrNet.Prediction
             };
             try
             {
-                AddressedPredictionRecords.ReadSection(
+                // State readers only read forward, so records decode straight from the frame.
+                AddressedPredictionRecords.ReadSectionInPlace(
                     source: frame,
                     readRecord: _readStateRecord ??= ReadStateRecord,
                     onRecordFailure: addressedRecordFailure);
