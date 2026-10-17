@@ -8,7 +8,7 @@ namespace PurrNet.Prediction.Tests.Editor
 {
     public sealed class TickBandwidthCollectionTests
     {
-        static readonly FieldInfo Subscribers = typeof(TickBandwidthProfiler).GetField("onTickEnded",
+        static readonly FieldInfo Subscribers = typeof(TickBandwidthProfiler).GetField("_onTickEnded",
             BindingFlags.Static | BindingFlags.NonPublic);
         Action _previousSubscribers;
         bool _previousPolling;
@@ -28,8 +28,9 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             Subscribers.SetValue(null, null);
             TickBandwidthProfiler.MarkEndOfTick();
-            TickBandwidthProfiler.collectWithoutSubscribers = _previousPolling;
             Subscribers.SetValue(null, _previousSubscribers);
+            // Setting polling refreshes the collection flag for the restored subscribers.
+            TickBandwidthProfiler.collectWithoutSubscribers = _previousPolling;
         }
 
         [Test]

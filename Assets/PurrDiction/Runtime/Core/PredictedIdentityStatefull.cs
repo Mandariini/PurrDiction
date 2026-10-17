@@ -582,7 +582,8 @@ namespace PurrNet.Prediction
             if (!changed)
                 packer.SetBitPosition(changedPosition + 1);
 
-            TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
+            if (TickBandwidthProfiler.collecting)
+                TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
             return changed;
         }
 
@@ -643,7 +644,8 @@ namespace PurrNet.Prediction
             if (baselineTick > 0 && _verifiedHistory.MostRecentTick <= baselineTick)
             {
                 Packer<bool>.Write(packer, false);
-                TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
+                if (TickBandwidthProfiler.collecting)
+                    TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
                 return false;
             }
 
@@ -654,7 +656,8 @@ namespace PurrNet.Prediction
                 baseline.HasSameContents(ref fullPredictedState))
             {
                 Packer<bool>.Write(packer, false);
-                TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
+                if (TickBandwidthProfiler.collecting)
+                    TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
                 return false;
             }
 
@@ -680,7 +683,8 @@ namespace PurrNet.Prediction
                 WriteDeltaState(packer, in baseline.state, in fullPredictedState.state);
             }
 
-            TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
+            if (TickBandwidthProfiler.collecting)
+                TickBandwidthProfiler.OnWroteState(myType, packer.positionInBits - pos, this);
             return true;
         }
 
@@ -716,7 +720,8 @@ namespace PurrNet.Prediction
             }
             else if (TryApplyUnchangedBaseline(tick, serverTick, baselineTick, ref baseline))
             {
-                TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
+                if (TickBandwidthProfiler.collecting)
+                    TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
                 return;
             }
             else
@@ -725,7 +730,8 @@ namespace PurrNet.Prediction
             }
 
             ApplyVerifiedState(tick, serverTick, ref newState, changed ? null : baselineTick);
-            TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
+            if (TickBandwidthProfiler.collecting)
+                TickBandwidthProfiler.OnReadState(myType, packer.positionInBits - pos, this);
         }
 
         // An unchanged record whose baseline is still the newest verified entry stays that entry,
