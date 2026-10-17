@@ -1187,6 +1187,8 @@ namespace PurrNet.Prediction
         {
             if (_stableLocalPlayerBlocked)
                 return;
+            if (!hasStableLocalPlayer || stableLocalPlayerId != player.id.value)
+                SimulationSkipEpoch.value++;
             stableLocalPlayerId = player.id.value;
             hasStableLocalPlayer = true;
         }
@@ -1195,6 +1197,8 @@ namespace PurrNet.Prediction
         // not cache the player again until the next spawn.
         private void ForgetStableLocalPlayer()
         {
+            if (hasStableLocalPlayer)
+                SimulationSkipEpoch.value++;
             hasStableLocalPlayer = false;
             _stableLocalPlayerBlocked = true;
         }
@@ -1292,8 +1296,7 @@ namespace PurrNet.Prediction
             {
                 try
                 {
-                    for (var i = 0; i < _systemsCount; i++)
-                        _systems[i].RunPrepareSimulationInputs(localTick, delta);
+                    PrepareSimulationInputs(localTick, delta);
                 }
                 catch (Exception e)
                 {
@@ -1306,8 +1309,7 @@ namespace PurrNet.Prediction
             var simulateMarker = SimulateMarker.Auto();
             try
             {
-                for (var i = 0; i < _systemsCount; i++)
-                    _systems[i].RunSimulateTick(localTick, delta);
+                SimulateSystems(localTick, delta);
             }
             catch (Exception e)
             {
@@ -3249,6 +3251,91 @@ namespace PurrNet.Prediction
             VerifiedFrame
         }
 
+        // The prepare loop records the systems a pass may run: every one it did not skip, and
+        // every skipped one whose skip could still change. The simulate and Unity-state loops then
+        // walk only those while the skip epoch and the system list hold; if either moves mid-walk,
+        // the walk continues over every later system exactly as the full loop would.
+        private int[] _passRoster = new int[64];
+        private int _passRosterCount;
+        private int _passRosterEpoch;
+        private uint _passRosterRevision;
+        private bool _passRosterBuilt;
+
+        private bool PassRosterHolds() => _passRosterBuilt &&
+                                          _passRosterEpoch == SimulationSkipEpoch.value &&
+                                          _passRosterRevision == _systems.revision;
+
+        private void AddToPassRoster(int index)
+        {
+            if (_passRosterCount == _passRoster.Length)
+                Array.Resize(ref _passRoster, _passRoster.Length * 2);
+            _passRoster[_passRosterCount++] = index;
+        }
+
+        private void PrepareSimulationInputs(ulong tick, float delta)
+        {
+            _passRosterBuilt = false;
+            _passRosterCount = 0;
+            _passRosterEpoch = SimulationSkipEpoch.value;
+            _passRosterRevision = _systems.revision;
+            for (var i = 0; i < _systemsCount; i++)
+            {
+                var system = _systems[i];
+                if (system.SkipsCurrentSimulationPhase())
+                {
+                    if (!system.HasStableSimulationSkip())
+                        AddToPassRoster(i);
+                    continue;
+                }
+
+                AddToPassRoster(i);
+                system.OnPrepareSimulationInputs(tick, delta);
+            }
+            _passRosterBuilt = true;
+        }
+
+        private void SimulateSystems(ulong tick, float delta)
+        {
+            if (!PassRosterHolds())
+            {
+                for (var j = 0; j < _systemsCount; j++)
+                    _systems[j].RunSimulateTick(tick, delta);
+                return;
+            }
+
+            for (var k = 0; k < _passRosterCount; k++)
+            {
+                int index = _passRoster[k];
+                _systems[index].RunSimulateTick(tick, delta);
+                if (PassRosterHolds())
+                    continue;
+                for (var j = index + 1; j < _systemsCount; j++)
+                    _systems[j].RunSimulateTick(tick, delta);
+                return;
+            }
+        }
+
+        private void GetLatestUnityStates()
+        {
+            if (!PassRosterHolds())
+            {
+                for (var j = 0; j < _systemsCount; j++)
+                    _systems[j].RunGetLatestUnityState();
+                return;
+            }
+
+            for (var k = 0; k < _passRosterCount; k++)
+            {
+                int index = _passRoster[k];
+                _systems[index].RunGetLatestUnityState();
+                if (PassRosterHolds())
+                    continue;
+                for (var j = index + 1; j < _systemsCount; j++)
+                    _systems[j].RunGetLatestUnityState();
+                return;
+            }
+        }
+
         private void ReplayToLatestTick(ulong verifiedTick, HistorySaveMode saveMode)
         {
             using var _ = ReplayToLatestTickMarker.Auto();
@@ -3303,8 +3390,7 @@ namespace PurrNet.Prediction
                 {
                     try
                     {
-                        for (var i = 0; i < _systemsCount; i++)
-                            _systems[i].RunPrepareSimulationInputs(verifiedTick, delta);
+                        PrepareSimulationInputs(verifiedTick, delta);
                     }
                     catch (Exception e) when (swallowsSimulationHookFailures)
                     {
@@ -3317,8 +3403,7 @@ namespace PurrNet.Prediction
                 var simulateMarker = SimulateMarker.Auto();
                 try
                 {
-                    for (var j = 0; j < _systemsCount; j++)
-                        _systems[j].RunSimulateTick(verifiedTick, delta);
+                    SimulateSystems(verifiedTick, delta);
                 }
                 catch (Exception e) when (swallowsSimulationHookFailures)
                 {
@@ -3382,8 +3467,7 @@ namespace PurrNet.Prediction
 
                 try
                 {
-                    for (var j = 0; j < _systemsCount; j++)
-                        _systems[j].RunGetLatestUnityState();
+                    GetLatestUnityStates();
                 }
                 catch (Exception e) when (swallowsSimulationHookFailures)
                 {

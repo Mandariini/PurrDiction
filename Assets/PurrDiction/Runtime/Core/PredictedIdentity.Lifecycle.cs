@@ -94,6 +94,18 @@ namespace PurrNet.Prediction
             return method != null && method.DeclaringType == owner;
         }
 
+        // A skip only ownership, the runtime policy, the manager or its stable local player can
+        // lift. Each of those advances SimulationSkipEpoch, so a pass that saw this identity
+        // skipped need not ask again until the epoch moves.
+        internal bool HasStableSimulationSkip()
+        {
+            var policy = predictionPolicy;
+            if (policy == PredictionPolicy.ServerRelay)
+                return true;
+            var manager = predictionManager;
+            return policy == PredictionPolicy.PredictedIfOwned && manager is not null && manager.hasStableLocalPlayer;
+        }
+
         internal void RunSimulateTick(ulong tick, float delta)
         {
             if (SkipsCurrentSimulationPhase())
@@ -260,5 +272,11 @@ namespace PurrNet.Prediction
             ClearFutureModules(tick);
             ClearFuture(tick);
         }
+    }
+
+    // Advances whenever an input to an identity's simulation-phase skip changes.
+    internal static class SimulationSkipEpoch
+    {
+        internal static int value;
     }
 }

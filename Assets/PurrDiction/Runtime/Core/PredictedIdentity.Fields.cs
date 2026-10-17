@@ -41,7 +41,17 @@ namespace PurrNet.Prediction
         /// How this identity participates in client-side prediction and reconciliation.
         /// See <see cref="PredictionPolicy"/> for the semantics of each mode.
         /// </summary>
-        public PredictionPolicy predictionPolicy { get; private set; }
+        public PredictionPolicy predictionPolicy
+        {
+            get => _activePredictionPolicy;
+            private set
+            {
+                if (_activePredictionPolicy != value)
+                    SimulationSkipEpoch.value++;
+                _activePredictionPolicy = value;
+            }
+        }
+        private PredictionPolicy _activePredictionPolicy;
         private PredictionPolicy _lastEffectivePredictionPolicy;
         private bool _hasLastEffectivePredictionPolicy;
 

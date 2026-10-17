@@ -1,5 +1,6 @@
 using System.Reflection;
 using NUnit.Framework;
+using PurrNet.Modules;
 using UnityEngine;
 
 namespace PurrNet.Prediction.Tests.Editor
@@ -64,6 +65,127 @@ namespace PurrNet.Prediction.Tests.Editor
                 Object.DestroyImmediate(identityObject);
                 Object.DestroyImmediate(managerObject);
             }
+        }
+    }
+
+    public sealed class PassRosterTests
+    {
+        private const BindingFlags InstanceFields = BindingFlags.Instance | BindingFlags.NonPublic;
+
+        [Test]
+        public void OwnershipChangedMidPassAppliesWithinThatPass()
+        {
+            var networkObject = new GameObject("NetworkManager");
+            var managerObject = new GameObject("PredictionManager");
+            var firstObject = new GameObject("First");
+            var secondObject = new GameObject("Second");
+            try
+            {
+                var networkManager = networkObject.AddComponent<NetworkManager>();
+                var tickManager = new TickManager(20, networkManager, null, false);
+                Set(typeof(NetworkManager), networkManager, "_clientTickManager", tickManager);
+                var manager = managerObject.AddComponent<PredictionManager>();
+                Set(typeof(NetworkIdentity), manager, "<networkManager>k__BackingField", networkManager);
+                Set(typeof(PredictionManager), manager, "<tickRate>k__BackingField", 20);
+                manager.SetIsSpawned(true, false);
+                var local = new PlayerID(7, false);
+                var remote = new PlayerID(8, false);
+                Set(typeof(NetworkIdentity), manager, "_localPlayer", (PlayerID?)local);
+
+                var first = firstObject.AddComponent<RosterOwnerProbe>();
+                var second = secondObject.AddComponent<RosterOwnerProbe>();
+                first.AttachForTest(manager);
+                second.AttachForTest(manager);
+                first.owner = local;
+                second.owner = remote;
+
+                var systems = (PredictedSystemList)typeof(PredictionManager)
+                    .GetField("_systems", InstanceFields).GetValue(manager);
+                systems.Add(first);
+                systems.Add(second);
+                Set(typeof(PredictionManager), manager, "_systemsCount", 2);
+                Set(typeof(PredictionManager), manager, "<isReplaying>k__BackingField", true);
+                Assert.That(first.IsOwner(), Is.True);
+                Assert.That(manager.hasStableLocalPlayer, Is.True, "the pass should take the roster path");
+
+                // The first identity hands the second to the local player before the second runs.
+                first.grantTo = second;
+                first.grantee = local;
+                RunPass(manager);
+                Assert.That(first.simulations, Is.EqualTo(1));
+                Assert.That(second.simulations, Is.EqualTo(1),
+                    "a full walk reaches the second identity after it became locally owned");
+
+                // Ownership that holds through the pass keeps the remote identity skipped.
+                first.grantTo = null;
+                second.owner = remote;
+                RunPass(manager);
+                Assert.That(first.simulations, Is.EqualTo(2));
+                Assert.That(second.simulations, Is.EqualTo(1));
+
+                // Losing ownership mid-pass skips the identity in that pass.
+                second.owner = local;
+                first.grantTo = second;
+                first.grantee = remote;
+                RunPass(manager);
+                Assert.That(first.simulations, Is.EqualTo(3));
+                Assert.That(second.simulations, Is.EqualTo(1));
+
+                systems.Remove(first);
+                systems.Remove(second);
+                Set(typeof(PredictionManager), manager, "_systemsCount", 0);
+                first.DetachForTest();
+                second.DetachForTest();
+            }
+            finally
+            {
+                Object.DestroyImmediate(firstObject);
+                Object.DestroyImmediate(secondObject);
+                Object.DestroyImmediate(managerObject);
+                Object.DestroyImmediate(networkObject);
+            }
+        }
+
+        private static void RunPass(PredictionManager manager)
+        {
+            Invoke(manager, "PrepareSimulationInputs", 5UL, 0.05f);
+            Invoke(manager, "SimulateSystems", 5UL, 0.05f);
+        }
+
+        private static void Invoke(PredictionManager manager, string name, params object[] arguments)
+        {
+            var method = typeof(PredictionManager).GetMethod(name, InstanceFields);
+            Assert.That(method, Is.Not.Null, name);
+            method.Invoke(manager, arguments);
+        }
+
+        private static void Set(System.Type type, object target, string name, object value)
+        {
+            var field = type.GetField(name, InstanceFields);
+            Assert.That(field, Is.Not.Null, $"{type.Name}.{name}");
+            field.SetValue(target, value);
+        }
+    }
+
+    public sealed class RosterOwnerProbe : PredictedIdentity<EmptyState>
+    {
+        public RosterOwnerProbe grantTo;
+        public PlayerID grantee;
+        public int simulations;
+
+        public void AttachForTest(PredictionManager manager)
+        {
+            predictionManager = manager;
+            SetPredictionPolicyOverride(PredictionPolicy.PredictedIfOwned);
+        }
+
+        public void DetachForTest() => predictionManager = null;
+
+        protected override void Simulate(ref EmptyState state, float delta)
+        {
+            simulations++;
+            if (grantTo)
+                grantTo.owner = grantee;
         }
     }
 

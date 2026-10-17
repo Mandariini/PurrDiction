@@ -590,8 +590,12 @@ namespace PurrNet.Prediction
         private void AssignOwner(PlayerID? player)
         {
             _owner = player;
-            ownerIdValue = CompactIdentityState.OwnerId(player);
-            ownerFlags = CompactIdentityState.OwnerFlags(player);
+            ulong idValue = CompactIdentityState.OwnerId(player);
+            byte flags = CompactIdentityState.OwnerFlags(player);
+            if (idValue != ownerIdValue || flags != ownerFlags)
+                SimulationSkipEpoch.value++;
+            ownerIdValue = idValue;
+            ownerFlags = flags;
         }
 
         private History<PredictedIdentityState> _metadataVerified;
@@ -709,6 +713,7 @@ namespace PurrNet.Prediction
             _destroyedFired = false;
             _poolPrewarmed = true;
             predictionManager = world;
+            SimulationSkipEpoch.value++;
             sceneId = world.sceneId;
             _metadataVerified = null;
             _moduleSetVerified = null;
