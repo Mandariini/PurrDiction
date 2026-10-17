@@ -237,9 +237,12 @@ namespace PurrNet.Prediction
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
-                if (_moduleSetVerified != null || HasDynamicModulesOrHistory())
+                // Most identities never had dynamic modules: skip resolving the policy for them.
+                bool hasDynamics = HasDynamicModulesOrHistory();
+                if (_moduleSetVerified != null || hasDynamics)
                     StoreEmptyVerifiedModuleSet(serverTick);
-                ApplyEmptyDynamicModuleSnapshot(tick, UsesSoftCorrectionTimeline());
+                if (hasDynamics)
+                    ApplyEmptyDynamicModuleSnapshot(tick, UsesSoftCorrectionTimeline());
                 return;
             }
 
