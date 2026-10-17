@@ -196,8 +196,10 @@ namespace PurrNet.Prediction.Tests.Editor
             public int PendingFrames => ((ICollection)Get<object>(
                 typeof(PredictionManager), manager, "_deltas")).Count;
 
-            public int? PendingViewValue => Get<FULL_STATE<SchedulingProbeState>?>(
-                typeof(PredictedIdentity<SchedulingProbeState>), probe, "_viewState")?.state.value;
+            public int? PendingViewValue => probe.hasPendingViewLatch
+                ? Get<FULL_STATE<SchedulingProbeState>>(
+                    typeof(PredictedIdentity<SchedulingProbeState>), probe, "_viewState").state.value
+                : null;
 
             public void SetPredictionHead(ulong tick, int value)
             {

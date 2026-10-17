@@ -25,7 +25,9 @@ namespace PurrNet.Prediction
         private PredictedViewBuffer<FULL_STATE<STATE>> _interpolatedState;
         private int _viewHooks;
         // The view latch is written every tick and read every frame, next to the state it copies.
-        FULL_STATE<STATE>? _viewState;
+        // A flag beside a plain field stores it without wrapping and unwrapping a nullable.
+        FULL_STATE<STATE> _viewState;
+        bool _hasViewState;
         private ulong _viewStateTick;
         private bool _viewAwaitsReplaySample;
         private bool _firstViewUpdate = true;
@@ -77,8 +79,7 @@ namespace PurrNet.Prediction
         private void DisposeStateStorage()
         {
             _stateDeltaCache?.Reset();
-            _viewState?.Dispose();
-            _viewState = null;
+            ClearViewLatch();
             _viewAwaitsReplaySample = false;
 
             _interpolatedState?.Teleport(viewTeleportTick, default);
@@ -279,8 +280,7 @@ namespace PurrNet.Prediction
         {
             _viewSpawnTick = world.localTickInContext;
             OnViewInterpolationReset();
-            _viewState?.Dispose();
-            _viewState = null;
+            ClearViewLatch();
             _viewAwaitsReplaySample = world.isReplaying;
         }
 
@@ -387,19 +387,29 @@ namespace PurrNet.Prediction
             ModifyRollbackViewState(ref copy.state, delta, accumulateError);
 
             bool refreshOnly = predictionManager && predictionManager.refreshViewLatchOnly;
-            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _viewState.HasValue || _viewAwaitsReplaySample))
+            if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _hasViewState || _viewAwaitsReplaySample))
             {
                 copy.Dispose();
                 return;
             }
 
-            _viewState?.Dispose();
+            if (_hasViewState)
+                _viewState.Dispose();
             _viewState = copy;
+            _hasViewState = true;
             _viewStateTick = predictionManager ? predictionManager.localTick : 0;
             _viewAwaitsReplaySample = false;
         }
 
         protected virtual void ModifyRollbackViewState(ref STATE state, float delta, bool accumulateError) { }
+
+        private void ClearViewLatch()
+        {
+            if (_hasViewState)
+                _viewState.Dispose();
+            _viewState = default;
+            _hasViewState = false;
+        }
 
         /// <summary>
         /// Called whenever setup restarts the view interpolation buffer from the current
@@ -422,8 +432,7 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            _viewState?.Dispose();
-            _viewState = null;
+            ClearViewLatch();
 
             _interpolatedState.Teleport(viewTeleportTick, new FULL_STATE<STATE>
             {
@@ -858,7 +867,7 @@ namespace PurrNet.Prediction
         /// True while a tick has produced a view sample that the next view pass has not consumed
         /// yet.
         /// </summary>
-        public bool hasPendingViewLatch => _viewState.HasValue;
+        public bool hasPendingViewLatch => _hasViewState;
 
         /// <summary>
         /// Latest verified state stored for this identity's id, independent of whether this
@@ -910,10 +919,12 @@ namespace PurrNet.Prediction
             if (_interpolatedState == null)
                 return;
 
-            if (_viewState.HasValue)
+            if (_hasViewState)
             {
-                _interpolatedState.Add(_viewStateTick, _viewState.Value);
-                _viewState = null;
+                // Ownership moves to the buffer.
+                _interpolatedState.Add(_viewStateTick, _viewState);
+                _viewState = default;
+                _hasViewState = false;
             }
 
             viewState = _interpolatedState.Sample(predictionManager.viewTick).state;
