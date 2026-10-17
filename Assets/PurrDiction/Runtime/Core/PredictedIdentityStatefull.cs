@@ -386,7 +386,10 @@ namespace PurrNet.Prediction
             var copy = fullPredictedState.DeepCopy();
             ModifyRollbackViewState(ref copy.state, delta, accumulateError);
 
-            bool refreshOnly = predictionManager && predictionManager.refreshViewLatchOnly;
+            // One liveness check serves both reads of the manager.
+            var manager = predictionManager;
+            bool managerAlive = manager;
+            bool refreshOnly = managerAlive && manager.refreshViewLatchOnly;
             if (!PredictionManager.ShouldReplaceViewLatch(refreshOnly, _hasViewState || _viewAwaitsReplaySample))
             {
                 copy.Dispose();
@@ -397,7 +400,7 @@ namespace PurrNet.Prediction
                 _viewState.Dispose();
             _viewState = copy;
             _hasViewState = true;
-            _viewStateTick = predictionManager ? predictionManager.localTick : 0;
+            _viewStateTick = managerAlive ? manager.localTick : 0;
             _viewAwaitsReplaySample = false;
         }
 

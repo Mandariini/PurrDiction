@@ -1591,14 +1591,15 @@ namespace PurrNet.Prediction
 
             if (!fullFrame && baselineTick > 0)
             {
+                // Destroyed systems are dropped after the section, where liveness is checked anyway.
                 for (var i = 0; i < _systemsCount; i++)
                 {
                     var system = _systems[i];
-                    if (system &&
-                        system != hierarchy &&
+                    if (system is not null &&
                         system.isEventHandler == eventHandlers &&
-                        system.lastVerifiedTick.HasValue &&
-                        system.lastVerifiedTick.Value >= baselineTick)
+                        system.lastVerifiedTick is { } verifiedTick &&
+                        verifiedTick >= baselineTick &&
+                        !ReferenceEquals(system, hierarchy))
                     {
                         _addressedReadSystemScratch.Add(system);
                     }
@@ -1634,11 +1635,14 @@ namespace PurrNet.Prediction
             for (var i = 0; i < _addressedReadSystemScratch.Count; i++)
             {
                 var system = _addressedReadSystemScratch[i];
-                if (!system ||
+                // Most systems had a record, so test the stamp before Unity's liveness check.
+                // A live system equals only itself, so the map entry compares by reference.
+                if (system is null ||
                     system.addressedReadStamp == stamp ||
+                    !system ||
                     _recordDecodeQuarantine.Contains(system.id) ||
                     !_instanceMap.TryGetValue(system.id, out var current) ||
-                    current != system)
+                    !ReferenceEquals(current, system))
                 {
                     continue;
                 }
