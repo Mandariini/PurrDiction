@@ -90,6 +90,26 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void MetadataDeltaShortcutMatchesTheGeneratedCodecBitForBit()
+        {
+            foreach (var baseline in Cases())
+            foreach (var value in Cases())
+            {
+                using var expected = new BitPacker();
+                using var actual = new BitPacker();
+                bool legacyChanged = DeltaPacker<PredictedIdentityState>.Write(expected, baseline, value);
+                bool shortcutChanged = IdentityMetadataDelta.Write(actual, baseline, value);
+                Assert.That(shortcutChanged, Is.EqualTo(legacyChanged));
+                Assert.That(new BitData(actual, 0, actual.positionInBits).Equals(
+                    new BitData(expected, 0, expected.positionInBits)), Is.True);
+                expected.ResetPositionAndMode(true);
+                var read = IdentityMetadataDelta.Read(expected, baseline);
+                Assert.That(expected.positionInBits, Is.EqualTo(actual.positionInBits));
+                Check(value, read);
+            }
+        }
+
+        [Test]
         public void SnapshotEqualityMatchesPublicMetadataIncludingBotAndNullOwners()
         {
             foreach (var left in Cases())

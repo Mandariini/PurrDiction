@@ -257,7 +257,7 @@ namespace PurrNet.Prediction
 
         internal override void GetLatestUnityState()
         {
-            fullPredictedState.prediction.owner = owner;
+            fullPredictedState.prediction.SetOwner(ownerIdValue, ownerFlags);
             GetUnityState(ref fullPredictedState.state);
         }
 

@@ -17,9 +17,24 @@ namespace PurrNet.Prediction
             get => (_ownerFlags & 1) != 0 ? new PlayerID(_ownerId, (_ownerFlags & 2) != 0) : (PlayerID?)null;
             set
             {
-                _ownerId = value.HasValue ? value.Value.id.value : 0;
-                _ownerFlags = value.HasValue ? (byte)(1 | (value.Value.isBot ? 2 : 0)) : (byte)0;
+                _ownerId = OwnerId(value);
+                _ownerFlags = OwnerFlags(value);
             }
+        }
+
+        internal static ulong OwnerId(PlayerID? owner)
+            => owner.HasValue ? owner.GetValueOrDefault().id.value : 0;
+
+        internal static byte OwnerFlags(PlayerID? owner)
+            => owner.HasValue ? (byte)(1 | (owner.GetValueOrDefault().isBot ? 2 : 0)) : (byte)0;
+
+        internal bool HasOwner(ulong ownerId, byte ownerFlags) => _ownerId == ownerId && _ownerFlags == ownerFlags;
+
+        // Takes an owner already encoded by OwnerId and OwnerFlags.
+        internal void SetOwner(ulong ownerId, byte ownerFlags)
+        {
+            _ownerId = ownerId;
+            _ownerFlags = ownerFlags;
         }
 
         public static implicit operator PredictedIdentityState(CompactIdentityState value)

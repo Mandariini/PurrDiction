@@ -18,6 +18,8 @@ namespace PurrNet.Prediction
             public readonly bool repeatsPrevious;
             // The owner uploaded exactly these bits for this tick, so it can restore them itself.
             public readonly bool asUploaded;
+            // Index of the nearest earlier entry of this tick with identical bits, or -1.
+            public readonly int sameAs;
             private readonly byte _ownerFlags;
             private readonly ulong _ownerId;
 
@@ -33,7 +35,8 @@ namespace PurrNet.Prediction
                 int deltaOrigin,
                 int deltaLength,
                 PlayerID? owner,
-                bool asUploaded)
+                bool asUploaded,
+                int sameAs = -1)
             {
                 this.id = id;
                 this.rootId = rootId;
@@ -43,11 +46,72 @@ namespace PurrNet.Prediction
                 this.deltaOrigin = deltaOrigin;
                 this.deltaLength = deltaLength;
                 this.asUploaded = asUploaded;
+                this.sameAs = sameAs;
                 _ownerId = owner.HasValue ? owner.Value.id.value : 0;
                 _ownerFlags = owner.HasValue ? (byte)(1 | (owner.Value.isBot ? 2 : 0)) : (byte)0;
             }
 
             public bool RestoredBy(PlayerID player) => asUploaded && (_ownerFlags & 1) != 0 && _ownerId == player.id.value;
+        }
+
+        // The entries of one captured tick. Every transcript reads each entry for every receiver,
+        // so readers take them by reference instead of copying them out of a list.
+        internal sealed class CachedInputEntries : IReadOnlyList<CachedInputEntry>
+        {
+            private CachedInputEntry[] _items;
+            private int _count;
+
+            public CachedInputEntries(int capacity)
+            {
+                _items = capacity > 0 ? new CachedInputEntry[capacity] : Array.Empty<CachedInputEntry>();
+            }
+
+            public int Count => _count;
+
+            public int Capacity
+            {
+                get => _items.Length;
+                set
+                {
+                    if (value < _count)
+                        throw new ArgumentOutOfRangeException(nameof(value));
+                    if (value != _items.Length)
+                        Array.Resize(ref _items, value);
+                }
+            }
+
+            public ref readonly CachedInputEntry this[int index]
+            {
+                get
+                {
+                    if ((uint)index >= (uint)_count)
+                        ThrowIndexOutOfRange();
+                    return ref _items[index];
+                }
+            }
+
+            CachedInputEntry IReadOnlyList<CachedInputEntry>.this[int index] => this[index];
+
+            public void Add(in CachedInputEntry entry)
+            {
+                if (_count == _items.Length)
+                    Array.Resize(ref _items, Math.Max(4, _items.Length * 2));
+                _items[_count++] = entry;
+            }
+
+            // Entries hold no references, so nothing needs clearing.
+            public void Clear() => _count = 0;
+
+            public IEnumerator<CachedInputEntry> GetEnumerator()
+            {
+                for (var i = 0; i < _count; i++)
+                    yield return _items[i];
+            }
+
+            System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+            private static void ThrowIndexOutOfRange() => throw new ArgumentOutOfRangeException("index");
         }
 
         private struct CachedInputBlock
@@ -56,7 +120,7 @@ namespace PurrNet.Prediction
             public bool captured;
             public BitPacker packer;
             public BitPacker deltas;
-            public List<CachedInputEntry> entries;
+            public CachedInputEntries entries;
             public bool rosterRepeatsPrevious;
             public List<PlayerViewOffset> viewOffsets;
             public bool viewOffsetRosterRepeatsPrevious;
@@ -65,6 +129,7 @@ namespace PurrNet.Prediction
         private CachedInputBlock[] _inputBlockCache;
         private CachedInputBlock _inputBlockScratch;
         private readonly Dictionary<PredictedComponentID, int> _previousInputEntryIndex = new(PredictionIdComparers.Components);
+        private readonly ContentIndex _inputContentIndex = new();
         private ulong _latestCapturedInputTick;
         private bool _hasCapturedInputHistory;
 
@@ -89,7 +154,7 @@ namespace PurrNet.Prediction
             scratch.deltas ??= new BitPacker(hasPrevious ? Math.Max(32, previous.deltas.positionInBytes + 8) : 32);
             // Use the live roster count: spawning one input after the preceding tick
             // must not double every newly allocated history slot's backing array.
-            scratch.entries ??= new List<CachedInputEntry>(_inputHistorySystems);
+            scratch.entries ??= new CachedInputEntries(_inputHistorySystems);
             // Reused slots can predate roster growth too. Reserve before adding;
             // one extra input must not double every retained slot's entry table.
             if (scratch.entries.Capacity < _inputHistorySystems)
@@ -104,6 +169,10 @@ namespace PurrNet.Prediction
 
             _previousInputEntryIndex.Clear();
             bool indexedPrevious = false;
+            _inputContentIndex.Clear();
+            // Pass-through receivers decode identical inputs from an earlier entry; filtered
+            // receivers may not see that entry, so they still need each entry's own delta.
+            bool deltaEveryEntry = HasVisibilityFilteredPlayer();
 
             for (var i = 0; i < _systemsCount; i++)
             {
@@ -117,8 +186,21 @@ namespace PurrNet.Prediction
                 var id = system.id;
                 var rootId = system.rootObjectId;
                 int origin = scratch.packer.positionInBits;
-                system.WriteFirstInput(tick, scratch.packer);
+                bool asUploaded = system.TryWriteVerbatimUploadedInput(tick, scratch.packer);
+                if (!asUploaded)
+                    system.WriteFirstInput(tick, scratch.packer);
                 int length = scratch.packer.positionInBits - origin;
+
+                int sameAs = -1;
+                var contentBits = new BitData(scratch.packer, origin, length);
+                ulong contentHash = InputHistoryDelta.Hash(in contentBits);
+                if (_inputContentIndex.TryGetValue(contentHash, out int candidate))
+                {
+                    ref readonly var candidateEntry = ref scratch.entries[candidate];
+                    if (new BitData(scratch.packer, candidateEntry.bitOrigin, candidateEntry.bitLength).Equals(contentBits))
+                        sameAs = candidate;
+                }
+                _inputContentIndex.Set(contentHash, scratch.entries.Count);
 
                 bool repeats = false;
                 int deltaOrigin = scratch.deltas.positionInBits;
@@ -145,21 +227,22 @@ namespace PurrNet.Prediction
                 }
                 if (previousIndex >= 0)
                 {
-                    var previousEntry = previous.entries[previousIndex];
+                    ref readonly var previousEntry = ref previous.entries[previousIndex];
                     if (previousEntry.rootId.Equals(rootId))
                     {
                         var currentBits = new BitData(scratch.packer, origin, length);
                         var previousBits = new BitData(previous.packer, previousEntry.bitOrigin, previousEntry.bitLength);
                         repeats = currentBits.Equals(previousBits);
-                        if (!repeats && InputHistoryDelta.TryWrite(scratch.deltas, in previousBits, in currentBits))
+                        if (!repeats && (sameAs < 0 || deltaEveryEntry) &&
+                            InputHistoryDelta.TryWrite(scratch.deltas, in previousBits, in currentBits))
                             deltaLength = scratch.deltas.positionInBits - deltaOrigin;
                     }
                 }
 
-                bool asUploaded = system.TryGetUploadedInputBits(tick, out var uploaded) &&
-                                  new BitData(scratch.packer, origin, length).Equals(uploaded);
+                asUploaded = asUploaded || system.TryGetUploadedInputBits(tick, out var uploaded) &&
+                             new BitData(scratch.packer, origin, length).Equals(uploaded);
                 scratch.entries.Add(new CachedInputEntry(id, rootId, origin, length, repeats, deltaOrigin, deltaLength,
-                    system.owner, asUploaded));
+                    system.owner, asUploaded, sameAs));
             }
 
             bool sameRoster = hasPrevious && previous.entries.Count == scratch.entries.Count;
@@ -214,7 +297,7 @@ namespace PurrNet.Prediction
         private static void WriteTranscriptEntry(BitPacker frame, in CachedInputBlock block, int index, bool sameRoster,
             PlayerID player)
         {
-            var entry = block.entries[index];
+            ref readonly var entry = ref block.entries[index];
             if (!sameRoster)
             {
                 Packer<PredictedComponentID>.Write(frame, entry.id);

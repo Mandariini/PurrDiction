@@ -108,7 +108,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var sentB = sender.AddInput(true, 811);
             var receivedA = receiver.AddInput(false, 810);
             var receivedB = receiver.AddInput(true, 811);
-            var systems = (List<PredictedIdentity>)typeof(PredictionManager)
+            var systems = (PredictedSystemList)typeof(PredictionManager)
                 .GetField("_systems", Members).GetValue(sender.manager);
             for (ulong tick = 10; tick <= 18; tick++)
             {
@@ -162,7 +162,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     sender.Capture(tick);
                     object block = typeof(PredictionManager).GetMethod("GetInputBlockForTick", Members)
                         .Invoke(sender.manager, new object[] { tick });
-                    var entries = (List<PredictionManager.CachedInputEntry>)block.GetType().GetField("entries")
+                    var entries = (PredictionManager.CachedInputEntries)block.GetType().GetField("entries")
                         .GetValue(block);
                     Assert.That(entries[0].bitLength, Is.EqualTo(tick == 14 ? 41 : 33),
                         $"custom serialized size at tick {tick}");
@@ -195,6 +195,7 @@ namespace PurrNet.Prediction.Tests.Editor
             int end = frame.positionInBits;
             frame.ResetPositionAndMode(true);
             Assert.That((uint)Packer<PackedUInt>.Read(frame), Is.EqualTo(18UL - baseline));
+            Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
             for (ulong tick = baseline + 1; tick <= 18; tick++)
             {
                 int value = values[(int)(tick - 10)];
@@ -205,6 +206,8 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That((uint)Packer<PackedUInt>.Read(frame), Is.Zero, "view offset count");
                 bool repeats = afterFirst && Packer<bool>.Read(frame);
                 Assert.That(repeats, Is.EqualTo(afterFirst && value == values[(int)(tick - 11)]));
+                if (afterFirst && !repeats)
+                    Assert.That(Packer<bool>.Read(frame), Is.False, "a single input shares no earlier entry");
                 bool delta = afterFirst && !repeats && Packer<bool>.Read(frame);
                 if (afterFirst && !repeats)
                     Assert.That(delta, Is.EqualTo((value & 1) == (values[(int)(tick - 11)] & 1)),
@@ -269,7 +272,7 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 object block = typeof(PredictionManager).GetMethod("GetInputBlockForTick", Members)
                     .Invoke(manager, new object[] { tick });
-                var entries = (List<PredictionManager.CachedInputEntry>)block.GetType().GetField("entries")
+                var entries = (PredictionManager.CachedInputEntries)block.GetType().GetField("entries")
                     .GetValue(block);
                 foreach (var entry in entries)
                 {

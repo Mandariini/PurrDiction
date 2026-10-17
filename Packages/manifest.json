@@ -46,7 +46,7 @@
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
     "com.unity.modules.xr": "1.0.0",
-    "dev.purrnet.purrnet": "https://github.com/PurrNet/PurrNet.git?path=/Assets/PurrNet#fd4b1fbed03c30b764312cc30be546736db9f4c6"
+    "dev.purrnet.purrnet": "https://github.com/PurrNet/PurrNet.git?path=/Assets/PurrNet#9b74959ef994d05aaf68c161f5913b68ccfa1cb7"
   },
   "scopedRegistries": [
     {

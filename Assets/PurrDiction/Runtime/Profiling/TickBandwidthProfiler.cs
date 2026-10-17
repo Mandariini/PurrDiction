@@ -14,14 +14,42 @@ namespace PurrNet.Prediction.Profiler
         /// that callback enables polling capture; set this false when polling ends.
         /// The profiler window subscribes automatically and needs no manual configuration.
         /// </summary>
-        public static bool collectWithoutSubscribers { get; set; }
+        public static bool collectWithoutSubscribers
+        {
+            get => _collectWithoutSubscribers;
+            set
+            {
+                _collectWithoutSubscribers = value;
+                RefreshCollecting();
+            }
+        }
+
+        static bool _collectWithoutSubscribers;
+        static Action _onTickEnded;
+
+        // Per-record hooks test one flag instead of the property and the event.
+        internal static bool collecting;
 
         public static IReadOnlyList<PackingInfo> wroteStates => ReadSamples(ref _wroteStates);
         public static IReadOnlyList<PackingInfo> readStates => ReadSamples(ref _readStates);
         public static IReadOnlyList<PackingInfo> wroteInputs => ReadSamples(ref _wroteInputs);
         public static IReadOnlyList<PackingInfo> readInputs => ReadSamples(ref _readInputs);
 
-        public static event Action onTickEnded;
+        public static event Action onTickEnded
+        {
+            add
+            {
+                _onTickEnded += value;
+                RefreshCollecting();
+            }
+            remove
+            {
+                _onTickEnded -= value;
+                RefreshCollecting();
+            }
+        }
+
+        static void RefreshCollecting() => collecting = _collectWithoutSubscribers || _onTickEnded != null;
 
         static IReadOnlyList<PackingInfo> ReadSamples(ref List<PackingInfo> samples)
         {
@@ -31,33 +59,30 @@ namespace PurrNet.Prediction.Profiler
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static bool ShouldCollect() => collectWithoutSubscribers || onTickEnded != null;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void OnWroteState(Type parent, int bitCount, UnityEngine.Object reference)
         {
-            if (!ShouldCollect()) return;
+            if (!collecting) return;
             (_wroteStates ??= new List<PackingInfo>(256)).Add(new PackingInfo { parent = parent, bitCount = bitCount, reference = reference });
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void OnReadState(Type parent, int bitCount, UnityEngine.Object reference)
         {
-            if (!ShouldCollect()) return;
+            if (!collecting) return;
             (_readStates ??= new List<PackingInfo>(256)).Add(new PackingInfo { parent = parent, bitCount = bitCount, reference = reference });
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void OnWroteInput(Type parent, int bitCount, UnityEngine.Object reference)
         {
-            if (!ShouldCollect()) return;
+            if (!collecting) return;
             (_wroteInputs ??= new List<PackingInfo>(256)).Add(new PackingInfo { parent = parent, bitCount = bitCount, reference = reference });
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void OnReadInput(Type parent, int bitCount, UnityEngine.Object reference)
         {
-            if (!ShouldCollect()) return;
+            if (!collecting) return;
             (_readInputs ??= new List<PackingInfo>(256)).Add(new PackingInfo { parent = parent, bitCount = bitCount, reference = reference });
         }
 
@@ -66,7 +91,7 @@ namespace PurrNet.Prediction.Profiler
             _dispatchDepth++;
             try
             {
-                onTickEnded?.Invoke();
+                _onTickEnded?.Invoke();
             }
             finally
             {

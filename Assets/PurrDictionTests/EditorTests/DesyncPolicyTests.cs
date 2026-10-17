@@ -257,7 +257,7 @@ namespace PurrNet.Prediction.Tests.Editor
             identity.resolvedDesyncPolicy = policy;
             SetHistory(identity, 4, 100);
 
-            var systems = GetField<List<PredictedIdentity>>(
+            var systems = GetField<PredictedSystemList>(
                 typeof(PredictionManager), manager, "_systems");
             systems.Add(identity);
             SetField(typeof(PredictionManager), manager, "_systemsCount", systems.Count);

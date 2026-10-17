@@ -26,13 +26,12 @@ namespace PurrNet.Prediction
         readonly Dictionary<ulong, VisibilityAcquisition> _visibilityAcquisitionTokens = new ();
         readonly List<ulong> _visibilityTokenScratch = new ();
         readonly HashSet<PlayerID> _visibilityDependencyRebuild = new ();
-        readonly HashSet<PredictedObjectID> _desiredVisibilityScratch = new ();
-        readonly HashSet<PredictedObjectID> _hiddenDependencyScratch = new ();
-        readonly HashSet<PredictedObjectID> _spawnedRootScratch = new ();
-        readonly HashSet<PredictedObjectID> _ownedRootScratch = new ();
+        readonly HashSet<PredictedObjectID> _desiredVisibilityScratch = new (PredictionIdComparers.Objects);
+        readonly HashSet<PredictedObjectID> _hiddenDependencyScratch = new (PredictionIdComparers.Objects);
+        readonly HashSet<PredictedObjectID> _spawnedRootScratch = new (PredictionIdComparers.Objects);
+        readonly HashSet<PredictedObjectID> _ownedRootScratch = new (PredictionIdComparers.Objects);
         readonly List<PredictedIdentity> _addressedSystemScratch = new ();
         readonly List<PredictedIdentity> _addressedReadSystemScratch = new ();
-        readonly HashSet<PredictedComponentID> _addressedReadIdsScratch = new ();
         readonly List<PredictedObjectID> _visibilityRootScratch = new ();
 
         ulong _nextVisibilityAcquisitionToken = 1;
@@ -123,6 +122,9 @@ namespace PurrNet.Prediction
                 return rootId;
             return objectId;
         }
+
+        PredictedObjectID ResolveVisibilityRoot(PredictedIdentity system)
+            => hierarchy ? system.ResolveRootIn(hierarchy) : system.id.objectId;
 
         internal PlayerVisibilityTimeline PreparePlayerVisibility(
             PlayerID player,
@@ -531,7 +533,7 @@ namespace PurrNet.Prediction
                     continue;
                 }
 
-                _ownedRootScratch.Add(ResolveVisibilityRoot(system.id.objectId));
+                _ownedRootScratch.Add(ResolveVisibilityRoot(system));
             }
         }
 
@@ -572,7 +574,7 @@ namespace PurrNet.Prediction
                 return;
             }
 
-            var rootId = ResolveVisibilityRoot(system.id.objectId);
+            var rootId = ResolveVisibilityRoot(system);
             if (previousOwner.HasValue)
                 MarkVisibilityDirtyForOwnership(previousOwner.Value, rootId);
             if (currentOwner.HasValue)
@@ -591,7 +593,7 @@ namespace PurrNet.Prediction
 
             MarkVisibilityDirtyForOwnership(
                 system.owner.Value,
-                ResolveVisibilityRoot(system.id.objectId));
+                ResolveVisibilityRoot(system));
         }
 
         internal void HandleVisibilityTopologyChanged()
@@ -705,7 +707,7 @@ namespace PurrNet.Prediction
             if (!system || system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return true;
 
-            var rootId = ResolveVisibilityRoot(system.id.objectId);
+            var rootId = ResolveVisibilityRoot(system);
             return timeline.IsVisible(rootId);
         }
 
@@ -719,7 +721,7 @@ namespace PurrNet.Prediction
             if (!system || system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return true;
 
-            var rootId = ResolveVisibilityRoot(system.id.objectId);
+            var rootId = ResolveVisibilityRoot(system);
             return timeline.WasVisibleAt(rootId, tick);
         }
 
@@ -735,7 +737,7 @@ namespace PurrNet.Prediction
                 firstTick <= baselineTick || firstTick >= tick || !IsLifecycleEntrant(firstTick, system.id))
                 return false;
             if (!timeline.isPassThrough &&
-                !timeline.HasContinuousVisibilityFrom(ResolveVisibilityRoot(system.id.objectId), firstTick))
+                !timeline.HasContinuousVisibilityFrom(ResolveVisibilityRoot(system), firstTick))
                 return false;
             enteringTick = firstTick;
             return true;
@@ -752,7 +754,7 @@ namespace PurrNet.Prediction
             if (system.id.objectId.instanceId.value == 1 || !hierarchy)
                 return false;
 
-            var rootId = ResolveVisibilityRoot(system.id.objectId);
+            var rootId = ResolveVisibilityRoot(system);
             return !timeline.HasContinuousVisibilityFrom(rootId, baselineTick) ||
                    !hasHierarchyBaseline ||
                    !baselineRoots.Contains(rootId) ||
@@ -942,7 +944,231 @@ namespace PurrNet.Prediction
             }
         }
 
+        struct SharedStateSection
+        {
+            public ulong baselineTick;
+            public bool fullFrame;
+            public bool eventHandlers;
+            public ulong spawnBaselineRecords;
+            public BitPacker bits;
+            // The length-prefixed section as frames carry it, compressed on first send.
+            public BitPacker compressed;
+            public int framedBits;
+        }
+
+        // Pass-through receivers of one baseline get bit-identical sections; only desync heals
+        // add receiver-specific records. Write each section once per tick and copy it.
+        readonly List<SharedStateSection> _sharedStateSections = new ();
+        readonly List<BitPacker> _sharedStateSectionBuffers = new ();
+        readonly List<BitPacker> _sharedStateCompressedBuffers = new ();
+        readonly BitPacker _sharedStateFramedScratch = new (1024);
+        ulong _sharedStateSectionTick = ulong.MaxValue;
+
+        internal bool writingSharedStateSection { get; private set; }
+
+        bool CanShareStateSection(PlayerID player, PlayerVisibilityTimeline timeline)
+            => hasMultipleStateRecipients && timeline.isPassThrough &&
+               (!_pendingDesyncHeals.TryGetValue(player, out var pending) || pending.Count == 0);
+
+        bool TryCopySharedStateSection(
+            ulong tick,
+            ulong baselineTick,
+            bool fullFrame,
+            bool eventHandlers,
+            BitPacker destination,
+            bool lengthPrefixed = false)
+            => TryCopySharedStateSection(tick, baselineTick, fullFrame, eventHandlers, destination, lengthPrefixed, out _);
+
+        bool TryCopySharedStateSection(
+            ulong tick,
+            ulong baselineTick,
+            bool fullFrame,
+            bool eventHandlers,
+            BitPacker destination,
+            bool lengthPrefixed,
+            out int index)
+        {
+            index = -1;
+            if (_sharedStateSectionTick != tick)
+            {
+                _sharedStateSections.Clear();
+                _sharedStateSectionTick = tick;
+                return false;
+            }
+
+            for (var i = 0; i < _sharedStateSections.Count; i++)
+            {
+                var section = _sharedStateSections[i];
+                if (section.baselineTick != baselineTick || section.fullFrame != fullFrame ||
+                    section.eventHandlers != eventHandlers)
+                    continue;
+
+                if (lengthPrefixed)
+                    Packer<PackedUInt>.Write(destination, (uint)section.bits.positionInBits);
+                destination.WriteBitsWithoutConsumingIt(section.bits, section.bits.positionInBits);
+                spawnBaselineRecordsTotal += section.spawnBaselineRecords;
+                index = i;
+                return true;
+            }
+
+            return false;
+        }
+
+        int StoreSharedStateSection(
+            ulong baselineTick,
+            bool fullFrame,
+            bool eventHandlers,
+            BitPacker source,
+            int origin,
+            ulong spawnBaselineRecords)
+        {
+            int index = _sharedStateSections.Count;
+            if (index == _sharedStateSectionBuffers.Count)
+                _sharedStateSectionBuffers.Add(BitPackerPool.Get());
+
+            var bits = _sharedStateSectionBuffers[index];
+            bits.ResetPositionAndMode(false);
+            bits.WriteBitDataWithoutConsumingIt(new BitData(source, origin, source.positionInBits - origin));
+            _sharedStateSections.Add(new SharedStateSection
+            {
+                baselineTick = baselineTick,
+                fullFrame = fullFrame,
+                eventHandlers = eventHandlers,
+                spawnBaselineRecords = spawnBaselineRecords,
+                bits = bits
+            });
+            return index;
+        }
+
+        // The compressed length-prefixed section that a frame prepared at tick carries in
+        // framedBits bits, built once and reused for every receiver of that section.
+        bool TryGetCompressedSharedSection(int index, ulong tick, int framedBits, out BitPacker compressed)
+        {
+            compressed = null;
+            if (_sharedStateSectionTick != tick || index < 0 || index >= _sharedStateSections.Count)
+                return false;
+
+            var section = _sharedStateSections[index];
+            if (section.fullFrame || section.eventHandlers)
+                return false;
+
+            if (section.compressed == null)
+            {
+                var framed = _sharedStateFramedScratch;
+                framed.ResetPositionAndMode(false);
+                Packer<PackedUInt>.Write(framed, (uint)section.bits.positionInBits);
+                framed.WriteBitsWithoutConsumingIt(section.bits, section.bits.positionInBits);
+
+                while (_sharedStateCompressedBuffers.Count <= index)
+                    _sharedStateCompressedBuffers.Add(BitPackerPool.Get());
+                var buffer = _sharedStateCompressedBuffers[index];
+                buffer.ResetPositionAndMode(false);
+                framed.PickleInto(buffer);
+                section.compressed = buffer;
+                section.framedBits = framed.positionInBits;
+                _sharedStateSections[index] = section;
+            }
+
+            if (section.framedBits != framedBits)
+                return false;
+            compressed = section.compressed;
+            return true;
+        }
+
+        void DisposeSharedStateSections()
+        {
+            for (var i = 0; i < _sharedStateSectionBuffers.Count; i++)
+                _sharedStateSectionBuffers[i].Dispose();
+            _sharedStateSectionBuffers.Clear();
+            for (var i = 0; i < _sharedStateCompressedBuffers.Count; i++)
+                _sharedStateCompressedBuffers[i].Dispose();
+            _sharedStateCompressedBuffers.Clear();
+            _sharedStateSections.Clear();
+            _sharedStateSectionTick = ulong.MaxValue;
+        }
+
         void WriteAddressedStateSection(
+            PlayerID player,
+            PlayerVisibilityTimeline timeline,
+            BitPacker destination,
+            ulong tick,
+            ulong baselineTick,
+            bool fullFrame,
+            bool eventHandlers)
+        {
+            bool share = CanShareStateSection(player, timeline);
+            if (share && TryCopySharedStateSection(tick, baselineTick, fullFrame, eventHandlers, destination))
+                return;
+
+            int sharedOrigin = destination.positionInBits;
+            ulong spawnBaselineRecordsBefore = spawnBaselineRecordsTotal;
+            // Other pass-through receivers copy this section, so per-record delta caching would only add work.
+            writingSharedStateSection = share;
+            try
+            {
+                WriteAddressedStateSectionRecords(player, timeline, destination, tick, baselineTick, fullFrame, eventHandlers);
+            }
+            finally
+            {
+                writingSharedStateSection = false;
+            }
+
+            if (share)
+            {
+                StoreSharedStateSection(baselineTick, fullFrame, eventHandlers, destination, sharedOrigin,
+                    spawnBaselineRecordsTotal - spawnBaselineRecordsBefore);
+            }
+        }
+
+        // Delta frames place their event transcript after this section. Receivers validate that
+        // transcript before applying any state, so the length lets them jump over the records.
+        void WriteLengthPrefixedStateSection(
+            PlayerID player,
+            PlayerVisibilityTimeline timeline,
+            BitPacker destination,
+            ulong tick,
+            ulong baselineTick)
+            => WriteLengthPrefixedStateSection(player, timeline, destination, tick, baselineTick, out _);
+
+        // sharedIndex names the shared section this receiver's copy came from, or -1.
+        void WriteLengthPrefixedStateSection(
+            PlayerID player,
+            PlayerVisibilityTimeline timeline,
+            BitPacker destination,
+            ulong tick,
+            ulong baselineTick,
+            out int sharedIndex)
+        {
+            sharedIndex = -1;
+            bool share = CanShareStateSection(player, timeline);
+            if (share && TryCopySharedStateSection(tick, baselineTick, false, false, destination, true, out sharedIndex))
+                return;
+
+            var section = _lengthPrefixedSectionScratch;
+            section.ResetPositionAndMode(false);
+            ulong spawnBaselineRecordsBefore = spawnBaselineRecordsTotal;
+            writingSharedStateSection = share;
+            try
+            {
+                WriteAddressedStateSectionRecords(player, timeline, section, tick, baselineTick, false, false);
+            }
+            finally
+            {
+                writingSharedStateSection = false;
+            }
+
+            if (share)
+            {
+                sharedIndex = StoreSharedStateSection(baselineTick, false, false, section, 0,
+                    spawnBaselineRecordsTotal - spawnBaselineRecordsBefore);
+            }
+
+            AddressedPredictionRecords.WriteLengthPrefixed(section.positionInBits, section, destination);
+        }
+
+        readonly BitPacker _lengthPrefixedSectionScratch = new (1024);
+
+        void WriteAddressedStateSectionRecords(
             PlayerID player,
             PlayerVisibilityTimeline timeline,
             BitPacker destination,
@@ -967,6 +1193,7 @@ namespace PurrNet.Prediction
             }
 
             bool allowOmission = !fullFrame && baselineTick > 0;
+            bool hasPendingHeals = _pendingDesyncHeals.TryGetValue(player, out var pendingHeals) && pendingHeals.Count > 0;
             int sectionOrigin = destination.positionInBits;
             AddressedPredictionRecords.WriteSectionCount(_addressedSystemScratch.Count, destination);
             int recordsOrigin = destination.positionInBits;
@@ -991,7 +1218,7 @@ namespace PurrNet.Prediction
                                          baselineScratch.roots,
                                          baselineScratch.pieces);
                     // A prepared continuation may be discarded for size; consume the request only when sent.
-                    bool heal = PrepareDesyncHeal(player, system.id);
+                    bool heal = hasPendingHeals && PrepareDesyncHeal(player, system.id);
                     if (heal)
                         writeFull = true;
 
@@ -1078,7 +1305,7 @@ namespace PurrNet.Prediction
             _visibleInputEntryScratch.Clear();
             for (int i = 0; i < block.entries.Count; i++)
             {
-                var entry = block.entries[i];
+                ref readonly var entry = ref block.entries[i];
                 if (!hierarchy || timeline.isPassThrough || entry.id.objectId.instanceId.value == 1 ||
                     timeline.WasVisibleAt(entry.rootId, tick))
                     _visibleInputEntryScratch.Add(i);
@@ -1087,7 +1314,7 @@ namespace PurrNet.Prediction
             using var payload = BitPackerPool.Get();
             foreach (int index in _visibleInputEntryScratch)
             {
-                var entry = block.entries[index];
+                ref readonly var entry = ref block.entries[index];
                 payload.ResetPositionAndMode(false);
                 payload.WriteBitDataWithoutConsumingIt(new BitData(block.packer, entry.bitOrigin, entry.bitLength));
                 AddressedPredictionRecords.WriteRecord(destination, entry.id, true, payload);
@@ -1107,14 +1334,23 @@ namespace PurrNet.Prediction
                 throw new MissingPredictionBaselineException(
                     $"Authoritative inputs from tick {baselineTick + 1} through {localTick} are outside retained history.");
 
-            // Empty ticks still need entries to prove verification; the first tick cannot use repeats.
+            // Empty ticks still need entries to prove verification. The first tick can repeat
+            // only the roster the receiver kept from the baseline frame.
             Packer<PackedUInt>.Write(frame, checked((uint)(localTick - baselineTick)));
+            bool carry = _inputCarryAvailable && localTick > baselineTick &&
+                         TryGetInputBlockForTick(baselineTick, out _);
+            if (localTick > baselineTick)
+                Packer<bool>.Write(frame, carry);
             for (ulong tick = baselineTick + 1; tick <= localTick; tick++)
             {
                 var block = GetInputBlockForTick(tick);
-                WriteTranscriptTick(player, timeline, tick, in block, frame, tick > baselineTick + 1);
+                bool laterTick = tick > baselineTick + 1;
+                WriteTranscriptTick(player, timeline, tick, in block, frame, laterTick || carry, laterTick);
             }
         }
+
+        // Set while writing a frame whose receiver holds the baseline tick's complete input roster.
+        bool _inputCarryAvailable;
 
         bool IsInputEntryVisible(PlayerVisibilityTimeline timeline, in CachedInputEntry entry, ulong tick)
             => !hierarchy || timeline.isPassThrough || entry.id.objectId.instanceId.value == 1 ||
@@ -1126,10 +1362,13 @@ namespace PurrNet.Prediction
             var entries = block.entries;
             for (var i = 0; i < entries.Count; i++)
             {
-                if (IsInputEntryVisible(timeline, entries[i], tick))
+                if (IsInputEntryVisible(timeline, in entries[i], tick))
                     into.Add(i);
             }
         }
+
+        // Without a hierarchy or with a pass-through timeline every entry is visible.
+        bool SeesEveryInputEntry(PlayerVisibilityTimeline timeline) => !hierarchy || timeline.isPassThrough;
 
         void WriteTranscriptTick(
             PlayerID player,
@@ -1137,13 +1376,19 @@ namespace PurrNet.Prediction
             ulong tick,
             in CachedInputBlock block,
             BitPacker frame,
-            bool allowRepeat)
+            bool allowRepeat,
+            bool allowOffsetRepeat)
         {
             var entries = block.entries;
+            bool all = SeesEveryInputEntry(timeline);
             var visible = _visibleInputEntryScratch;
-            CollectVisibleInputEntries(timeline, in block, tick, visible);
-            Packer<PackedUInt>.Write(frame, (uint)visible.Count);
-            if (visible.Count == 0)
+            if (all)
+                visible.Clear();
+            else
+                CollectVisibleInputEntries(timeline, in block, tick, visible);
+            int visibleCount = all ? entries.Count : visible.Count;
+            Packer<PackedUInt>.Write(frame, (uint)visibleCount);
+            if (visibleCount == 0)
                 return;
 
             bool sameRoster = false;
@@ -1162,42 +1407,52 @@ namespace PurrNet.Prediction
                         var previousVisible = _previousVisibleInputEntryScratch;
                         CollectVisibleInputEntries(timeline, in previous, tick - 1, previousVisible);
                         previousWroteOffsets = previousVisible.Count > 0;
-                        sameRoster = previousVisible.Count == visible.Count;
-                        for (var i = 0; sameRoster && i < visible.Count; i++)
-                            sameRoster = entries[visible[i]].id.Equals(previous.entries[previousVisible[i]].id);
+                        sameRoster = previousVisible.Count == visibleCount;
+                        for (var i = 0; sameRoster && i < visibleCount; i++)
+                            sameRoster = entries[all ? i : visible[i]].id.Equals(previous.entries[previousVisible[i]].id);
                     }
                 }
                 Packer<bool>.Write(frame, sameRoster);
             }
-            WriteTranscriptViewOffsets(frame, in block, allowRepeat && previousWroteOffsets);
+            WriteTranscriptViewOffsets(frame, in block, allowOffsetRepeat && previousWroteOffsets);
 
+            // Every entry of a pass-through roster is visible, so an entry index is its position.
+            bool allowSame = sameRoster && timeline.isPassThrough;
             if (sameRoster)
             {
-                for (var i = 0; i < visible.Count; i++)
+                for (var i = 0; i < visibleCount; i++)
                 {
-                    var entry = entries[visible[i]];
-                    Packer<bool>.Write(frame, entry.repeatsPrevious);
+                    ref readonly var entry = ref entries[all ? i : visible[i]];
+                    frame.WriteBit(entry.repeatsPrevious);
                     if (entry.repeatsPrevious)
                         continue;
+                    bool same = allowSame && entry.sameAs >= 0;
+                    frame.WriteBit(same);
+                    if (same)
+                    {
+                        Packer<PackedUInt>.Write(frame, (uint)(i - entry.sameAs - 1));
+                        continue;
+                    }
                     bool restored = entry.RestoredBy(player);
                     bool delta = !restored && entry.deltaLength > 0;
-                    Packer<bool>.Write(frame, delta);
+                    frame.WriteBit(delta);
                     if (!delta)
-                        Packer<bool>.Write(frame, restored);
+                        frame.WriteBit(restored);
                 }
             }
 
             WriteTranscriptPadding(frame);
-            for (var i = 0; i < visible.Count; i++)
+            for (var i = 0; i < visibleCount; i++)
             {
-                int index = visible[i];
-                if (sameRoster && (entries[index].repeatsPrevious || entries[index].RestoredBy(player)))
+                int index = all ? i : visible[i];
+                ref readonly var entry = ref entries[index];
+                if (sameRoster && (entry.repeatsPrevious || allowSame && entry.sameAs >= 0 || entry.RestoredBy(player)))
                     continue;
                 WriteTranscriptEntry(frame, in block, index, sameRoster, player);
             }
         }
 
-        readonly HashSet<PredictedComponentID> _recordDecodeQuarantine = new ();
+        readonly HashSet<PredictedComponentID> _recordDecodeQuarantine = new (PredictionIdComparers.Components);
         readonly Dictionary<PredictedComponentID, double> _recordFailureLogAt = new ();
         private bool _frameApplyHadRecordFailure;
         private bool _frameApplyHadBaselineFailure;
@@ -1249,9 +1504,11 @@ namespace PurrNet.Prediction
             public bool fullFrame;
             public bool eventHandlers;
             public bool deferUnityApply;
+            public uint stamp;
         }
 
         private AddressedReadContext _addressedRead;
+        private uint _addressedReadStamp;
         private AddressedPredictionRecords.ReadRecord _readHierarchyRecord;
         private AddressedPredictionRecords.ReadRecord _readStateRecord;
         private AddressedPredictionRecords.RecordFailure _addressedRecordFailure;
@@ -1328,18 +1585,21 @@ namespace PurrNet.Prediction
             bool eventHandlers)
         {
             _addressedReadSystemScratch.Clear();
-            _addressedReadIdsScratch.Clear();
+            if (++_addressedReadStamp == 0)
+                _addressedReadStamp = 1;
+            uint stamp = _addressedReadStamp;
 
             if (!fullFrame && baselineTick > 0)
             {
+                // Destroyed systems are dropped after the section, where liveness is checked anyway.
                 for (var i = 0; i < _systemsCount; i++)
                 {
                     var system = _systems[i];
-                    if (system &&
-                        system != hierarchy &&
+                    if (system is not null &&
                         system.isEventHandler == eventHandlers &&
-                        system.lastVerifiedTick.HasValue &&
-                        system.lastVerifiedTick.Value >= baselineTick)
+                        system.lastVerifiedTick is { } verifiedTick &&
+                        verifiedTick >= baselineTick &&
+                        !ReferenceEquals(system, hierarchy))
                     {
                         _addressedReadSystemScratch.Add(system);
                     }
@@ -1353,11 +1613,13 @@ namespace PurrNet.Prediction
                 baselineTick = baselineTick,
                 serverTick = serverTick,
                 fullFrame = fullFrame,
-                eventHandlers = eventHandlers
+                eventHandlers = eventHandlers,
+                stamp = stamp
             };
             try
             {
-                AddressedPredictionRecords.ReadSection(
+                // State readers only read forward, so records decode straight from the frame.
+                AddressedPredictionRecords.ReadSectionInPlace(
                     source: frame,
                     readRecord: _readStateRecord ??= ReadStateRecord,
                     onRecordFailure: addressedRecordFailure);
@@ -1373,11 +1635,14 @@ namespace PurrNet.Prediction
             for (var i = 0; i < _addressedReadSystemScratch.Count; i++)
             {
                 var system = _addressedReadSystemScratch[i];
-                if (!system ||
-                    _addressedReadIdsScratch.Contains(system.id) ||
+                // Most systems had a record, so test the stamp before Unity's liveness check.
+                // A live system equals only itself, so the map entry compares by reference.
+                if (system is null ||
+                    system.addressedReadStamp == stamp ||
+                    !system ||
                     _recordDecodeQuarantine.Contains(system.id) ||
                     !_instanceMap.TryGetValue(system.id, out var current) ||
-                    current != system)
+                    !ReferenceEquals(current, system))
                 {
                     continue;
                 }
@@ -1427,21 +1692,23 @@ namespace PurrNet.Prediction
         void ReadStateRecord(PredictedComponentID id, bool isFullState, BitPacker payload, int payloadBitCount)
         {
             var read = _addressedRead;
+            // Unity's equality only differs from a reference compare when the hierarchy is absent.
             if (!_instanceMap.TryGetValue(id, out var system) ||
                 system.isEventHandler != read.eventHandlers ||
-                system == hierarchy)
+                (hierarchy is null ? !system : ReferenceEquals(system, hierarchy)))
             {
                 return;
             }
 
-            if (_recordDecodeQuarantine.Contains(id))
+            if (_recordDecodeQuarantine.Count > 0 && _recordDecodeQuarantine.Contains(id))
                 return;
 
-            if (!_addressedReadIdsScratch.Add(id))
+            if (system.addressedReadStamp == read.stamp)
             {
                 throw new InvalidOperationException(
                     $"Duplicate addressed state record {id}.");
             }
+            system.addressedReadStamp = read.stamp;
 
             bool full = read.fullFrame || isFullState;
             ulong recordBaseline = read.baselineTick;

@@ -84,6 +84,25 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void UnsanitizedUploadIsCapturedFromItsUploadedBitsWithoutReserializing()
+        {
+            using var fixture = new Fixture();
+            var identity = fixture.Add(820);
+            using var upload = BitPackerPool.Get();
+            Packer<bool>.Write(upload, true);
+            // The registered writer throws for this value, so capture must copy the received bits.
+            Packer<int>.Write(upload, int.MinValue);
+            upload.ResetPositionAndMode(true);
+            identity.QueueInput(upload, new PlayerID(5, false));
+            identity.PrepareInput(true, false, 10, false);
+            fixture.Capture(10);
+
+            var entries = Get<PredictionManager.CachedInputEntries>(fixture.Block(10), "entries");
+            Assert.That(Get<bool>(entries[0], "asUploaded"), Is.True, "the owner restores its own upload");
+            fixture.AssertInput(10, 820, int.MinValue);
+        }
+
+        [Test]
         public void IdentityUploadedBufferGrowsAndIsReusedForLargerInputs()
         {
             using var fixture = new Fixture();
@@ -119,7 +138,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 fixture.Seed(input, 11, (int)input.id.objectId.instanceId.value);
             fixture.Capture(11);
 
-            var entries = Get<List<PredictionManager.CachedInputEntry>>(fixture.Block(11), "entries");
+            var entries = Get<PredictionManager.CachedInputEntries>(fixture.Block(11), "entries");
             Assert.That(entries.Count, Is.EqualTo(5));
             Assert.That(entries.Capacity, Is.EqualTo(5));
             Assert.That(fixture.Snapshot(10), Is.EqualTo(before));
@@ -143,7 +162,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 fixture.CaptureSeeded(tick, inputs);
             var retained = fixture.Snapshot(retainedTick);
             var scratch = Get<object>(fixture.manager, "_inputBlockScratch");
-            var reused = Get<List<PredictionManager.CachedInputEntry>>(scratch, "entries");
+            var reused = Get<PredictionManager.CachedInputEntries>(scratch, "entries");
             int oldCapacity = reused.Capacity;
             Assert.That(oldCapacity, Is.EqualTo(count));
 
@@ -151,7 +170,7 @@ namespace PurrNet.Prediction.Tests.Editor
             ulong changedTick = retainedTick + 1;
             fixture.CaptureSeeded(changedTick, inputs);
             var block = fixture.Block(changedTick);
-            var entries = Get<List<PredictionManager.CachedInputEntry>>(block, "entries");
+            var entries = Get<PredictionManager.CachedInputEntries>(block, "entries");
             Assert.That(entries, Is.SameAs(reused));
             Assert.That(entries.Count, Is.EqualTo(count + 1));
             Assert.That(entries.Capacity, Is.InRange(count + 1, oldCapacity * 2 - 1));
@@ -184,16 +203,16 @@ namespace PurrNet.Prediction.Tests.Editor
             fixture.Capture(10);
             var original = fixture.Snapshot(10);
 
-            Get<List<PredictedIdentity>>(fixture.manager, "_systems").Reverse();
+            Get<PredictedSystemList>(fixture.manager, "_systems").Reverse();
             fixture.Seed(first, 11, 111);
             fixture.Seed(middle, 11, 222);
             fixture.Seed(last, 11, 333);
             fixture.Capture(11);
-            var reordered = Get<List<PredictionManager.CachedInputEntry>>(fixture.Block(11), "entries");
+            var reordered = Get<PredictionManager.CachedInputEntries>(fixture.Block(11), "entries");
             Assert.That(reordered[0].id, Is.EqualTo(last.id));
             Assert.That(reordered[1].id, Is.EqualTo(middle.id));
             Assert.That(reordered[2].id, Is.EqualTo(first.id));
-            Assert.That(reordered.TrueForAll(entry => entry.repeatsPrevious), Is.True,
+            Assert.That(System.Linq.Enumerable.All(reordered, entry => entry.repeatsPrevious), Is.True,
                 "both matching ordinals and lookup fallbacks must find each ID's own bits");
             var previous = fixture.Snapshot(11);
 
@@ -204,11 +223,11 @@ namespace PurrNet.Prediction.Tests.Editor
             fixture.Seed(last, 12, 333);
             fixture.Seed(born, 12, 222);
             fixture.Capture(12);
-            var changed = Get<List<PredictionManager.CachedInputEntry>>(fixture.Block(12), "entries");
+            var changed = Get<PredictionManager.CachedInputEntries>(fixture.Block(12), "entries");
             Assert.That(changed.Count, Is.EqualTo(3));
-            Assert.That(changed.Find(entry => entry.id.Equals(last.id)).repeatsPrevious, Is.True);
-            Assert.That(changed.Find(entry => entry.id.Equals(first.id)).repeatsPrevious, Is.False);
-            Assert.That(changed.Find(entry => entry.id.Equals(born.id)).repeatsPrevious, Is.False,
+            Assert.That(System.Linq.Enumerable.First(changed, entry => entry.id.Equals(last.id)).repeatsPrevious, Is.True);
+            Assert.That(System.Linq.Enumerable.First(changed, entry => entry.id.Equals(first.id)).repeatsPrevious, Is.False);
+            Assert.That(System.Linq.Enumerable.First(changed, entry => entry.id.Equals(born.id)).repeatsPrevious, Is.False,
                 "a new ID cannot repeat the removed input even when its bytes match");
             Assert.That(fixture.Snapshot(10), Is.EqualTo(original));
             Assert.That(fixture.Snapshot(11), Is.EqualTo(previous));
@@ -438,9 +457,9 @@ namespace PurrNet.Prediction.Tests.Editor
             }
             internal object Block(ulong tick) => Invoke(manager, "GetInputBlockForTick", tick);
             internal int Capacity => ((Array)Get<object>(manager, "_inputBlockCache")).Length;
-            internal int EntryCount(ulong tick) => Get<IList>(Block(tick), "entries").Count;
+            internal int EntryCount(ulong tick) => Get<PredictionManager.CachedInputEntries>(Block(tick), "entries").Count;
             internal PredictedObjectID FirstEntryRoot(ulong tick)
-                => Get<PredictedObjectID>(Get<IList>(Block(tick), "entries")[0], "rootId");
+                => Get<PredictedObjectID>(Get<PredictionManager.CachedInputEntries>(Block(tick), "entries")[0], "rootId");
             internal void SetRate(int rate) => Set(typeof(PredictionManager), manager, "<tickRate>k__BackingField", rate);
             internal void Clear() => Invoke(manager, "DisposeInputBlockCache");
 
@@ -452,7 +471,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var bytes = new List<byte>();
                 for (int i = 0; i < packer.positionInBytes; i++)
                     bytes.Add(packer.buffer[i]);
-                foreach (var entry in Get<IList>(block, "entries"))
+                foreach (var entry in Get<PredictionManager.CachedInputEntries>(block, "entries"))
                 {
                     bytes.AddRange(BitConverter.GetBytes(Get<PredictedComponentID>(entry, "id").objectId.instanceId.value));
                     bytes.AddRange(BitConverter.GetBytes(Get<PredictedComponentID>(entry, "id").componentId.value));
@@ -466,7 +485,7 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 var block = Block(tick);
                 var packer = Get<BitPacker>(block, "packer");
-                var entries = Get<IList>(block, "entries");
+                var entries = Get<PredictionManager.CachedInputEntries>(block, "entries");
                 Assert.That(entries.Count, Is.EqualTo(1));
                 var entry = entries[0];
                 Assert.That(Get<PredictedComponentID>(entry, "id"),

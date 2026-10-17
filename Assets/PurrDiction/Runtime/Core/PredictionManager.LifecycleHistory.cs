@@ -17,6 +17,7 @@ namespace PurrNet.Prediction
             public Dictionary<PredictedComponentID, PredictedComponentID?> parents;
             public bool ownsRoster;
             public bool ownsParents;
+            public uint systemsRevision;
             public readonly List<LifecycleEntry> entrants = new();
             public BitPacker payload;
 
@@ -51,7 +52,7 @@ namespace PurrNet.Prediction
         private readonly Stack<Dictionary<PredictedComponentID, PredictedComponentID?>> _lifecycleParentBuilders = new();
         private ulong _latestLifecycleTick;
         private readonly Dictionary<PredictedObjectID, InstanceDetails> _previousLifecyclePieces = new(PredictionIdComparers.Objects);
-        private readonly HashSet<PredictedObjectID> _changedLifecyclePieces = new();
+        private readonly HashSet<PredictedObjectID> _changedLifecyclePieces = new(PredictionIdComparers.Objects);
         private readonly Stack<LifecycleTick> _lifecycleReplayPool = new();
         private readonly Stack<LifecycleReplay> _lifecycleReplays = new();
         private LifecycleTick _readingLifecycleBatch;
@@ -120,6 +121,17 @@ namespace PurrNet.Prediction
             // Borrow while preparing: a failed entrant writer must leave the old owner intact.
             captured.ownsTopology = !sharesPreviousTopology;
             captured.tick = tick;
+            captured.systemsRevision = _systems.revision;
+
+            // Unchanged systems, topology and visibility have no entrants, so the tick
+            // repeats the previous roster without rescanning every system.
+            if (sharesPreviousTopology && previous.systemsRevision == _systems.revision &&
+                previous.parents.Count == 0 && !HasVisibilityFilteredPlayer())
+            {
+                RepeatPreviousLifecycleTick(tick, previous, captured);
+                return;
+            }
+
             if (!captured.ownsRoster)
             {
                 captured.roster = _lifecycleRosterBuilders.Count > 0
@@ -235,6 +247,43 @@ namespace PurrNet.Prediction
                 previous.ownsTopology = false;
                 captured.ownsTopology = true;
             }
+            PublishLifecycleTick(tick, index, captured);
+        }
+
+        private bool HasVisibilityFilteredPlayer()
+        {
+            foreach (var timeline in _playerVisibility.Values)
+            {
+                if (!timeline.isPassThrough)
+                    return true;
+            }
+            return false;
+        }
+
+        // Ownership moves to the newest tick, exactly as when a full scan finds no change.
+        private void RepeatPreviousLifecycleTick(ulong tick, LifecycleTick previous, LifecycleTick captured)
+        {
+            if (captured.ownsRoster)
+                CacheLifecycleRoster(captured.roster);
+            if (captured.ownsParents)
+                CacheLifecycleParents(captured.parents);
+            captured.roster = previous.roster;
+            captured.parents = previous.parents;
+            captured.ownsRoster = true;
+            captured.ownsParents = true;
+            previous.ownsRoster = false;
+            previous.ownsParents = false;
+            previous.ownsTopology = false;
+            captured.ownsTopology = true;
+            captured.hasPreviousTopology = true;
+            captured.entrants.Clear();
+            captured.payload?.ResetPositionAndMode(false);
+            captured.topologyDelta?.ResetPositionAndMode(false);
+            PublishLifecycleTick(tick, (int)(tick % (ulong)_lifecycleHistory.Length), captured);
+        }
+
+        private void PublishLifecycleTick(ulong tick, int index, LifecycleTick captured)
+        {
             _lifecycleCaptureScratch = _lifecycleHistory[index];
             _lifecycleHistory[index] = captured;
             _latestLifecycleTick = tick;
