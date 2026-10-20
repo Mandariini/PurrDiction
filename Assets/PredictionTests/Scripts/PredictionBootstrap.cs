@@ -237,6 +237,17 @@ public class PredictionBootstrap : Scenario
             return;
         }
 
+        if (CommandLineUtils.HasFlag("-ownerSyncVarScenarioOnly"))
+        {
+            _scenarios = new Scenario[]
+            {
+                this,
+                gameObject.AddComponent<OwnerSyncVarScenario>()
+            };
+            _results = new ScenarioDetails?[_scenarios.Length];
+            return;
+        }
+
         if (CommandLineUtils.HasFlag("-localPhysicsScenarioOnly"))
         {
             _scenarios = new Scenario[]
@@ -270,6 +281,7 @@ public class PredictionBootstrap : Scenario
                 GetComponentInChildren<PredictedPawnScenario>(true),
                 gameObject.AddComponent<DetachedGraphicsScenario>(),
                 gameObject.AddComponent<MirroredTargetRpcScenario>(),
+                gameObject.AddComponent<OwnerSyncVarScenario>(),
                 gameObject.AddComponent<LocalPhysicsSmoothnessScenario>(),
                 gameObject.AddComponent<PreSpawnHookScenario>(),
                 GetComponentInChildren<DeterministicGauntletScenario>(true) ?? gameObject.AddComponent<DeterministicGauntletScenario>()
@@ -314,6 +326,7 @@ public class PredictionBootstrap : Scenario
         gameObject.AddComponent<MixedNetworkIdentityScenario>();
         gameObject.AddComponent<DetachedGraphicsScenario>();
         gameObject.AddComponent<MirroredTargetRpcScenario>();
+        gameObject.AddComponent<OwnerSyncVarScenario>();
         gameObject.AddComponent<LocalPhysicsSmoothnessScenario>();
         gameObject.AddComponent<PreSpawnHookScenario>();
         gameObject.AddComponent<TickAgreementScenario>();

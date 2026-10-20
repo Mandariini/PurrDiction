@@ -123,7 +123,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(world.bridge.early[0].id, Is.EqualTo(block));
             Assert.That(world.bridge.early[2].id, Is.EqualTo(new NetworkID(502)));
             Assert.That(world.bridge.finalized, Has.Count.EqualTo(3));
-            Assert.That(world.bridge.owners, Is.Empty, "ownership is server authority; clients only follow PurrNet");
+            Assert.That(world.bridge.owners, Is.Empty, "an unowned instance sets no owner on the client");
             Assert.That(world.mirror.IsSpawned(verifiedId), Is.True);
 
             world.bridge.Reset();
@@ -134,6 +134,46 @@ namespace PurrNet.Prediction.Tests.Editor
             world.hierarchy.SyncNetworkMirror();
             Assert.That(world.bridge.despawned, Has.Count.EqualTo(3));
             Assert.That(world.mirror.spawnedPieceCount, Is.Zero);
+        }
+
+        [Test]
+        public void ClientAcknowledgesOnceBeforeItSpawnsFromAVerifiedFrame()
+        {
+            using var world = new World(this, asServer: false);
+            world.ApplyVerified(21, new PredictedObjectID(40), new NetworkID(500));
+            world.hierarchy.SyncNetworkMirror();
+
+            Assert.That(world.bridge.early, Has.Count.EqualTo(3));
+            Assert.That(world.bridge.acknowledgements, Is.EqualTo(new[] { 0 }),
+                "the acknowledgement leads every RPC the new identities can send");
+
+            world.bridge.Reset();
+            world.hierarchy.SyncNetworkMirror();
+            Assert.That(world.bridge.acknowledgements, Is.Empty, "nothing to spawn, nothing to acknowledge");
+        }
+
+        [Test]
+        public void ClientAppliesTheVerifiedOwnerBeforeOnSpawned()
+        {
+            using var world = new World(this, asServer: false);
+            world.ApplyVerified(21, new PredictedObjectID(40), new NetworkID(500), _owner);
+            world.hierarchy.SyncNetworkMirror();
+
+            Assert.That(world.bridge.owners, Is.EqualTo(new PlayerID?[] { _owner, _owner, _owner }),
+                "child pieces follow the root's owner");
+            // The root piece carries two identities and finalizes them before the child piece spawns.
+            Assert.That(world.bridge.ownerFinalizedCounts, Is.EqualTo(new[] { 0, 0, 2 }),
+                "an owner writing a SyncVar from OnSpawned must already own the identity");
+            Assert.That(world.bridge.finalized, Has.Count.EqualTo(3));
+        }
+
+        [Test]
+        public void ServerSpawnsNeverAcknowledge()
+        {
+            using var world = new World(this, asServer: true);
+            world.Create(_owner);
+            Assert.That(world.bridge.early, Has.Count.EqualTo(3));
+            Assert.That(world.bridge.acknowledgements, Is.Empty);
         }
 
         [Test]
@@ -163,7 +203,8 @@ namespace PurrNet.Prediction.Tests.Editor
             var id = world.Create(null);
             world.bridge.Reset();
             var timeline = new PlayerVisibilityTimeline(defaultVisible: true);
-            ulong spawnTick = world.manager.localTick + 1;
+            // Created between ticks, so the next frame (numbered with the current tick) carries it.
+            ulong spawnTick = world.manager.localTick;
 
             world.mirror.SyncObservers(_viewer, timeline, spawnTick - 1);
             Assert.That(world.bridge.observers, Is.Empty, "no observer before the client can have the instance");
@@ -191,6 +232,23 @@ namespace PurrNet.Prediction.Tests.Editor
             world.mirror.RemovePlayer(_viewer);
             Assert.That(world.bridge.removedObservers, Has.Count.EqualTo(3));
             Assert.That(world.mirror.IsObserving(_viewer, id), Is.False);
+        }
+
+        [Test]
+        public void PiecesCreatedAfterThisTicksFrameWaitForTheNextOne()
+        {
+            using var world = new World(this, asServer: true);
+            ulong tick = world.manager.localTick;
+            World.Set(typeof(PredictionManager), world.manager, "_lastWrittenFrameTick", tick);
+            var id = world.Create(null);
+            world.bridge.Reset();
+            var timeline = new PlayerVisibilityTimeline(defaultVisible: true);
+
+            world.mirror.SyncObservers(_viewer, timeline, tick);
+            Assert.That(world.bridge.observers, Is.Empty, "frame T was written before the piece existed");
+
+            world.mirror.SyncObservers(_viewer, timeline, tick + 1);
+            Assert.That(world.mirror.IsObserving(_viewer, id), Is.True);
         }
 
         [Test]
@@ -261,7 +319,8 @@ namespace PurrNet.Prediction.Tests.Editor
             var id = world.Create(null);
             world.bridge.Reset();
             var timeline = new PlayerVisibilityTimeline(defaultVisible: true);
-            ulong spawnTick = world.manager.localTick + 1;
+            // Created between ticks, so the next frame (numbered with the current tick) carries it.
+            ulong spawnTick = world.manager.localTick;
 
             world.mirror.SyncObservers(_viewer, timeline, spawnTick - 1);
             Assert.That(world.bridge.observers, Is.Empty);
@@ -351,12 +410,17 @@ namespace PurrNet.Prediction.Tests.Editor
             public readonly List<(NetworkIdentity identity, PlayerID player)> observers = new();
             public readonly List<(NetworkIdentity identity, PlayerID player)> removedObservers = new();
             public readonly List<PlayerID?> owners = new();
+            // The number of early spawns already made each time spawns were acknowledged.
+            public readonly List<int> acknowledgements = new();
+            // The number of finalized spawns already made each time an owner was set.
+            public readonly List<int> ownerFinalizedCounts = new();
             private ulong _next = 100;
 
             public void Reset()
             {
                 reservations.Clear(); early.Clear(); finalized.Clear(); despawned.Clear();
-                observers.Clear(); removedObservers.Clear(); owners.Clear();
+                observers.Clear(); removedObservers.Clear(); owners.Clear(); acknowledgements.Clear();
+                ownerFinalizedCounts.Clear();
             }
 
             public NetworkID ReserveNetworkIds(int count)
@@ -373,7 +437,12 @@ namespace PurrNet.Prediction.Tests.Editor
             public void Despawn(NetworkIdentity identity) => despawned.Add(identity);
             public void AddObserver(NetworkIdentity identity, PlayerID player) => observers.Add((identity, player));
             public void RemoveObserver(NetworkIdentity identity, PlayerID player) => removedObservers.Add((identity, player));
-            public void SetOwner(NetworkIdentity identity, PlayerID? owner) => owners.Add(owner);
+            public void SetOwner(NetworkIdentity identity, PlayerID? owner)
+            {
+                owners.Add(owner);
+                ownerFinalizedCounts.Add(finalized.Count);
+            }
+            public void AcknowledgeSpawns() => acknowledgements.Add(early.Count);
         }
 
         private sealed class World : IDisposable
@@ -438,14 +507,14 @@ namespace PurrNet.Prediction.Tests.Editor
             }
 
             /// <summary>Client only: makes a topology with (optionally) one mixed instance the latest verified state.</summary>
-            internal void ApplyVerified(ulong tick, PredictedObjectID? instance, NetworkID block)
+            internal void ApplyVerified(ulong tick, PredictedObjectID? instance, NetworkID block, PlayerID? instanceOwner = null)
             {
                 Assert.That(_asServer, Is.False);
                 var records = DisposableList<InstanceDetails>.Create(2);
                 if (instance.HasValue)
                 {
                     var root = instance.Value;
-                    records.Add(new InstanceDetails(0, 0, root, Vector3.zero, Quaternion.identity, null, null, block));
+                    records.Add(new InstanceDetails(0, 0, root, Vector3.zero, Quaternion.identity, instanceOwner, null, block));
                     records.Add(new InstanceDetails(0, 1, new PredictedObjectID(root.instanceId.value + 1), Vector3.zero, Quaternion.identity, null, null, new NetworkID(block, 2)));
                 }
 
@@ -474,7 +543,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 UnityEngine.Object.DestroyImmediate(_prefabs);
             }
 
-            private static void Set(Type type, object target, string name, object value)
+            internal static void Set(Type type, object target, string name, object value)
             {
                 var field = type.GetField(name, Instance);
                 Assert.That(field, Is.Not.Null, $"missing field {type.Name}.{name}");

@@ -795,6 +795,7 @@ namespace PurrNet.Prediction
             _frameApplyHadBaselineFailure = false;
             _lastPerformanceReconcileTime = double.NegativeInfinity;
             _ackedServerTick = 0;
+            _lastWrittenFrameTick = 0;
             ClearCheckpointDelivery();
             _recordDecodeQuarantine.Clear();
             _recordFailureLogAt.Clear();
@@ -1281,6 +1282,7 @@ namespace PurrNet.Prediction
                     CaptureInputHistory(localTick);
                     CaptureLifecycleHistory(localTick);
                     CapturePhysicsEventHierarchy(localTick);
+                    _lastWrittenFrameTick = localTick;
                     WriteInitialFrameToOthers();
                 }
             }
@@ -3548,6 +3550,42 @@ namespace PurrNet.Prediction
         private void SendInputToServer(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info = default)
         {
             ReceivedInput(firstTick, tickCount, frameAck, payload, info);
+        }
+
+        private ulong _lastWrittenFrameTick;
+
+        /// <summary>
+        /// Server only: the first frame that carries a change made now. Frame T is written before
+        /// tick T simulates, so changes during that tick land in frame T + 1 and changes made
+        /// between ticks land in the next frame, numbered with the current tick.
+        /// </summary>
+        internal ulong nextOutgoingFrameTick => _lastWrittenFrameTick == localTick ? localTick + 1 : localTick;
+
+        /// <summary>
+        /// Client only: sent right before mirrored NetworkIdentities spawn from a verified frame. It
+        /// travels ahead of the RPCs those identities send on the same ordered channel, so the server
+        /// counts this client as an observer before their ServerRpcs arrive.
+        /// </summary>
+        internal void AcknowledgeNetworkMirrorSpawns()
+        {
+            if (!isClient || isServer || _ackedServerTick == 0)
+                return;
+
+            SendNetworkMirrorAck(_ackedServerTick);
+        }
+
+        [ServerRpc(requireOwnership: false)]
+        private void SendNetworkMirrorAck(ulong frameAck, RPCInfo info = default)
+        {
+            if (!_clientTicks.TryGetValue(info.sender, out var ticks))
+                return;
+
+            if (frameAck > ticks.ackedServerTick && frameAck <= localTick)
+                ticks.ackedServerTick = frameAck;
+
+            // The committed timeline covers every frame sent so far, which includes the acked one.
+            if (hierarchy && _playerVisibility.TryGetValue(info.sender, out var timeline))
+                hierarchy.networkMirror.SyncObservers(info.sender, timeline, ticks.ackedServerTick);
         }
 
         private void ReceivedInput(ulong firstTick, uint tickCount, ulong frameAck, BitPacker payload, RPCInfo info)
