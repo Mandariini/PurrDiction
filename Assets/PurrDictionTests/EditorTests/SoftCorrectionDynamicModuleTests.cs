@@ -11,6 +11,64 @@ using UnityEngine.TestTools;
 
 namespace PurrNet.Prediction.Tests.Editor
 {
+    public class DynamicModuleRegistrationTests
+    {
+        [Test]
+        public void RuntimeAssemblyRegistersDynamicRosterWithoutGameOrSampleTypes()
+        {
+            NetworkManager.CallAllRegisters();
+            var packerType = typeof(Packer<DisposableList<uint>>);
+            var fields = packerType.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            var saved = new object[fields.Length];
+            for (int i = 0; i < fields.Length; i++)
+                saved[i] = fields[i].GetValue(null);
+
+            try
+            {
+                packerType.GetField("_hasWriter", BindingFlags.NonPublic | BindingFlags.Static).SetValue(null, false);
+                packerType.GetField("_hasReader", BindingFlags.NonPublic | BindingFlags.Static).SetValue(null, false);
+
+                // Other assemblies in this project contain DisposableList<uint> fields and can
+                // hide a missing registration in the shipped PurrDiction runtime assembly.
+                foreach (var type in typeof(PredictedIdentity).Assembly.GetTypes())
+                {
+                    if (type.ContainsGenericParameters)
+                        continue;
+                    foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                    {
+                        if (method.IsDefined(typeof(RegisterPackersAttribute), false))
+                            method.Invoke(null, null);
+                    }
+                }
+
+                Assert.That(Packer<DisposableList<uint>>.HasPacker(), Is.True,
+                    "PurrDiction must register its dynamic-module roster without relying on game or sample state fields.");
+
+                using var source = DisposableList<uint>.Create(2);
+                source.Add(17);
+                source.Add(42);
+                using var packed = BitPackerPool.Get();
+                DeltaPacker<DisposableList<uint>>.Write(packed, default, source);
+                packed.ResetPositionAndMode(true);
+                DisposableList<uint> copy = default;
+                try
+                {
+                    DeltaPacker<DisposableList<uint>>.Read(packed, default, ref copy);
+                    CollectionAssert.AreEqual(source, copy);
+                }
+                finally
+                {
+                    copy.Dispose();
+                }
+            }
+            finally
+            {
+                for (int i = 0; i < fields.Length; i++)
+                    fields[i].SetValue(null, saved[i]);
+            }
+        }
+    }
+
     public class SoftCorrectionDynamicModuleTests
     {
         private const BindingFlags InstanceFields = BindingFlags.Instance | BindingFlags.NonPublic;

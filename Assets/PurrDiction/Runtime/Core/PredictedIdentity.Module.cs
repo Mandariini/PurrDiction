@@ -19,6 +19,17 @@ namespace PurrNet.Prediction
         public PredictedModuleRosterMismatchException(string message) : base(message) { }
     }
 
+    internal static class PredictedModulePackers
+    {
+        [RegisterPackers]
+        private static void Register()
+        {
+            // The roster is written directly, not discovered from a predicted-state field.
+            // Do not depend on a game/sample field generating its collection codec.
+            PackCollections.RegisterDisposableList<uint>();
+        }
+    }
+
     public abstract partial class PredictedIdentity
     {
         private History<DisposableList<uint>> _moduleSetVerified;
