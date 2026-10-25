@@ -2278,6 +2278,10 @@ namespace PurrNet.Prediction
             long physicsStarted = performance.Timestamp();
             try
             {
+                // A paused timeScale has nothing to step; Unity warns on every zero-length Simulate call.
+                if (delta <= 0f)
+                    return;
+
 #if UNITY_PHYSICS_2D
                 if ((_physicsProvider & PredictionPhysicsProvider.UnityPhysics2D) != 0)
                 {
