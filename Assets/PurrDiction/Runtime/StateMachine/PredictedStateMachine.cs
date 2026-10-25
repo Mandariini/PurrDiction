@@ -33,6 +33,12 @@ namespace PurrNet.Prediction.StateMachine
     ///    they navigate relative to the default state (or index 0). SetState(int) also validates its
     ///    index instead of crashing, and an invalid wantedState is consumed with an error instead of
     ///    being left stuck or indexing out of bounds.
+    /// 4. Pool reuse resets the machine's local bookkeeping (see ResetCachedState): the node which
+    ///    was actually entered is Exit()ed, the cached node pointers are restored to the default
+    ///    state, and the view indices are rewound so the next life fires ViewEnter again. Without
+    ///    this, a pooled instance kept the previous life's entered node (its non-replicated state
+    ///    was never torn down) and the view could stay latched on the old (stateIndex, transition)
+    ///    pair, skipping ViewEnter when the new life started in the same state.
     ///
     /// TIMING - WHEN DOES A REQUEST APPLY? (deterministic: identical on every simulator)
     /// SetState/TrySetState/TryResetState/Next/Previous/ForceSetState only write wantedState - a
@@ -88,6 +94,11 @@ namespace PurrNet.Prediction.StateMachine
 
         private int _previousViewStateIndex = -1;
         private int _previousVerifiedViewStateIndex = -1;
+
+        // The state whose Enter() currently owns this machine, -1 when none. Tracked separately
+        // from the replicated stateIndex because the replicated state is discarded before the
+        // machine is reset and because the node still has to be Exit()ed after a pool round-trip.
+        private int _enteredStateIndex = -1;
 
         private void Awake()
         {
@@ -175,8 +186,8 @@ namespace PurrNet.Prediction.StateMachine
             }
 
             // A stateIndex that changed without a wantedState (authoritative/verified state
-            // applied directly) is also a transition: exit the node that is currently entered,
-            // which is tracked by lastEnteredStateIndex - not stateIndex.
+            // applied directly) is also a transition. ApplyTransition exits the node whose
+            // Enter() actually ran on this instance (_enteredStateIndex), not state.stateIndex.
             bool externalChange = requestedIndex == -1 &&
                                   state.stateIndex > -1 &&
                                   state.stateIndex != state.lastEnteredStateIndex;
@@ -242,12 +253,13 @@ namespace PurrNet.Prediction.StateMachine
         /// </summary>
         private void ApplyTransition(ref SMState state, int targetIndex, bool isRequested)
         {
-            // On an explicit request we always exit first, even when re-entering the same state
-            // (TryResetState / interrupt-self semantics). On an external change we exit the node
-            // whose Enter() ran most recently (tracked by lastEnteredStateIndex - not stateIndex).
-            int enteredIndex = isRequested ? state.stateIndex : state.lastEnteredStateIndex;
+            // Exit the node whose Enter() actually ran on this instance - not whatever stateIndex
+            // happens to say. The two differ after a reset (the replicated state is zeroed while
+            // no node is entered) and on a peer that joined directly into an authoritative state
+            // without ever running its Enter(); in both cases the old node must not be exited.
+            int enteredIndex = _enteredStateIndex;
             IPredictedStateNodeBase oldState = null;
-            if (enteredIndex > -1 && _states[enteredIndex] != null)
+            if (enteredIndex > -1 && enteredIndex < _states.Count && _states[enteredIndex] != null)
             {
                 oldState = _states[enteredIndex];
                 oldState.Exit();
@@ -263,8 +275,55 @@ namespace PurrNet.Prediction.StateMachine
             _previousStateNode = oldState;
             _currentStateNode = newState;
             _nextStateNode = _states[(targetIndex + 1) % _states.Count];
+            _enteredStateIndex = targetIndex;
             newState.Enter();
             onStateChanged?.Invoke(oldState, newState);
+        }
+
+        /// <summary>
+        /// Rewinds everything this machine caches locally, so a pooled instance starts its next
+        /// life like a freshly spawned one. State nodes are components that survive a pool
+        /// round-trip, so the node that was actually entered is Exit()ed here - otherwise its
+        /// non-replicated state (animator flags, timers, ...) would leak into the next spawn.
+        /// The view bookkeeping is rewound too: the next view pass must call ViewEnter for the new
+        /// life even when it starts in the same state and transition counter as the previous one.
+        /// Safe to call repeatedly; reset and pool release may both run for the same instance.
+        /// </summary>
+        private void ResetCachedState()
+        {
+            if (_states != null)
+            {
+                if (_enteredStateIndex > -1 && _enteredStateIndex < _states.Count)
+                    _states[_enteredStateIndex]?.Exit();
+
+                var defaultStateIndex = GetValidDefaultStateIndex();
+                _currentStateNode = defaultStateIndex > -1 ? _states[defaultStateIndex] : null;
+            }
+            else
+            {
+                _currentStateNode = null;
+            }
+
+            _enteredStateIndex = -1;
+            _previousStateNode = null;
+            _nextStateNode = null;
+
+            _previousViewStateIndex = -1;
+            _prevViewTransition = 0;
+            _previousVerifiedViewStateIndex = -1;
+            _prevVerifiedViewTransition = 0;
+        }
+
+        public override void ResetState()
+        {
+            ResetCachedState();
+            base.ResetState();
+        }
+
+        internal override void ReleasePredictionStateForPool()
+        {
+            ResetCachedState();
+            base.ReleasePredictionStateForPool();
         }
 
         protected override SMState GetInitialState()
