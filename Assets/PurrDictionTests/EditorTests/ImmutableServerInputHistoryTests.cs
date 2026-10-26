@@ -35,6 +35,204 @@ namespace PurrNet.Prediction.Tests.Editor
                     input.value = Packer<int>.Read(packer));
         }
 
+        [TestCase(0UL, false)]
+        [TestCase(57UL, true)]
+        [TestCase(ulong.MaxValue, true)]
+        public void PackedTranscriptOwnershipPreservesNullableIdsAndRestorationRules(ulong id, bool bot)
+        {
+            var owner = new PlayerID(id, bot);
+            var uploaded = new PredictionManager.CachedInputEntry(default, default, 3, 7, false, 11, 13, owner, true);
+            Assert.That(uploaded.owner.HasValue, Is.True);
+            Assert.That(uploaded.owner.Value.id.value, Is.EqualTo(id));
+            Assert.That(uploaded.owner.Value.isBot, Is.EqualTo(bot));
+            Assert.That(uploaded.RestoredBy(new PlayerID(id, !bot)), Is.True,
+                "restoration uses PlayerID identity equality, which compares the numeric ID");
+            Assert.That(uploaded.RestoredBy(new PlayerID(id == 0 ? 1UL : 0UL, false)), Is.False);
+            var unowned = new PredictionManager.CachedInputEntry(default, default, 3, 7, false, 11, 13, null, true);
+            Assert.That(unowned.owner.HasValue, Is.False);
+            Assert.That(unowned.RestoredBy(PlayerID.Server), Is.False, "null ownership is distinct from server ID zero");
+            var generated = new PredictionManager.CachedInputEntry(default, default, 3, 7, false, 11, 13, owner, false);
+            Assert.That(generated.RestoredBy(owner), Is.False);
+        }
+
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(7)]
+        public void IdentityRetainsCompactIndependentUploadedBits(int prefixBits)
+        {
+            using var fixture = new Fixture();
+            var identity = fixture.Add(815);
+            using var source = BitPackerPool.Get();
+            if (prefixBits > 0) source.WriteBits(5, (byte)prefixBits);
+            source.WriteBits(0x1abcd, 17);
+            var scratch = BitPackerPool.Get();
+            scratch.EnsureBitsExist(65536 * 8);
+            scratch.Dispose();
+            identity.RecordUploadedInputBits(source, prefixBits);
+            identity.ConsumeUploadedInputBits(10, true);
+            Assert.That(identity.TryGetUploadedInputBits(10, out var uploaded), Is.True);
+            Assert.That(uploaded.Equals(new BitData(source, prefixBits, 17)), Is.True);
+            var retained = (BitPacker)typeof(PredictedIdentity).GetField("_uploadedInputBits", Members).GetValue(identity);
+            Assert.That(retained.buffer.Length, Is.LessThan(64));
+            Assert.That(retained, Is.Not.SameAs(scratch));
+            source.ResetPositionAndMode(false);
+            source.WriteBits(0, 32);
+            retained.ResetPositionAndMode(true);
+            Assert.That(retained.ReadBits(17), Is.EqualTo(0x1abcdUL));
+            identity.ConsumeUploadedInputBits(11, false);
+            Assert.That(identity.TryGetUploadedInputBits(11, out _), Is.False);
+        }
+
+        [Test]
+        public void UnsanitizedUploadIsCapturedFromItsUploadedBitsWithoutReserializing()
+        {
+            using var fixture = new Fixture();
+            var identity = fixture.Add(820);
+            using var upload = BitPackerPool.Get();
+            Packer<bool>.Write(upload, true);
+            // The registered writer throws for this value, so capture must copy the received bits.
+            Packer<int>.Write(upload, int.MinValue);
+            upload.ResetPositionAndMode(true);
+            identity.QueueInput(upload, new PlayerID(5, false));
+            identity.PrepareInput(true, false, 10, false);
+            fixture.Capture(10);
+
+            var entries = Get<PredictionManager.CachedInputEntries>(fixture.Block(10), "entries");
+            Assert.That(Get<bool>(entries[0], "asUploaded"), Is.True, "the owner restores its own upload");
+            fixture.AssertInput(10, 820, int.MinValue);
+        }
+
+        [Test]
+        public void IdentityUploadedBufferGrowsAndIsReusedForLargerInputs()
+        {
+            using var fixture = new Fixture();
+            var identity = fixture.Add(816);
+            using var source = BitPackerPool.Get();
+            source.WriteBits(1, 1);
+            identity.RecordUploadedInputBits(source, 0);
+            var retained = typeof(PredictedIdentity).GetField("_uploadedInputBits", Members).GetValue(identity);
+            source.ResetPositionAndMode(false);
+            for (int i = 0; i < 32; i++) source.WriteBits((ulong)i, 32);
+            identity.RecordUploadedInputBits(source, 0);
+            identity.ConsumeUploadedInputBits(12, true);
+            Assert.That(typeof(PredictedIdentity).GetField("_uploadedInputBits", Members).GetValue(identity), Is.SameAs(retained));
+            Assert.That(identity.TryGetUploadedInputBits(12, out var uploaded), Is.True);
+            Assert.That(uploaded.Equals(new BitData(source, 0, source.positionInBits)), Is.True);
+        }
+
+        [Test]
+        public void GrowingInputRosterSizesNewSlotsWithoutDoublingOrChangingEarlierTicks()
+        {
+            using var fixture = new Fixture();
+            var inputs = new List<ImmutableHistoryInputProbe>();
+            for (uint id = 810; id < 814; id++)
+            {
+                var input = fixture.Add(id);
+                inputs.Add(input);
+                fixture.Seed(input, 10, (int)id);
+            }
+            fixture.Capture(10);
+            var before = fixture.Snapshot(10);
+            inputs.Add(fixture.Add(814));
+            foreach (var input in inputs)
+                fixture.Seed(input, 11, (int)input.id.objectId.instanceId.value);
+            fixture.Capture(11);
+
+            var entries = Get<PredictionManager.CachedInputEntries>(fixture.Block(11), "entries");
+            Assert.That(entries.Count, Is.EqualTo(5));
+            Assert.That(entries.Capacity, Is.EqualTo(5));
+            Assert.That(fixture.Snapshot(10), Is.EqualTo(before));
+            Assert.That(entries[4].id.objectId, Is.EqualTo(new PredictedObjectID(814)));
+        }
+
+        [TestCase(20, 32)]
+        [TestCase(20, 128)]
+        [TestCase(60, 32)]
+        [TestCase(60, 128)]
+        public void GrowingRosterReusesExpiredEntryTablesWithoutDoublingOrChangingRetainedTicks(int rate, int count)
+        {
+            using var fixture = new Fixture(rate);
+            var inputs = new List<ImmutableHistoryInputProbe>();
+            for (int i = 0; i < count; i++)
+                inputs.Add(fixture.Add((uint)(1000 + i)));
+            fixture.CaptureSeeded(10, inputs);
+            int window = fixture.Capacity;
+            ulong retainedTick = 10 + (ulong)window;
+            for (ulong tick = 11; tick <= retainedTick; tick++)
+                fixture.CaptureSeeded(tick, inputs);
+            var retained = fixture.Snapshot(retainedTick);
+            var scratch = Get<object>(fixture.manager, "_inputBlockScratch");
+            var reused = Get<PredictionManager.CachedInputEntries>(scratch, "entries");
+            int oldCapacity = reused.Capacity;
+            Assert.That(oldCapacity, Is.EqualTo(count));
+
+            inputs.Add(fixture.Add((uint)(1000 + count)));
+            ulong changedTick = retainedTick + 1;
+            fixture.CaptureSeeded(changedTick, inputs);
+            var block = fixture.Block(changedTick);
+            var entries = Get<PredictionManager.CachedInputEntries>(block, "entries");
+            Assert.That(entries, Is.SameAs(reused));
+            Assert.That(entries.Count, Is.EqualTo(count + 1));
+            Assert.That(entries.Capacity, Is.InRange(count + 1, oldCapacity * 2 - 1));
+            Assert.That(fixture.Snapshot(retainedTick), Is.EqualTo(retained));
+            var bytes = Get<BitPacker>(block, "packer");
+            using var reader = BitPackerPool.Get();
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var entry = entries[i];
+                Assert.That(entry.id, Is.EqualTo(inputs[i].id));
+                reader.ResetPositionAndMode(false);
+                reader.WriteBitDataWithoutConsumingIt(new BitData(bytes, entry.bitOrigin, entry.bitLength));
+                reader.ResetPositionAndMode(true);
+                Assert.That(Packer<bool>.Read(reader), Is.True);
+                Assert.That(Packer<ImmutableHistoryInput>.Read(reader).value, Is.EqualTo((int)changedTick + i));
+                Assert.That(reader.positionInBits, Is.EqualTo(entry.bitLength));
+            }
+        }
+
+        [Test]
+        public void ReorderingRemovingAndAddingInputsPreservesIdBasedRepeatDetection()
+        {
+            using var fixture = new Fixture();
+            var first = fixture.Add(710);
+            var middle = fixture.Add(720);
+            var last = fixture.Add(730);
+            fixture.Seed(first, 10, 111);
+            fixture.Seed(middle, 10, 222);
+            fixture.Seed(last, 10, 333);
+            fixture.Capture(10);
+            var original = fixture.Snapshot(10);
+
+            Get<PredictedSystemList>(fixture.manager, "_systems").Reverse();
+            fixture.Seed(first, 11, 111);
+            fixture.Seed(middle, 11, 222);
+            fixture.Seed(last, 11, 333);
+            fixture.Capture(11);
+            var reordered = Get<PredictionManager.CachedInputEntries>(fixture.Block(11), "entries");
+            Assert.That(reordered[0].id, Is.EqualTo(last.id));
+            Assert.That(reordered[1].id, Is.EqualTo(middle.id));
+            Assert.That(reordered[2].id, Is.EqualTo(first.id));
+            Assert.That(System.Linq.Enumerable.All(reordered, entry => entry.repeatsPrevious), Is.True,
+                "both matching ordinals and lookup fallbacks must find each ID's own bits");
+            var previous = fixture.Snapshot(11);
+
+            fixture.manager.UnregisterInstance(middle);
+            middle.ReleasePredictionStateForPool();
+            var born = fixture.Add(740);
+            fixture.Seed(first, 12, 444);
+            fixture.Seed(last, 12, 333);
+            fixture.Seed(born, 12, 222);
+            fixture.Capture(12);
+            var changed = Get<PredictionManager.CachedInputEntries>(fixture.Block(12), "entries");
+            Assert.That(changed.Count, Is.EqualTo(3));
+            Assert.That(System.Linq.Enumerable.First(changed, entry => entry.id.Equals(last.id)).repeatsPrevious, Is.True);
+            Assert.That(System.Linq.Enumerable.First(changed, entry => entry.id.Equals(first.id)).repeatsPrevious, Is.False);
+            Assert.That(System.Linq.Enumerable.First(changed, entry => entry.id.Equals(born.id)).repeatsPrevious, Is.False,
+                "a new ID cannot repeat the removed input even when its bytes match");
+            Assert.That(fixture.Snapshot(10), Is.EqualTo(original));
+            Assert.That(fixture.Snapshot(11), Is.EqualTo(previous));
+        }
+
         [Test]
         public void RemovedIdentityRetainsOriginalInputBytesWithoutObservers()
         {
@@ -251,11 +449,17 @@ namespace PurrNet.Prediction.Tests.Editor
             }
 
             internal void Capture(ulong tick) => Invoke(manager, "CaptureInputHistory", tick);
+            internal void CaptureSeeded(ulong tick, List<ImmutableHistoryInputProbe> inputs)
+            {
+                for (int i = 0; i < inputs.Count; i++)
+                    Seed(inputs[i], tick, (int)tick + i);
+                Capture(tick);
+            }
             internal object Block(ulong tick) => Invoke(manager, "GetInputBlockForTick", tick);
             internal int Capacity => ((Array)Get<object>(manager, "_inputBlockCache")).Length;
-            internal int EntryCount(ulong tick) => Get<IList>(Block(tick), "entries").Count;
+            internal int EntryCount(ulong tick) => Get<PredictionManager.CachedInputEntries>(Block(tick), "entries").Count;
             internal PredictedObjectID FirstEntryRoot(ulong tick)
-                => Get<PredictedObjectID>(Get<IList>(Block(tick), "entries")[0], "rootId");
+                => Get<PredictedObjectID>(Get<PredictionManager.CachedInputEntries>(Block(tick), "entries")[0], "rootId");
             internal void SetRate(int rate) => Set(typeof(PredictionManager), manager, "<tickRate>k__BackingField", rate);
             internal void Clear() => Invoke(manager, "DisposeInputBlockCache");
 
@@ -267,7 +471,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var bytes = new List<byte>();
                 for (int i = 0; i < packer.positionInBytes; i++)
                     bytes.Add(packer.buffer[i]);
-                foreach (var entry in Get<IList>(block, "entries"))
+                foreach (var entry in Get<PredictionManager.CachedInputEntries>(block, "entries"))
                 {
                     bytes.AddRange(BitConverter.GetBytes(Get<PredictedComponentID>(entry, "id").objectId.instanceId.value));
                     bytes.AddRange(BitConverter.GetBytes(Get<PredictedComponentID>(entry, "id").componentId.value));
@@ -281,7 +485,7 @@ namespace PurrNet.Prediction.Tests.Editor
             {
                 var block = Block(tick);
                 var packer = Get<BitPacker>(block, "packer");
-                var entries = Get<IList>(block, "entries");
+                var entries = Get<PredictionManager.CachedInputEntries>(block, "entries");
                 Assert.That(entries.Count, Is.EqualTo(1));
                 var entry = entries[0];
                 Assert.That(Get<PredictedComponentID>(entry, "id"),

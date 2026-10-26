@@ -1,3 +1,4 @@
+using System.Reflection;
 using PurrNet.Logging;
 using PurrNet.Modules;
 using PurrNet.Packing;
@@ -56,11 +57,20 @@ namespace PurrNet.Prediction
 
         private void EnsureInputHistory(PredictionManager world)
         {
-            if (_inputHistory != null && _inputHistory.Capacity == world.tickRate * 5)
+            int capacity = world.isServer ? checked((int)world.verifiedHistoryWindowTicks) : world.tickRate * 5;
+            // Plain inputs share one row-per-tick table per world; a history in another world's
+            // table would share that world's rows.
+            if (_inputHistory != null && _inputHistory.Capacity == capacity &&
+                (!_inputHistory.isInTable || ReferenceEquals(_inputHistory.table, world.GetDenseStateHistory<INPUT>(capacity))))
                 return;
 
             _inputHistory?.Clear();
-            _inputHistory = new History<INPUT>(world.tickRate * 5);
+            _inputHistory?.LeaveTable();
+            _inputHistory = PlainValue<INPUT>.isPlain
+                ? History<INPUT>.InTable(world.GetDenseStateHistory<INPUT>(capacity), capacity,
+                    world.initialLocalHistoryWindowTicks, checked((int)world.verifiedHistoryWindowTicks))
+                : History<INPUT>.ForTickWindow(capacity, world.initialLocalHistoryWindowTicks,
+                    checked((int)world.verifiedHistoryWindowTicks));
         }
 
         internal override void ReleasePredictionStateForPool()
@@ -73,6 +83,7 @@ namespace PurrNet.Prediction
         {
             base.OnDestroy();
             DisposeInputStorage();
+            _inputHistory?.LeaveTable();
         }
 
         private void DisposeInputStorage()
@@ -151,6 +162,13 @@ namespace PurrNet.Prediction
 
         internal override void PrepareInput(bool isServer, bool isLocal, ulong tick, bool extrapolate)
         {
+            // The server only writes inputs for its current tick. Retain the full
+            // protocol window plus its preceding anchor without geometric growth.
+            if (isServer)
+                _inputHistory.PruneByTickWindow(tick);
+            else
+                PruneAcceptedInputHistory(tick);
+
             if (isLocal)
             {
                 try
@@ -172,7 +190,9 @@ namespace PurrNet.Prediction
             }
             else if (isServer)
             {
-                ConsumeUploadedInputBits(tick, _queuedInput != null);
+                // Without a sanitizer the queued input is the decoded upload, exactly as received.
+                ConsumeUploadedInputBits(tick, _queuedInput != null,
+                    _queuedInput != null && _queuedInputUploaded && !sanitizesInput);
                 if (_queuedInput == null)
                 {
                     if (!extrapolate)
@@ -227,7 +247,7 @@ namespace PurrNet.Prediction
 
         internal override bool HasInputAt(ulong tick)
         {
-            return _inputHistory != null && _inputHistory.TryGet(tick, out _);
+            return _inputHistory != null && _inputHistory.Contains(tick);
         }
 
         public override void WriteFirstInput(ulong localTick, BitPacker packer)
@@ -248,6 +268,7 @@ namespace PurrNet.Prediction
         public override void ReadFirstInput(ulong localTick, BitPacker packer)
         {
             var pos = packer.positionInBits;
+            PruneAcceptedInputHistory(localTick);
             if (Packer<bool>.Read(packer))
             {
                 var input = Packer<INPUT>.Read(packer);
@@ -258,7 +279,41 @@ namespace PurrNet.Prediction
             TickBandwidthProfiler.OnReadInput(myType, packer.positionInBits - pos, this);
         }
 
+        private void PruneAcceptedInputHistory(ulong tick)
+        {
+            ulong floor = GetAcceptedHistoryRetentionFloor(tick);
+            if (floor > 0 && _inputHistory.Count > 1 && _inputHistory.OldestTick < floor)
+                _inputHistory.PruneBeforeBaseline(floor);
+        }
+
         private INPUT? _queuedInput;
+        private bool _queuedInputUploaded;
+
+        // Whether this type replaces the empty SanitizeInput, resolved once per concrete type.
+        private static readonly System.Collections.Generic.Dictionary<System.Type, bool> s_sanitizers = new ();
+        private int _sanitizerState;
+
+        private bool sanitizesInput
+        {
+            get
+            {
+                if (_sanitizerState == 0)
+                    _sanitizerState = ResolveSanitizer(GetType()) ? 1 : -1;
+                return _sanitizerState > 0;
+            }
+        }
+
+        private static bool ResolveSanitizer(System.Type type)
+        {
+            if (s_sanitizers.TryGetValue(type, out bool sanitizes))
+                return sanitizes;
+            var method = type.GetMethod(nameof(SanitizeInput),
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null,
+                new[] { typeof(INPUT).MakeByRefType() }, null);
+            sanitizes = method == null || method.DeclaringType != typeof(PredictedIdentity<INPUT, STATE>);
+            s_sanitizers[type] = sanitizes;
+            return sanitizes;
+        }
 
         /// <summary>
         /// Sanitize the input before using it.
@@ -269,8 +324,10 @@ namespace PurrNet.Prediction
         internal override void QueueInput(BitPacker packer, PlayerID sender)
         {
             int pos = packer.positionInBits;
+            _queuedInputUploaded = false;
             if (Packer<bool>.Read(packer))
             {
+                _queuedInputUploaded = true;
                 INPUT input = default;
                 Packer<INPUT>.Read(packer, ref input);
 

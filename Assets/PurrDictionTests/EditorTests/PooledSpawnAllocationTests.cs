@@ -6,6 +6,7 @@ using PurrNet.Modules;
 using PurrNet.Packing;
 using PurrNet.Prediction.Profiler;
 using PurrNet.Utils;
+using Unity.Profiling;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -110,7 +111,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Assert.That(buffers, Has.All.Not.Null, "warmup must size every per-instance buffer");
 
             ulong tick = 11;
-            var spawned = warm.Burst(ref tick, warmup, out var warmBytes);
+            var spawned = warm.Burst(ref tick, warmup, out var warmAllocations);
 
             AssertReusedPrewarmedBuffers(warm, warm.server, spawned, serverBuffers);
             AssertReusedPrewarmedBuffers(warm, warm.client, spawned, clientBuffers);
@@ -123,13 +124,29 @@ namespace PurrNet.Prediction.Tests.Editor
             cold.UndoPrewarm(cold.server);
             cold.UndoPrewarm(cold.client);
             ulong coldTick = 11;
-            cold.Burst(ref coldTick, warmup, out var coldBytes);
+            cold.Burst(ref coldTick, warmup, out var coldAllocations);
 
-            var report = $"{tickRate} Hz first spawn: server {warmBytes.server / warmup:F0} B (cold {coldBytes.server / warmup:F0} B), " +
-                         $"client {warmBytes.client / warmup:F0} B (cold {coldBytes.client / warmup:F0} B)";
+            var report = $"{tickRate} Hz first spawn: server {warmAllocations.server / (double)warmup:F1} allocations (cold {coldAllocations.server / (double)warmup:F1}), " +
+                         $"client {warmAllocations.client / (double)warmup:F1} allocations (cold {coldAllocations.client / (double)warmup:F1})";
             TestContext.WriteLine(report);
-            Assert.That(warmBytes.server, Is.LessThan(coldBytes.server / 4), report);
-            Assert.That(warmBytes.client, Is.LessThan(coldBytes.client / 4), report);
+            // Packet/hierarchy work is common to both bursts. As cold histories
+            // shrink, their share of that total changes; require the actual backing
+            // history allocations eliminated instead of a fixed fraction of the
+            // whole burst's coarse heap growth. Each history owns two arrays.
+            Assert.That(coldAllocations.server - warmAllocations.server, Is.GreaterThanOrEqualTo(HistoryAllocations(serverBuffers)), report);
+            Assert.That(coldAllocations.client - warmAllocations.client, Is.GreaterThanOrEqualTo(HistoryAllocations(clientBuffers)), report);
+        }
+
+        static long HistoryAllocations(Dictionary<PredictedIdentity, object[]> buffers)
+        {
+            long allocations = 0;
+            foreach (var values in buffers.Values)
+            foreach (var buffer in values)
+            {
+                var payload = buffer.GetType().GetProperty("BackingStoragePayloadBytes", Fields);
+                if (payload != null) allocations += 3; // History instance, tick array, value array.
+            }
+            return allocations;
         }
 
         static void AssertReusedPrewarmedBuffers(World world, PredictionManager manager,
@@ -233,7 +250,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 _ack.ackedServerTick = 10;
             }
 
-            internal int LiveCount(PredictionManager manager) => Get<List<PredictedIdentity>>(manager, "_systems").Count;
+            internal int LiveCount(PredictionManager manager) => Get<PredictedSystemList>(manager, "_systems").Count;
 
             static readonly string[] BufferFields = { "_stateHistory", "_interpolatedState", "_inputHistory" };
 
@@ -286,26 +303,38 @@ namespace PurrNet.Prediction.Tests.Editor
                 return pooled;
             }
 
-            // Spawns count objects in one tick and delivers it, measuring each side's allocations.
-            internal List<PredictedObjectID> Burst(ref ulong tick, int count, out (long server, long client) bytes)
+            // Spawns count objects in one tick and delivers it, counting each side's managed allocations.
+            internal List<PredictedObjectID> Burst(ref ulong tick, int count, out (long server, long client) allocations)
             {
                 var spawned = new List<PredictedObjectID>(count);
                 GC.Collect();
                 GC.WaitForPendingFinalizers();
                 GC.Collect();
                 int collections = GC.CollectionCount(0);
-                long before = GC.GetTotalMemory(false);
+                using var serverAlloc = ProfilerRecorder.StartNew(ProfilerCategory.Internal, "GC.Alloc", 65536,
+                    ProfilerRecorderOptions.CollectOnlyOnCurrentThread);
                 for (int i = 0; i < count; i++)
                     spawned.Add(server.hierarchy.Create(0, new Vector3(i, 0, 0), Quaternion.identity)!.Value);
                 StepServer(tick);
-                long mid = GC.GetTotalMemory(false);
+                serverAlloc.Stop();
+                using var clientAlloc = ProfilerRecorder.StartNew(ProfilerCategory.Internal, "GC.Alloc", 65536,
+                    ProfilerRecorderOptions.CollectOnlyOnCurrentThread);
                 Deliver(tick);
-                long after = GC.GetTotalMemory(false);
+                clientAlloc.Stop();
                 TickBandwidthProfiler.MarkEndOfTick();
                 Assert.That(GC.CollectionCount(0), Is.EqualTo(collections), "a collection ran during the burst");
-                bytes = (mid - before, after - mid);
+                allocations = (Allocations(serverAlloc), Allocations(clientAlloc));
                 tick++;
                 return spawned;
+            }
+
+            static long Allocations(ProfilerRecorder recorder)
+            {
+                Assert.That(recorder.Valid, Is.True, "GC allocation recording is unavailable");
+                Assert.That(recorder.Count, Is.LessThan(recorder.Capacity), "GC allocation recording overflowed");
+                // GC.Alloc is a timing marker with one sample per allocation;
+                // its sample Value is duration, so count events rather than bytes.
+                return recorder.Count;
             }
 
             internal void Churn(ulong tick, Queue<PredictedObjectID> live, bool spawn = true, bool deliver = true)
@@ -452,7 +481,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(server, "<localTick>k__BackingField", tick);
                 Set(server, "<localTickInContext>k__BackingField", tick);
                 Set(server, "<isVerified>k__BackingField", true);
-                var systems = Get<List<PredictedIdentity>>(server, "_systems");
+                var systems = Get<PredictedSystemList>(server, "_systems");
                 for (var i = 0; i < systems.Count; i++)
                 {
                     systems[i].RunGetLatestUnityState();
@@ -578,7 +607,7 @@ namespace PurrNet.Prediction.Tests.Editor
                         continue;
                     if (manager.hierarchy)
                         manager.hierarchy.Cleanup();
-                    var systems = Get<List<PredictedIdentity>>(manager, "_systems");
+                    var systems = Get<PredictedSystemList>(manager, "_systems");
                     foreach (var identity in systems)
                         identity.ReleasePredictionStateForPool();
                     systems.Clear();

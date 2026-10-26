@@ -283,6 +283,11 @@ namespace PurrNet.Prediction.Tests.Editor
                     uint tickCount = Packer<PackedUInt>.Read(source).value;
                     Assert.That(tickCount, Is.EqualTo(original.tick - original.baseline));
                     Packer<PackedUInt>.Write(altered, tickCount);
+                    if (tickCount > 0)
+                    {
+                        Assert.That(Packer<bool>.Read(source), Is.False, "no carried input roster");
+                        Packer<bool>.Write(altered, false);
+                    }
                     // Decode every tick (repeats resolve against the previous decoded tick) and
                     // re-emit the canonical no-repeat layout, since byte padding depends on position.
                     var previous = new List<(PredictedComponentID id, BitPacker payload)>();
@@ -295,6 +300,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     {
                         uint entryCount = Packer<PackedUInt>.Read(source).value;
                         var repeats = new bool[entryCount];
+                        var sameAs = new int[entryCount];
                         var deltas = new bool[entryCount];
                         bool sameRoster = false;
                         current.Clear();
@@ -315,8 +321,10 @@ namespace PurrNet.Prediction.Tests.Editor
                                 for (uint i = 0; i < entryCount; i++)
                                 {
                                     repeats[i] = Packer<bool>.Read(source);
-                                    deltas[i] = !repeats[i] && Packer<bool>.Read(source);
-                                    if (!repeats[i] && !deltas[i])
+                                    bool same = !repeats[i] && Packer<bool>.Read(source);
+                                    sameAs[i] = same ? (int)(i - Packer<PackedUInt>.Read(source).value - 1) : -1;
+                                    deltas[i] = !repeats[i] && !same && Packer<bool>.Read(source);
+                                    if (!repeats[i] && !same && !deltas[i])
                                         Assert.That(Packer<bool>.Read(source), Is.False, "no receiver-owned input to restore");
                                 }
                             source.SkipBits((8 - source.positionInBits % 8) % 8);
@@ -326,6 +334,13 @@ namespace PurrNet.Prediction.Tests.Editor
                             if (repeats[i])
                             {
                                 current.Add(previous[(int)i]);
+                                continue;
+                            }
+                            if (sameRoster && sameAs[i] >= 0)
+                            {
+                                var copy = BitPackerPool.Get();
+                                copy.WriteBitDataWithoutConsumingIt(new BitData(current[sameAs[i]].payload));
+                                current.Add((previous[(int)i].id, copy));
                                 continue;
                             }
                             var id = sameRoster ? previous[(int)i].id : Packer<PredictedComponentID>.Read(source);
@@ -439,7 +454,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var inputs = new History<VerifiedInputProbeInput>(200);
                 Set(typeof(PredictedIdentity<VerifiedInputProbeInput, VerifiedInputProbeState>), identity, "_inputHistory", inputs);
                 identity.lastVerifiedTick = 10;
-                Get<List<PredictedIdentity>>(manager, "_systems").Add(identity);
+                Get<PredictedSystemList>(manager, "_systems").Add(identity);
                 Set(manager, "_systemsCount", 1);
                 Set(manager, "_inputHistorySystems", 1);
                 Get<Dictionary<PredictedComponentID, PredictedIdentity>>(manager, "_instanceMap").Add(id, identity);
@@ -451,7 +466,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 PredictionPerformanceTelemetry.reconcileIntervalSeconds = _previousCadence;
                 foreach (var manager in new[] { client, _server })
                 {
-                    Get<List<PredictedIdentity>>(manager, "_systems").Clear();
+                    Get<PredictedSystemList>(manager, "_systems").Clear();
                     Get<Dictionary<PredictedComponentID, PredictedIdentity>>(manager, "_instanceMap").Clear();
                     Set(manager, "_systemsCount", 0);
                 }

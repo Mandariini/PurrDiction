@@ -181,6 +181,43 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(f.Frame.preparedFrameTick, Is.Zero);
         }
 
+        [Test]
+        public void SharedStateSectionTravelsCompressedOnceAndComesBackIntoItsPlace()
+        {
+            using var f = new Fixture();
+            f.Prepare(10, 8, 1000);
+            var frame = f.Frame;
+            // An odd prefix, so the shared section starts inside a byte.
+            frame.packer.WriteBits(5UL, 3);
+            int start = frame.packer.positionInBits;
+            using var section = BitPackerPool.Get();
+            for (uint i = 0; i < 60; i++)
+                Packer<PackedUInt>.Write(section, i * 37u);
+            Packer<PackedUInt>.Write(frame.packer, (uint)section.positionInBits);
+            frame.packer.WriteBitDataWithoutConsumingIt(new BitData(section, 0, section.positionInBits));
+            int bits = frame.packer.positionInBits - start;
+            // Receiver-specific bits after the section, as the event transcript is.
+            frame.packer.WriteBits(0x2AUL, 7);
+            Set(f.manager, "_sharedStateSectionTick", 10UL);
+            frame.sharedSectionIndex = (int)Invoke(f.manager, "StoreSharedStateSection", 8UL, false, false, section, 0, 0UL);
+            frame.sharedSectionStart = start;
+            frame.sharedSectionBits = bits;
+            f.SetFrame(frame);
+            using var expected = BitPackerPool.Get();
+            expected.WriteBitDataWithoutConsumingIt(new BitData(frame.packer, 0, frame.packer.positionInBits));
+
+            f.Dispatch();
+            f.AdvancePast(10);
+            f.Flush();
+
+            Assert.That(f.sent, Has.Count.EqualTo(1));
+            Assert.That(f.sent[0].sharedBits, Is.EqualTo((uint)bits), "the shared section travelled on its own");
+            Assert.That(f.sent[0].frameBits, Is.EqualTo(expected.positionInBits));
+            Assert.That(new BitData(f.sent[0].body, 0, expected.positionInBits)
+                .Equals(new BitData(expected, 0, expected.positionInBits)), Is.True, "the rebuilt frame is bit-identical");
+            Assert.That(f.sent[0].marker, Is.EqualTo(1000));
+        }
+
         private sealed class SubmittedFrame
         {
             public ulong tick, baseline, inputAck;
@@ -188,6 +225,9 @@ namespace PurrNet.Prediction.Tests.Editor
             public int inputMargin, inputSlackMs;
             public uint marker;
             public Channel channel;
+            public uint sharedBits;
+            public int frameBits;
+            public BitPacker body;
         }
 
         private sealed class Fixture : IDisposable
@@ -249,29 +289,40 @@ namespace PurrNet.Prediction.Tests.Editor
             public void Dispatch() => Invoke(manager, "DispatchPreparedServerFrames");
             public void Flush() => Invoke(manager, "FlushPendingServerFrames");
 
-            private void Capture(RPCSignature signature, ref BitPacker compressed)
+            private void Capture(RPCSignature signature, ref BitPacker arguments)
             {
                 if (signature.rpcName != "SendFrameToRemote")
                     return;
                 Assert.That(signature.targetPlayer, Is.EqualTo(player));
+                // Frames compress their own parts, so the RPC carries its arguments as written.
                 using var decoded = BitPackerPool.Get();
-                decoded.UnpickleFrom(compressed);
+                decoded.WriteBitDataWithoutConsumingIt(new BitData(arguments));
                 decoded.ResetPositionAndMode(true);
                 var frame = new SubmittedFrame
                 {
                     channel = signature.channel,
                     immediate = signature.immediate,
-                    tick = Packer<ulong>.Read(decoded),
-                    baseline = Packer<ulong>.Read(decoded),
-                    inputAck = Packer<ulong>.Read(decoded),
+                    tick = Packer<PackedULong>.Read(decoded),
+                    baseline = Packer<PackedULong>.Read(decoded),
+                    inputAck = Packer<PackedULong>.Read(decoded),
                     full = Packer<bool>.Read(decoded),
                     hasInputMargin = Packer<bool>.Read(decoded),
                     inputMargin = Packer<PackedInt>.Read(decoded),
                     hasInputSlack = Packer<bool>.Read(decoded),
                     inputSlackMs = Packer<PackedInt>.Read(decoded)
                 };
-                using var payload = Packer<BitPackerWithLength>.Read(decoded);
-                Assert.That(payload.originalLength, Is.EqualTo(sizeof(uint)));
+                uint frameBits = Packer<PackedUInt>.Read(decoded);
+                uint sharedStart = Packer<PackedUInt>.Read(decoded);
+                uint sharedBits = Packer<PackedUInt>.Read(decoded);
+                var rest = Packer<BitPackerWithLength>.Read(decoded);
+                var shared = Packer<BitPackerWithLength>.Read(decoded);
+                using var payload = PredictionManager.DecodeFrame(frameBits, sharedStart, sharedBits, rest, shared);
+                if (sharedBits == 0)
+                    Assert.That(payload.originalLength, Is.EqualTo(sizeof(uint)));
+                frame.sharedBits = sharedBits;
+                frame.frameBits = (int)frameBits;
+                frame.body = new BitPacker();
+                frame.body.WriteBitDataWithoutConsumingIt(new BitData(payload.packer, 0, (int)frameBits));
                 payload.packer.ResetPositionAndMode(true);
                 frame.marker = Packer<uint>.Read(payload.packer);
                 sent.Add(frame);

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using PurrNet.Packing;
+using PurrNet.Pooling;
 
 namespace PurrNet.Prediction
 {
@@ -14,10 +15,11 @@ namespace PurrNet.Prediction
 
         private readonly List<VerifiedInputTick> _verifiedInputTicks = new();
         private readonly List<InputHistorySpan> _verifiedInputEntries = new();
-        private readonly HashSet<PredictedComponentID> _verifiedInputIds = new();
+        private readonly HashSet<PredictedComponentID> _verifiedInputIds = new(PredictionIdComparers.Components);
         private readonly List<bool> _verifiedInputRepeatScratch = new();
         private readonly List<bool> _verifiedInputDeltaScratch = new();
         private readonly List<bool> _verifiedInputRestoredScratch = new();
+        private readonly List<int> _verifiedInputSameScratch = new();
         private readonly List<VerifiedInputTick> _verifiedViewOffsetTicks = new();
         private readonly List<PlayerViewOffset> _verifiedViewOffsets = new();
         private BitPacker _verifiedInputPayload;
@@ -34,6 +36,7 @@ namespace PurrNet.Prediction
             _verifiedInputRepeatScratch.Clear();
             _verifiedInputDeltaScratch.Clear();
             _verifiedInputRestoredScratch.Clear();
+            _verifiedInputSameScratch.Clear();
             _verifiedViewOffsetTicks.Clear();
             _verifiedViewOffsets.Clear();
         }
@@ -122,15 +125,25 @@ namespace PurrNet.Prediction
             public List<InputHistorySpan> spans;
         }
 
-        private readonly Dictionary<ulong, UploadedInputTick> _uploadedInputs = new();
+        private readonly Dictionary<ulong, UploadedInputTick> _uploadedInputs = new(PredictionIdComparers.Ticks);
         private readonly List<ulong> _uploadedInputPruneScratch = new();
+        private BitPacker _spareUploadedInputBits;
 
         internal void RecordUploadedInputs(ulong tick, BitPacker block, List<InputHistorySpan> spans)
         {
             // Only the first upload of a tick can be the one the server consumed.
             if (_uploadedInputs.ContainsKey(tick))
                 return;
-            var entry = new UploadedInputTick { bits = BitPackerPool.Get(), spans = new List<InputHistorySpan>(spans) };
+            var copiedSpans = ListPool<InputHistorySpan>.Instantiate(spans.Count);
+            copiedSpans.AddRange(spans);
+            // Uploads outlive shared packet scratch buffers by an entire history window.
+            // Own compact buffers so each retained tick cannot pin an oversized packet buffer.
+            var entry = new UploadedInputTick
+            {
+                bits = _spareUploadedInputBits ?? new BitPacker(block.positionInBytes + 8),
+                spans = copiedSpans
+            };
+            _spareUploadedInputBits = null;
             entry.bits.ResetPositionAndMode(false);
             entry.bits.WriteBitDataWithoutConsumingIt(new BitData(block, 0, block.positionInBits));
             _uploadedInputs[tick] = entry;
@@ -148,21 +161,37 @@ namespace PurrNet.Prediction
             }
             for (int i = 0; i < _uploadedInputPruneScratch.Count; i++)
             {
-                _uploadedInputs[_uploadedInputPruneScratch[i]].bits.Dispose();
+                // One spare is enough for steady tick-by-tick expiry. Drop the others after
+                // a large acknowledgement advance instead of keeping a second history pool.
+                _spareUploadedInputBits ??= _uploadedInputs[_uploadedInputPruneScratch[i]].bits;
+                ListPool<InputHistorySpan>.Destroy(_uploadedInputs[_uploadedInputPruneScratch[i]].spans);
                 _uploadedInputs.Remove(_uploadedInputPruneScratch[i]);
             }
         }
+
+        // Transcripts restore a tick's inputs in the same order they were uploaded, so resume
+        // the search after the previous match instead of rescanning the tick from its start.
+        private ulong _uploadedLookupTick = ulong.MaxValue;
+        private int _uploadedLookupNext;
 
         private bool TryGetUploadedInput(ulong tick, PredictedComponentID id, out BitData bits)
         {
             bits = default;
             if (!_uploadedInputs.TryGetValue(tick, out var entry))
                 return false;
-            for (int i = 0; i < entry.spans.Count; i++)
+            var spans = entry.spans;
+            int count = spans.Count;
+            int start = _uploadedLookupTick == tick && _uploadedLookupNext < count ? _uploadedLookupNext : 0;
+            for (int n = 0; n < count; n++)
             {
-                var span = entry.spans[i];
+                int i = start + n;
+                if (i >= count)
+                    i -= count;
+                var span = spans[i];
                 if (!span.id.Equals(id))
                     continue;
+                _uploadedLookupTick = tick;
+                _uploadedLookupNext = i + 1;
                 bits = new BitData(entry.bits, span.bitOrigin, span.bitLength);
                 return true;
             }
@@ -172,8 +201,12 @@ namespace PurrNet.Prediction
         private void ClearUploadedInputs()
         {
             foreach (var entry in _uploadedInputs.Values)
-                entry.bits.Dispose();
+            {
+                ListPool<InputHistorySpan>.Destroy(entry.spans);
+            }
             _uploadedInputs.Clear();
+            _spareUploadedInputBits = null;
+            InvalidateUploadTickBlocks();
         }
 
         private void StageVerifiedInputSpan(ulong tick, PredictedComponentID id, int origin, int length)
@@ -203,8 +236,15 @@ namespace PurrNet.Prediction
             if (frame.positionInBits > frameEndBit || count != serverTick - baselineTick)
                 throw new MissingPredictionBaselineException(
                     $"Authoritative inputs must cover every tick after {baselineTick} through {serverTick}.");
+            bool carried = count > 0 && ReadTranscriptFlag(frame, frameEndBit, baselineTick);
+            if (carried && (!_hasCarriedInputs || _carriedInputTick != baselineTick))
+                throw new MissingPredictionBaselineException(
+                    $"Authoritative inputs at tick {baselineTick + 1} repeat an input roster this peer does not hold.");
 
-            BeginVerifiedInputTranscript(baselineTick + 1, serverTick);
+            var carriedBatch = default(VerifiedInputTick);
+            if (carried)
+                carriedBatch = BeginCarriedInputTranscript(baselineTick + 1, serverTick);
+            else BeginVerifiedInputTranscript(baselineTick + 1, serverTick);
             for (uint k = 0; k < count; k++)
             {
                 ulong tick = baselineTick + 1 + k;
@@ -220,12 +260,13 @@ namespace PurrNet.Prediction
                     continue;
                 }
 
-                var previousBatch = k > 0 ? _verifiedInputTicks[(int)k - 1] : default;
-                bool sameRoster = k > 0 && Packer<bool>.Read(frame);
+                var previousBatch = k > 0 ? _verifiedInputTicks[(int)k - 1] : carriedBatch;
+                bool sameRoster = (k > 0 || carried) && ReadTranscriptFlag(frame, frameEndBit, tick);
                 ReadTranscriptViewOffsets(frame, frameEndBit, tick, k > 0 && previousBatch.count > 0);
                 _verifiedInputRepeatScratch.Clear();
                 _verifiedInputDeltaScratch.Clear();
                 _verifiedInputRestoredScratch.Clear();
+                _verifiedInputSameScratch.Clear();
                 if (sameRoster)
                 {
                     if ((uint)previousBatch.count != entries || entries > (uint)(frameEndBit - frame.positionInBits))
@@ -234,15 +275,27 @@ namespace PurrNet.Prediction
                     for (uint e = 0; e < entries; e++)
                     {
                         bool repeats = ReadTranscriptFlag(frame, frameEndBit, tick);
-                        bool delta = !repeats && ReadTranscriptFlag(frame, frameEndBit, tick);
-                        bool restored = !repeats && !delta && ReadTranscriptFlag(frame, frameEndBit, tick);
+                        bool same = !repeats && ReadTranscriptFlag(frame, frameEndBit, tick);
+                        int sameAs = -1;
+                        if (same)
+                        {
+                            uint distance = Packer<PackedUInt>.Read(frame);
+                            if (frame.positionInBits > frameEndBit || distance >= e)
+                                throw new MissingPredictionBaselineException(
+                                    $"Authoritative input at tick {tick} repeats an entry outside its tick.");
+                            sameAs = (int)(e - distance - 1);
+                        }
+                        bool delta = !repeats && !same && ReadTranscriptFlag(frame, frameEndBit, tick);
+                        bool restored = !repeats && !same && !delta && ReadTranscriptFlag(frame, frameEndBit, tick);
                         _verifiedInputRepeatScratch.Add(repeats);
+                        _verifiedInputSameScratch.Add(sameAs);
                         _verifiedInputDeltaScratch.Add(delta);
                         _verifiedInputRestoredScratch.Add(restored);
                     }
                 }
                 SkipTranscriptPadding(frame, frameEndBit, tick);
 
+                int tickFirstEntry = _verifiedInputEntries.Count;
                 for (int e = 0; e < (int)entries; e++)
                 {
                     if (sameRoster && _verifiedInputRepeatScratch[e])
@@ -251,6 +304,13 @@ namespace PurrNet.Prediction
                         continue;
                     }
                     var previous = sameRoster ? _verifiedInputEntries[previousBatch.firstEntry + e] : default;
+                    if (sameRoster && _verifiedInputSameScratch[e] >= 0)
+                    {
+                        // Identical bits already staged for an earlier entry of this tick.
+                        var earlier = _verifiedInputEntries[tickFirstEntry + _verifiedInputSameScratch[e]];
+                        StageVerifiedInputSpan(tick, previous.id, earlier.bitOrigin, earlier.bitLength);
+                        continue;
+                    }
                     var id = sameRoster ? previous.id : Packer<PredictedComponentID>.Read(frame);
                     if (frame.positionInBits > frameEndBit)
                         throw new MissingPredictionBaselineException($"Truncated authoritative input for {id} at tick {tick}.");
@@ -278,6 +338,84 @@ namespace PurrNet.Prediction
             }
         }
 
+        // The last verified tick's complete input roster, kept after its frame applied so the
+        // next frame's first tick can repeat or patch it.
+        private BitPacker _carriedInputs;
+        private readonly List<InputHistorySpan> _carriedInputEntries = new();
+        private ulong _carriedInputTick;
+        private bool _hasCarriedInputs;
+
+        // The next transcript appends to the payload that holds the carried roster, so the carried
+        // entries precede its own ticks, outside every tick batch, and need no copy.
+        private VerifiedInputTick BeginCarriedInputTranscript(ulong firstTick, ulong lastTick)
+        {
+            var carried = _carriedInputs;
+            _carriedInputs = null;
+            ClearVerifiedInputTranscript();
+            _verifiedInputPayload = carried;
+            _verifiedInputFrom = firstTick;
+            _verifiedInputThrough = lastTick;
+            int first = _verifiedInputEntries.Count;
+            _verifiedInputEntries.AddRange(_carriedInputEntries);
+            return new VerifiedInputTick { firstEntry = first, count = _carriedInputEntries.Count };
+        }
+
+        // Retired ticks accumulate in a continued payload; past this size the roster moves to a fresh one.
+        private const int CarriedInputCompactionBits = 1 << 16;
+
+        // Applied transcripts are not decoded again, so the carried roster takes over their payload.
+        private void CarryVerifiedInputs(ulong tick)
+        {
+            if (_verifiedInputPayload == null || _verifiedInputTicks.Count == 0 ||
+                tick < _verifiedInputFrom || tick > _verifiedInputThrough ||
+                tick - _verifiedInputFrom >= (ulong)_verifiedInputTicks.Count)
+            {
+                if (_carriedInputTick != tick)
+                    DropCarriedInputs();
+                return;
+            }
+
+            var batch = _verifiedInputTicks[(int)(tick - _verifiedInputFrom)];
+            _carriedInputEntries.Clear();
+            int rosterBits = 0;
+            for (int i = batch.firstEntry; i < batch.firstEntry + batch.count; i++)
+            {
+                var entry = _verifiedInputEntries[i];
+                rosterBits += entry.bitLength;
+                _carriedInputEntries.Add(entry);
+            }
+
+            var payload = _verifiedInputPayload;
+            _verifiedInputPayload = null;
+            _carriedInputs?.Dispose();
+            if (payload.positionInBits > CarriedInputCompactionBits && payload.positionInBits > 4 * rosterBits)
+            {
+                var compact = BitPackerPool.Get();
+                for (int i = 0; i < _carriedInputEntries.Count; i++)
+                {
+                    var entry = _carriedInputEntries[i];
+                    int origin = compact.positionInBits;
+                    compact.WriteBitDataWithoutConsumingIt(new BitData(payload, entry.bitOrigin, entry.bitLength));
+                    entry.bitOrigin = origin;
+                    _carriedInputEntries[i] = entry;
+                }
+                payload.Dispose();
+                payload = compact;
+            }
+
+            _carriedInputs = payload;
+            _carriedInputTick = tick;
+            _hasCarriedInputs = true;
+        }
+
+        private void DropCarriedInputs()
+        {
+            _hasCarriedInputs = false;
+            _carriedInputEntries.Clear();
+            _carriedInputs?.Dispose();
+            _carriedInputs = null;
+        }
+
         private static bool ReadTranscriptFlag(BitPacker frame, int frameEndBit, ulong tick)
         {
             if (frame.positionInBits >= frameEndBit)
@@ -301,7 +439,9 @@ namespace PurrNet.Prediction
             }
 
             var batch = _verifiedInputTicks[tickIndex];
-            _verifiedInputIds.Clear();
+            if (++_verifiedInputStamp == 0)
+                _verifiedInputStamp = 1;
+            uint stamp = _verifiedInputStamp;
             using var payload = BitPackerPool.Get();
             for (int i = batch.firstEntry; i < batch.firstEntry + batch.count; i++)
             {
@@ -325,16 +465,23 @@ namespace PurrNet.Prediction
                 if (payload.positionInBits != entry.bitLength || !system.HasInputAt(tick))
                     throw new MissingPredictionBaselineException(
                         $"Incomplete authoritative input for {entry.id} at tick {tick}.");
-                _verifiedInputIds.Add(entry.id);
+                system.verifiedInputStamp = stamp;
             }
 
             for (int i = 0; i < _systemsCount; i++)
             {
                 var system = _systems[i];
-                if (system.hasInput && !system.SkipsCurrentSimulationPhase() && !_verifiedInputIds.Contains(system.id))
+                if (system.hasInput && system.verifiedInputStamp != stamp && !system.SkipsCurrentSimulationPhase() &&
+                    !VerifiedInputAppliedTo(system.id, stamp))
                     throw new MissingPredictionBaselineException(
                         $"Missing authoritative input for {system.id} at tick {tick}.");
             }
         }
+
+        private uint _verifiedInputStamp;
+
+        // Inputs apply to the identity registered under their id, which a stale registration can shadow.
+        private bool VerifiedInputAppliedTo(PredictedComponentID id, uint stamp)
+            => _instanceMap.TryGetValue(id, out var mapped) && mapped && mapped.verifiedInputStamp == stamp;
     }
 }

@@ -58,6 +58,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var writtenBits = frameB.positionInBits;
             frameB.ResetPositionAndMode(true);
             Assert.That(ReadPackedUInt(frameB), Is.EqualTo(4));
+            Assert.That(Packer<bool>.Read(frameB), Is.False, "no carried input roster");
             for (ulong tick = 17; tick <= 20; tick++)
             {
                 Assert.That(ReadPackedUInt(frameB), Is.EqualTo(2));
@@ -74,6 +75,45 @@ namespace PurrNet.Prediction.Tests.Editor
                 AssertInput(receivedDeterministic, tick, (int)(100 + tick));
                 AssertInput(receivedOrdinary, tick, tick == 20 ? 555 : (int)(200 + tick));
             }
+        }
+
+        [Test]
+        public void IdenticalInputsOfOneTickShareTheEarlierEntryInsteadOfResendingIt()
+        {
+            int SharedFrameBits(bool shareThird, out InputTranscriptFixture receiver,
+                out History<TrackedInput>[] received)
+            {
+                using var sender = new InputTranscriptFixture("sender");
+                receiver = new InputTranscriptFixture("receiver");
+                var sent = new[] { sender.AddInput(false, 690), sender.AddInput(false, 691), sender.AddInput(true, 692) };
+                received = new[] { receiver.AddInput(false, 690), receiver.AddInput(false, 691), receiver.AddInput(true, 692) };
+                for (ulong tick = 11; tick <= 14; tick++)
+                {
+                    sent[0].Write(tick, new TrackedInput((int)tick));
+                    sent[1].Write(tick, new TrackedInput(1000 + (int)tick));
+                    sent[2].Write(tick, new TrackedInput(shareThird ? (int)tick : 2000 + (int)tick));
+                    sender.Capture(tick);
+                }
+
+                using var frame = sender.Write(14, 10);
+                receiver.Read(frame, 14, 10);
+                return frame.positionInBits;
+            }
+
+            int distinctBits = SharedFrameBits(false, out var distinctReceiver, out _);
+            distinctReceiver.Dispose();
+            int sharedBits = SharedFrameBits(true, out var sharedReceiver, out var shared);
+            using (sharedReceiver)
+            {
+                for (ulong tick = 11; tick <= 14; tick++)
+                {
+                    AssertInput(shared[0], tick, (int)tick);
+                    AssertInput(shared[1], tick, 1000 + (int)tick);
+                    AssertInput(shared[2], tick, (int)tick);
+                }
+            }
+            Assert.That(sharedBits, Is.LessThan(distinctBits),
+                "an input equal to an earlier entry of its tick refers to it instead of carrying its own payload");
         }
 
         [Test]
@@ -124,6 +164,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var end = frame.positionInBits;
             frame.ResetPositionAndMode(true);
             Assert.That(ReadPackedUInt(frame), Is.EqualTo(5));
+            Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
             for (ulong tick = 11; tick <= 15; tick++)
             {
                 bool ordinaryVisible = tick == 11 || tick >= 14;
@@ -174,6 +215,7 @@ namespace PurrNet.Prediction.Tests.Editor
             received.Write(11, new TrackedInput(999));
             using var frame = BitPackerPool.Get();
             Packer<PackedUInt>.Write(frame, 1U);
+            Packer<bool>.Write(frame, false); // no carried input roster
             Packer<PackedUInt>.Write(frame, explicitAbsent ? 1U : 0U);
             if (explicitAbsent)
             {
@@ -241,6 +283,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Packer<TrackedInput>.Write(payload, new TrackedInput(11));
             using var frame = BitPackerPool.Get();
             Packer<PackedUInt>.Write(frame, 1U);
+            Packer<bool>.Write(frame, false); // no carried input roster
             Packer<PackedUInt>.Write(frame, duplicate ? 2U : 1U);
             Packer<PackedUInt>.Write(frame, 0U);
             PadToByte(frame);
@@ -430,6 +473,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var writtenBits = frame.positionInBits;
             frame.ResetPositionAndMode(true);
             Assert.That(ReadPackedUInt(frame), Is.EqualTo(3));
+            Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
             for (var tick = 0; tick < 3; tick++)
                 Assert.That(ReadPackedUInt(frame), Is.Zero);
             Assert.That(frame.positionInBits, Is.EqualTo(writtenBits));
@@ -479,6 +523,7 @@ namespace PurrNet.Prediction.Tests.Editor
             int writtenBits = frame.positionInBits;
             frame.ResetPositionAndMode(true);
             Assert.That(ReadPackedUInt(frame), Is.EqualTo(10));
+            Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
             for (ulong tick = 11; tick <= 20; tick++)
             {
                 Assert.That(ReadPackedUInt(frame), Is.EqualTo(1), $"tick {tick}");
@@ -497,6 +542,54 @@ namespace PurrNet.Prediction.Tests.Editor
             receiver.Read(frame, 20, 10);
             for (ulong tick = 11; tick <= 20; tick++)
                 AssertInput(received, tick, tick <= 15 ? 7 : ~7);
+        }
+
+        [Test]
+        public void FirstTickRepeatsTheRosterTheReceiverKeptFromItsBaselineFrame()
+        {
+            using var sender = new InputTranscriptFixture("carry sender");
+            using var receiver = new InputTranscriptFixture("carry receiver");
+            var steady = sender.AddInput(false, 680);
+            var changing = sender.AddInput(false, 681);
+            var receivedSteady = receiver.AddInput(false, 680);
+            var receivedChanging = receiver.AddInput(false, 681);
+            for (ulong tick = 11; tick <= 13; tick++)
+            {
+                steady.Write(tick, new TrackedInput(5));
+                changing.Write(tick, new TrackedInput((int)tick));
+                sender.Capture(tick);
+            }
+
+            using var first = sender.Write(12, 10);
+            receiver.Read(first, 12, 10);
+            receiver.Carry(12);
+
+            sender.SetInputCarry(true);
+            using var carried = sender.Write(13, 12);
+            sender.SetInputCarry(false);
+            using var plain = sender.Write(13, 12);
+            Assert.That(carried.positionInBits, Is.LessThan(plain.positionInBits),
+                "the carried roster lets the first tick repeat instead of resending ids and payloads");
+
+            int writtenBits = carried.positionInBits;
+            carried.ResetPositionAndMode(true);
+            Assert.That(ReadPackedUInt(carried), Is.EqualTo(1));
+            Assert.That(Packer<bool>.Read(carried), Is.True, "carried input roster");
+            Assert.That(ReadPackedUInt(carried), Is.EqualTo(2));
+            var repeats = ReadTickHeader(carried, true, 2, true, out var deltas);
+            Assert.That(repeats, Is.EqualTo(new[] { true, false }), "only the unchanged input repeats");
+            AssertRecord(carried, 681, 13, true, deltas[1], 12);
+            Assert.That(carried.positionInBits, Is.EqualTo(writtenBits));
+
+            receiver.Read(carried, 13, 12);
+            AssertInput(receivedSteady, 13, 5);
+            AssertInput(receivedChanging, 13, 13);
+
+            using var stranger = new InputTranscriptFixture("carry stranger");
+            stranger.AddInput(false, 680);
+            stranger.AddInput(false, 681);
+            Assert.Throws<MissingPredictionBaselineException>(() => stranger.Parse(carried, 13, 12),
+                "a receiver without the baseline roster must not decode a carried tick");
         }
 
         [Test]
@@ -543,6 +636,7 @@ namespace PurrNet.Prediction.Tests.Editor
             int writtenBits = frame.positionInBits;
             frame.ResetPositionAndMode(true);
             Assert.That(ReadPackedUInt(frame), Is.EqualTo(3));
+            Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
             for (ulong tick = 11; tick <= 13; tick++)
             {
                 Assert.That(ReadPackedUInt(frame), Is.EqualTo(1), $"tick {tick}");
@@ -552,6 +646,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 if (tick > 11)
                 {
                     Assert.That(Packer<bool>.Read(frame), Is.False, "changing values never repeat");
+                    Assert.That(Packer<bool>.Read(frame), Is.False, "a single input shares no earlier entry");
                     Assert.That(Packer<bool>.Read(frame), Is.False, "uploaded inputs are restored, never patched");
                     Assert.That(Packer<bool>.Read(frame), Is.True, "restore flag");
                 }
@@ -694,6 +789,7 @@ namespace PurrNet.Prediction.Tests.Editor
             int writtenBits = frame.positionInBits;
             frame.ResetPositionAndMode(true);
             Assert.That(ReadPackedUInt(frame), Is.EqualTo(3));
+            Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
             Assert.That(ReadPackedUInt(frame), Is.EqualTo(1));
             Assert.That(ReadPackedUInt(frame), Is.Zero);
             frame.SkipBits((8 - frame.positionInBits % 8) % 8);
@@ -704,6 +800,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(Packer<bool>.Read(frame), Is.True, "same roster");
             Assert.That(ReadPackedUInt(frame), Is.Zero);
             Assert.That(Packer<bool>.Read(frame), Is.False, "the substitute differs from tick 11");
+            Assert.That(Packer<bool>.Read(frame), Is.False, "a single input shares no earlier entry");
             Assert.That(Packer<bool>.Read(frame), Is.True, "the substitute is patched against tick 11");
             frame.SkipBits((8 - frame.positionInBits % 8) % 8);
             AssertRecord(frame, 682, 0, true, true, 11);
@@ -711,6 +808,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(Packer<bool>.Read(frame), Is.True, "same roster");
             Assert.That(ReadPackedUInt(frame), Is.Zero);
             Assert.That(Packer<bool>.Read(frame), Is.False);
+            Assert.That(Packer<bool>.Read(frame), Is.False, "a single input shares no earlier entry");
             Assert.That(Packer<bool>.Read(frame), Is.False);
             Assert.That(Packer<bool>.Read(frame), Is.True, "tick 13 was uploaded again");
             frame.SkipBits((8 - frame.positionInBits % 8) % 8);
@@ -726,6 +824,7 @@ namespace PurrNet.Prediction.Tests.Editor
             int foreignBits = foreign.positionInBits;
             foreign.ResetPositionAndMode(true);
             Assert.That(ReadPackedUInt(foreign), Is.EqualTo(3));
+            Assert.That(Packer<bool>.Read(foreign), Is.False, "no carried input roster");
             Assert.That(ReadPackedUInt(foreign), Is.EqualTo(1));
             ReadTickHeader(foreign, false, 1, false, out _);
             AssertRecord(foreign, 682, 11);
@@ -776,6 +875,7 @@ namespace PurrNet.Prediction.Tests.Editor
             int end = frame.positionInBits;
             frame.ResetPositionAndMode(true);
             Assert.That(ReadPackedUInt(frame), Is.EqualTo(5));
+            Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
             for (ulong tick = 11; tick <= 15; tick++)
             {
                 bool visible = tick == 11 || tick >= 14;
@@ -843,6 +943,8 @@ namespace PurrNet.Prediction.Tests.Editor
                 for (int i = 0; i < count; i++)
                 {
                     repeats[i] = Packer<bool>.Read(frame);
+                    if (!repeats[i])
+                        Assert.That(Packer<bool>.Read(frame), Is.False, "distinct inputs never share an earlier entry");
                     deltas[i] = !repeats[i] && Packer<bool>.Read(frame);
                     if (!repeats[i] && !deltas[i])
                         Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");
@@ -897,7 +999,7 @@ namespace PurrNet.Prediction.Tests.Editor
             PredictionManager manager,
             PredictedIdentity identity)
         {
-            var systems = GetField<List<PredictedIdentity>>(
+            var systems = GetField<PredictedSystemList>(
                 typeof(PredictionManager),
                 manager,
                 "_systems");
@@ -1044,7 +1146,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var history = new History<TrackedInput>(256);
             Set(deterministic ? typeof(DeterministicIdentity<TrackedInput, EmptyState>)
                 : typeof(PredictedIdentity<TrackedInput, EmptyState>), identity, "_inputHistory", history);
-            var systems = (List<PredictedIdentity>)typeof(PredictionManager)
+            var systems = (PredictedSystemList)typeof(PredictionManager)
                 .GetField("_systems", Fields).GetValue(manager);
             systems.Add(identity);
             Set(typeof(PredictionManager), manager, "_systemsCount", systems.Count);
@@ -1068,6 +1170,13 @@ namespace PurrNet.Prediction.Tests.Editor
             Set(typeof(PredictionManager), manager, "<localTick>k__BackingField", tick);
             Invoke("CaptureInputHistory", tick);
         }
+
+        // What applying a frame keeps for the next frame's first transcript tick.
+        internal void Carry(ulong tick) => Invoke("CarryVerifiedInputs", tick);
+
+        // Whether the next written transcript may repeat the receiver's carried baseline roster.
+        internal void SetInputCarry(bool available)
+            => Set(typeof(PredictionManager), manager, "_inputCarryAvailable", available);
 
         internal PredictedIdentity lastIdentity => _identities[_identities.Count - 1];
 
@@ -1102,7 +1211,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var map = (Dictionary<PredictedComponentID, PredictedIdentity>)typeof(PredictionManager)
                 .GetField("_instanceMap", Fields).GetValue(manager);
             map.Remove(identity.id);
-            var systems = (List<PredictedIdentity>)typeof(PredictionManager).GetField("_systems", Fields).GetValue(manager);
+            var systems = (PredictedSystemList)typeof(PredictionManager).GetField("_systems", Fields).GetValue(manager);
             systems.Remove(identity);
             Set(typeof(PredictionManager), manager, "_systemsCount", systems.Count);
             _identities.Remove(identity);

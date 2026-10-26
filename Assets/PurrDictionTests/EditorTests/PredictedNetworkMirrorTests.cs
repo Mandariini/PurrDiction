@@ -19,6 +19,10 @@ namespace PurrNet.Prediction.Tests.Editor
         private readonly List<GameObject> _objects = new();
         private readonly PlayerID _owner = new(3, false);
         private readonly PlayerID _viewer = new(7, false);
+        private readonly PlayerID _host = new(1, false);
+
+        [OneTimeSetUp]
+        public void RegisterPackers() => NetworkManager.CallAllRegisters();
 
         [TearDown]
         public void TearDown()
@@ -119,7 +123,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(world.bridge.early[0].id, Is.EqualTo(block));
             Assert.That(world.bridge.early[2].id, Is.EqualTo(new NetworkID(502)));
             Assert.That(world.bridge.finalized, Has.Count.EqualTo(3));
-            Assert.That(world.bridge.owners, Is.Empty, "ownership is server authority; clients only follow PurrNet");
+            Assert.That(world.bridge.owners, Is.Empty, "an unowned instance sets no owner on the client");
             Assert.That(world.mirror.IsSpawned(verifiedId), Is.True);
 
             world.bridge.Reset();
@@ -130,6 +134,46 @@ namespace PurrNet.Prediction.Tests.Editor
             world.hierarchy.SyncNetworkMirror();
             Assert.That(world.bridge.despawned, Has.Count.EqualTo(3));
             Assert.That(world.mirror.spawnedPieceCount, Is.Zero);
+        }
+
+        [Test]
+        public void ClientAcknowledgesOnceBeforeItSpawnsFromAVerifiedFrame()
+        {
+            using var world = new World(this, asServer: false);
+            world.ApplyVerified(21, new PredictedObjectID(40), new NetworkID(500));
+            world.hierarchy.SyncNetworkMirror();
+
+            Assert.That(world.bridge.early, Has.Count.EqualTo(3));
+            Assert.That(world.bridge.acknowledgements, Is.EqualTo(new[] { 0 }),
+                "the acknowledgement leads every RPC the new identities can send");
+
+            world.bridge.Reset();
+            world.hierarchy.SyncNetworkMirror();
+            Assert.That(world.bridge.acknowledgements, Is.Empty, "nothing to spawn, nothing to acknowledge");
+        }
+
+        [Test]
+        public void ClientAppliesTheVerifiedOwnerBeforeOnSpawned()
+        {
+            using var world = new World(this, asServer: false);
+            world.ApplyVerified(21, new PredictedObjectID(40), new NetworkID(500), _owner);
+            world.hierarchy.SyncNetworkMirror();
+
+            Assert.That(world.bridge.owners, Is.EqualTo(new PlayerID?[] { _owner, _owner, _owner }),
+                "child pieces follow the root's owner");
+            // The root piece carries two identities and finalizes them before the child piece spawns.
+            Assert.That(world.bridge.ownerFinalizedCounts, Is.EqualTo(new[] { 0, 0, 2 }),
+                "an owner writing a SyncVar from OnSpawned must already own the identity");
+            Assert.That(world.bridge.finalized, Has.Count.EqualTo(3));
+        }
+
+        [Test]
+        public void ServerSpawnsNeverAcknowledge()
+        {
+            using var world = new World(this, asServer: true);
+            world.Create(_owner);
+            Assert.That(world.bridge.early, Has.Count.EqualTo(3));
+            Assert.That(world.bridge.acknowledgements, Is.Empty);
         }
 
         [Test]
@@ -159,7 +203,8 @@ namespace PurrNet.Prediction.Tests.Editor
             var id = world.Create(null);
             world.bridge.Reset();
             var timeline = new PlayerVisibilityTimeline(defaultVisible: true);
-            ulong spawnTick = world.manager.localTick + 1;
+            // Created between ticks, so the next frame (numbered with the current tick) carries it.
+            ulong spawnTick = world.manager.localTick;
 
             world.mirror.SyncObservers(_viewer, timeline, spawnTick - 1);
             Assert.That(world.bridge.observers, Is.Empty, "no observer before the client can have the instance");
@@ -187,6 +232,134 @@ namespace PurrNet.Prediction.Tests.Editor
             world.mirror.RemovePlayer(_viewer);
             Assert.That(world.bridge.removedObservers, Has.Count.EqualTo(3));
             Assert.That(world.mirror.IsObserving(_viewer, id), Is.False);
+        }
+
+        [Test]
+        public void PiecesCreatedAfterThisTicksFrameWaitForTheNextOne()
+        {
+            using var world = new World(this, asServer: true);
+            ulong tick = world.manager.localTick;
+            World.Set(typeof(PredictionManager), world.manager, "_lastWrittenFrameTick", tick);
+            var id = world.Create(null);
+            world.bridge.Reset();
+            var timeline = new PlayerVisibilityTimeline(defaultVisible: true);
+
+            world.mirror.SyncObservers(_viewer, timeline, tick);
+            Assert.That(world.bridge.observers, Is.Empty, "frame T was written before the piece existed");
+
+            world.mirror.SyncObservers(_viewer, timeline, tick + 1);
+            Assert.That(world.mirror.IsObserving(_viewer, id), Is.True);
+        }
+
+        [Test]
+        public void HostObservesEveryIdentityAsSoonAsItsPieceSpawns()
+        {
+            using var world = new World(this, asServer: true);
+            world.AddHostObserver(_host);
+            Assert.That(world.bridge.observers, Is.Empty);
+
+            var id = world.Create(_owner);
+
+            Assert.That(world.bridge.observers, Has.Count.EqualTo(3), "the host never acknowledges frames, so it cannot wait for one");
+            for (var i = 0; i < world.bridge.observers.Count; i++)
+            {
+                Assert.That(world.bridge.observers[i].player, Is.EqualTo(_host));
+                Assert.That(world.bridge.observers[i].identity, Is.SameAs(world.bridge.finalized[i]));
+            }
+            Assert.That(world.mirror.IsObserving(_host, id), Is.True);
+            Assert.That(world.mirror.IsObserving(_host, new PredictedObjectID(id.instanceId.value + 1)), Is.True);
+        }
+
+        [Test]
+        public void HostAddedAfterPiecesSpawnedObservesAllOfThem()
+        {
+            using var world = new World(this, asServer: true);
+            var id = world.Create(null);
+            Assert.That(world.bridge.observers, Is.Empty, "no local player yet");
+            world.bridge.Reset();
+
+            world.AddHostObserver(_host);
+            Assert.That(world.bridge.observers, Has.Count.EqualTo(3));
+            Assert.That(world.mirror.IsObserving(_host, id), Is.True);
+
+            world.bridge.Reset();
+            world.AddHostObserver(_host);
+            Assert.That(world.bridge.observers, Is.Empty, "a repeated notification adds nothing");
+        }
+
+        [Test]
+        public void HostObservesReCreatedInstancesUntilItIsRemoved()
+        {
+            using var world = new World(this, asServer: true, pooled: true);
+            world.AddHostObserver(_host);
+            var first = world.Create(null);
+            world.DeleteNow(first);
+            Assert.That(world.mirror.IsObserving(_host, first), Is.False);
+            world.bridge.Reset();
+
+            var second = world.Create(null);
+            Assert.That(world.bridge.observers, Has.Count.EqualTo(3), "the pooled identities are observed again under their new piece");
+            Assert.That(world.mirror.IsObserving(_host, second), Is.True);
+
+            world.bridge.Reset();
+            world.mirror.RemovePlayer(_host);
+            Assert.That(world.bridge.removedObservers, Has.Count.EqualTo(3));
+            Assert.That(world.mirror.IsObserving(_host, second), Is.False);
+
+            world.bridge.Reset();
+            world.Create(null);
+            Assert.That(world.bridge.observers, Is.Empty, "a removed host no longer observes new pieces");
+        }
+
+        [Test]
+        public void RemotePlayersStillWaitForAnAcknowledgementOnAHost()
+        {
+            using var world = new World(this, asServer: true);
+            world.AddHostObserver(_host);
+            var id = world.Create(null);
+            world.bridge.Reset();
+            var timeline = new PlayerVisibilityTimeline(defaultVisible: true);
+            // Created between ticks, so the next frame (numbered with the current tick) carries it.
+            ulong spawnTick = world.manager.localTick;
+
+            world.mirror.SyncObservers(_viewer, timeline, spawnTick - 1);
+            Assert.That(world.bridge.observers, Is.Empty);
+            Assert.That(world.mirror.IsObserving(_host, id), Is.True);
+
+            world.mirror.SyncObservers(_viewer, timeline, spawnTick);
+            Assert.That(world.bridge.observers, Has.Count.EqualTo(3));
+            Assert.That(world.mirror.IsObserving(_viewer, id), Is.True);
+
+            world.bridge.Reset();
+            world.mirror.RemovePlayer(_viewer);
+            Assert.That(world.bridge.removedObservers, Has.Count.EqualTo(3));
+            Assert.That(world.mirror.IsObserving(_host, id), Is.True, "removing a remote player leaves the host observing");
+        }
+
+        [Test]
+        public void HostDeleteKeepsTheHostsIdentitiesUntilThePoolReleasesThePiece()
+        {
+            using var world = new World(this, asServer: true);
+            world.AddHostObserver(_host);
+            var id = world.Create(null);
+            world.mirror.SyncObservers(_viewer, new PlayerVisibilityTimeline(defaultVisible: true), world.manager.localTick + 1);
+            Assert.That(world.mirror.IsObserving(_viewer, id), Is.True);
+            Assert.That(world.hierarchy.TryGetGameObject(id, out var go), Is.True);
+            world.bridge.Reset();
+
+            world.DeleteNow(id);
+
+            Assert.That(world.bridge.despawned, Is.Empty, "an RPC already sent to the host's own client still needs its identities");
+            Assert.That(go, Is.Not.Null, "the hierarchy pools the deleted piece instead of destroying it");
+            Assert.That(world.bridge.removedObservers, Has.Count.EqualTo(3));
+            foreach (var (_, player) in world.bridge.removedObservers)
+                Assert.That(player, Is.EqualTo(_viewer), "remote players stop observing right away");
+            Assert.That(world.mirror.IsObserving(_viewer, id), Is.False);
+
+            var pool = typeof(PredictedHierarchy).GetField("_pool", Instance)!.GetValue(world.hierarchy);
+            pool.GetType().GetMethod("Clear")!.Invoke(pool, new object[] { world.manager });
+
+            Assert.That(world.bridge.despawned, Has.Count.EqualTo(3), "releasing the pooled piece despawns them");
         }
 
         [Test]
@@ -237,12 +410,17 @@ namespace PurrNet.Prediction.Tests.Editor
             public readonly List<(NetworkIdentity identity, PlayerID player)> observers = new();
             public readonly List<(NetworkIdentity identity, PlayerID player)> removedObservers = new();
             public readonly List<PlayerID?> owners = new();
+            // The number of early spawns already made each time spawns were acknowledged.
+            public readonly List<int> acknowledgements = new();
+            // The number of finalized spawns already made each time an owner was set.
+            public readonly List<int> ownerFinalizedCounts = new();
             private ulong _next = 100;
 
             public void Reset()
             {
                 reservations.Clear(); early.Clear(); finalized.Clear(); despawned.Clear();
-                observers.Clear(); removedObservers.Clear(); owners.Clear();
+                observers.Clear(); removedObservers.Clear(); owners.Clear(); acknowledgements.Clear();
+                ownerFinalizedCounts.Clear();
             }
 
             public NetworkID ReserveNetworkIds(int count)
@@ -259,7 +437,12 @@ namespace PurrNet.Prediction.Tests.Editor
             public void Despawn(NetworkIdentity identity) => despawned.Add(identity);
             public void AddObserver(NetworkIdentity identity, PlayerID player) => observers.Add((identity, player));
             public void RemoveObserver(NetworkIdentity identity, PlayerID player) => removedObservers.Add((identity, player));
-            public void SetOwner(NetworkIdentity identity, PlayerID? owner) => owners.Add(owner);
+            public void SetOwner(NetworkIdentity identity, PlayerID? owner)
+            {
+                owners.Add(owner);
+                ownerFinalizedCounts.Add(finalized.Count);
+            }
+            public void AcknowledgeSpawns() => acknowledgements.Add(early.Count);
         }
 
         private sealed class World : IDisposable
@@ -317,15 +500,21 @@ namespace PurrNet.Prediction.Tests.Editor
                 return id.Value;
             }
 
+            internal void AddHostObserver(PlayerID player)
+            {
+                Set(typeof(NetworkIdentity), manager, "_localPlayer", (PlayerID?)player);
+                manager.TriggerOnObserverAdded(player, false);
+            }
+
             /// <summary>Client only: makes a topology with (optionally) one mixed instance the latest verified state.</summary>
-            internal void ApplyVerified(ulong tick, PredictedObjectID? instance, NetworkID block)
+            internal void ApplyVerified(ulong tick, PredictedObjectID? instance, NetworkID block, PlayerID? instanceOwner = null)
             {
                 Assert.That(_asServer, Is.False);
                 var records = DisposableList<InstanceDetails>.Create(2);
                 if (instance.HasValue)
                 {
                     var root = instance.Value;
-                    records.Add(new InstanceDetails(0, 0, root, Vector3.zero, Quaternion.identity, null, null, block));
+                    records.Add(new InstanceDetails(0, 0, root, Vector3.zero, Quaternion.identity, instanceOwner, null, block));
                     records.Add(new InstanceDetails(0, 1, new PredictedObjectID(root.instanceId.value + 1), Vector3.zero, Quaternion.identity, null, null, new NetworkID(block, 2)));
                 }
 
@@ -339,7 +528,7 @@ namespace PurrNet.Prediction.Tests.Editor
             public void Dispose()
             {
                 hierarchy.Cleanup();
-                var systems = (List<PredictedIdentity>)typeof(PredictionManager).GetField("_systems", Instance)!.GetValue(manager);
+                var systems = (PredictedSystemList)typeof(PredictionManager).GetField("_systems", Instance)!.GetValue(manager);
                 foreach (var identity in systems)
                     identity.ReleasePredictionStateForPool();
                 systems.Clear();
@@ -354,7 +543,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 UnityEngine.Object.DestroyImmediate(_prefabs);
             }
 
-            private static void Set(Type type, object target, string name, object value)
+            internal static void Set(Type type, object target, string name, object value)
             {
                 var field = type.GetField(name, Instance);
                 Assert.That(field, Is.Not.Null, $"missing field {type.Name}.{name}");

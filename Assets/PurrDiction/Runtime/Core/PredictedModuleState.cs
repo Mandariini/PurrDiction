@@ -131,6 +131,9 @@ namespace PurrNet.Prediction
             ulong? unchangedBaselineTick = null)
         {
             var store = verifiedHistory;
+            ulong floor = identity.GetAcceptedVerifiedHistoryRetentionFloor(serverTick);
+            if (floor > 0)
+                store.PruneBeforeBaseline(floor);
             store.PruneByTickWindow(serverTick);
             VerifiedStateStore<MODULE_STATE<TState>>.StoreReceived(store, serverTick, ref state, unchangedBaselineTick, true);
         }
@@ -270,12 +273,7 @@ namespace PurrNet.Prediction
 
             _history.PruneByTickWindow(tick);
 
-            int lastIndex = _history.Count - 1;
-            if (_history.GetEntryTick(lastIndex) > tick)
-                return false;
-
-            var last = _history[lastIndex];
-            return last.HasSameContents(ref state);
+            return _history.TryReadLatest(tick, out var last) && last.HasSameContents(ref state);
         }
 
         protected override bool WriteState(PlayerID receiver, BitPacker packer, ulong baselineTick)
@@ -358,7 +356,7 @@ namespace PurrNet.Prediction
         }
 
         protected override bool HasUnchangedStateBaseline(ulong baselineTick)
-            => verifiedHistory.ReadOrPrevious(baselineTick, out _);
+            => verifiedHistory.HasAtOrBefore(baselineTick);
 
         protected override void ReadUnchangedState(
             ulong tick,

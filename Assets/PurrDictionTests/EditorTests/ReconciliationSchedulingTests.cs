@@ -196,8 +196,10 @@ namespace PurrNet.Prediction.Tests.Editor
             public int PendingFrames => ((ICollection)Get<object>(
                 typeof(PredictionManager), manager, "_deltas")).Count;
 
-            public int? PendingViewValue => Get<FULL_STATE<SchedulingProbeState>?>(
-                typeof(PredictedIdentity<SchedulingProbeState>), probe, "_viewState")?.state.value;
+            public int? PendingViewValue => probe.hasPendingViewLatch
+                ? Get<FULL_STATE<SchedulingProbeState>>(
+                    typeof(PredictedIdentity<SchedulingProbeState>), probe, "_viewState").state.value
+                : null;
 
             public void SetPredictionHead(ulong tick, int value)
             {
@@ -232,14 +234,18 @@ namespace PurrNet.Prediction.Tests.Editor
                     Packer<PackedUInt>.Write(frame, 0u); // visibility deletions
                     Packer<bool>.Write(frame, false); // hierarchy record
                     Packer<PackedUInt>.Write(frame, checked((uint)(tick - 10)));
+                    if (tick > 10)
+                        Packer<bool>.Write(frame, false); // no carried input roster
                     for (ulong inputTick = 11; inputTick <= tick; inputTick++)
                         Packer<PackedUInt>.Write(frame, 0u); // explicit empty input tick
                     Packer<bool>.Write(frame, false); // no historical lifecycle hierarchy
                     using var payload = BitPackerPool.Get();
                     Packer<bool>.Write(payload, false); // no entering baseline override
                     Assert.That(_sender.RunWriteCurrentState(default, payload, 10), Is.True);
-                    AddressedPredictionRecords.WriteSectionCount(1, frame);
-                    AddressedPredictionRecords.WriteRecord(frame, probe.id, false, payload);
+                    using var state = BitPackerPool.Get();
+                    AddressedPredictionRecords.WriteSectionCount(1, state);
+                    AddressedPredictionRecords.WriteRecord(state, probe.id, false, payload);
+                    AddressedPredictionRecords.WriteLengthPrefixed(state.positionInBits, state, frame);
                     Packer<PackedUInt>.Write(frame, 0u); // historical physics event batches
                     AddressedPredictionRecords.WriteSectionCount(0, frame); // event handlers
                     int length = frame.positionInBytes;
@@ -299,7 +305,7 @@ namespace PurrNet.Prediction.Tests.Editor
             verified.Write(10, FullState(100));
             Set(typeof(PredictedIdentity<SchedulingProbeState>), identity, "_verifiedHistory", verified);
             identity.lastVerifiedTick = 10;
-            Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems").Add(identity);
+            Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems").Add(identity);
             Set(typeof(PredictionManager), manager, "_systemsCount", 1);
             Get<Dictionary<PredictedComponentID, PredictedIdentity>>(
                 typeof(PredictionManager), manager, "_instanceMap").Add(id, identity);

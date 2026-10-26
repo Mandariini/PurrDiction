@@ -196,7 +196,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 owned = new History<FULL_STATE<DeterministicHistoryProbeState>>(200);
                 owned.Write(0, FullState(7));
                 Set(typeof(DeterministicIdentity<DeterministicHistoryProbeState>), probe, "_stateHistory", owned);
-                var systems = Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems");
+                var systems = Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems");
                 systems.Add(probe);
                 Set(typeof(PredictionManager), manager, "_systemsCount", systems.Count);
                 Get<Dictionary<PredictedComponentID, PredictedIdentity>>(

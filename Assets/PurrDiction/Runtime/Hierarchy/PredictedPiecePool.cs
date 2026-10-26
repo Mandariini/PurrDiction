@@ -408,8 +408,13 @@ namespace PurrNet.Prediction
 
         void DestroyEntry(PredictionManager predictionManager, Entry entry)
         {
+            var mirror = predictionManager && predictionManager.hierarchy ? predictionManager.hierarchy.networkMirror : null;
+
             for (var i = 0; i < entry.pieces.Count; i++)
+            {
                 UnmapPiece(entry.pieces[i].id, entry);
+                mirror?.OnPieceReleased(entry.pieces[i].id);
+            }
 
             _entries.Remove(entry);
 

@@ -112,6 +112,7 @@ namespace PurrNet.Prediction.Tests.Editor
         {
             var sites = new Dictionary<string, (long bytes, int count)>();
             var stack = new List<ulong>();
+            var methods = new Dictionary<ulong, (string name, uint line)>();
             frames = 0;
             for (int frame = ProfilerDriver.firstFrameIndex; frame <= ProfilerDriver.lastFrameIndex; frame++)
             {
@@ -128,8 +129,13 @@ namespace PurrNet.Prediction.Tests.Editor
                     string site = null;
                     for (int k = 0; k < stack.Count; k++)
                     {
-                        var method = raw.ResolveMethodInfo(stack[k]);
-                        var name = method.methodName;
+                        if (!methods.TryGetValue(stack[k], out var method))
+                        {
+                            var resolved = raw.ResolveMethodInfo(stack[k]);
+                            method = (resolved.methodName, resolved.sourceFileLine);
+                            methods.Add(stack[k], method);
+                        }
+                        var name = method.name;
                         if (string.IsNullOrEmpty(name) || !name.StartsWith("PurrNet"))
                         {
                             if (!string.IsNullOrEmpty(name) && (name.StartsWith("nunit") || name.Contains("UnityEngine.TestRunner")))
@@ -137,7 +143,7 @@ namespace PurrNet.Prediction.Tests.Editor
                             continue;
                         }
                         if (!name.StartsWith("PurrNet.Prediction.EditorTests"))
-                            site = $"{name}:{method.sourceFileLine}";
+                            site = $"{name}:{method.line}";
                         break;
                     }
                     if (site == null)

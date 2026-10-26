@@ -1127,13 +1127,23 @@ namespace PurrNet.Prediction.Tests.Editor
                     if (!events.fullFrame)
                     {
                         Packer<PackedUInt>.Write(frame, checked((uint)(tick - events.baselineTick)));
+                        if (tick > events.baselineTick)
+                            Packer<bool>.Write(frame, false); // no carried input roster
                         for (ulong inputTick = events.baselineTick + 1; inputTick <= tick; inputTick++)
                             Packer<PackedUInt>.Write(frame, 0u); // complete empty input transcript
                         Packer<bool>.Write(frame, false); // no historical lifecycle hierarchy
                     }
-                    AddressedPredictionRecords.WriteSectionCount(0, frame); // regular state
                     if (events.fullFrame)
+                    {
+                        AddressedPredictionRecords.WriteSectionCount(0, frame); // regular state
                         AddressedPredictionRecords.WriteSectionCount(0, frame); // first inputs
+                    }
+                    else
+                    {
+                        using var state = BitPackerPool.Get();
+                        AddressedPredictionRecords.WriteSectionCount(0, state);
+                        AddressedPredictionRecords.WriteLengthPrefixed(state.positionInBits, state, frame); // regular state
+                    }
                     events.packer.ResetPositionAndMode(true);
                     frame.WriteBits(events.packer, events.bitCount);
                     int bytes = frame.positionInBytes;
@@ -1168,7 +1178,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 verified.Write(BaselineTick, initial.DeepCopy());
                 Set(typeof(PredictedIdentity<TState>), physics, "_verifiedHistory", verified);
                 physics.lastVerifiedTick = BaselineTick;
-                Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems").Add(physics);
+                Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems").Add(physics);
                 Set(typeof(PredictionManager), manager, "_systemsCount", 1);
                 Get<Dictionary<PredictedComponentID, PredictedIdentity>>(
                     typeof(PredictionManager), manager, "_instanceMap").Add(id, physics);

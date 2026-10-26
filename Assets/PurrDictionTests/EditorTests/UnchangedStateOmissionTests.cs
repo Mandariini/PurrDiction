@@ -30,6 +30,209 @@ namespace PurrNet.Prediction.Tests.Editor
                     value.value = Packer<int>.Read(packer));
         }
 
+        [TestCase(20)]
+        [TestCase(60)]
+        [TestCase(240)]
+        public void DelayedClientKeepsEveryProtocolBaselineOnTheServerClock(int rate)
+        {
+            var senderObject = new GameObject("Window sender identity");
+            var senderWorldObject = new GameObject("Window sender world");
+            var receiverObject = new GameObject("Window receiver identity");
+            var receiverWorldObject = new GameObject("Window receiver world");
+            try
+            {
+                var senderWorld = CreateManager(senderWorldObject);
+                var receiverWorld = CreateManager(receiverWorldObject);
+                SetField(typeof(PredictionManager), senderWorld, "<tickRate>k__BackingField", rate);
+                SetField(typeof(PredictionManager), receiverWorld, "<tickRate>k__BackingField", rate);
+                var sender = senderObject.AddComponent<OmittedStateIdentity>();
+                var receiver = receiverObject.AddComponent<OmittedStateIdentity>();
+                var id = new PredictedComponentID(new PredictedObjectID(401), 0);
+                InitializeIdentity(sender, senderWorld, id, 0);
+                var receiverVerified = InitializeIdentity(receiver, receiverWorld, id, 0);
+                int window = (int)receiverWorld.verifiedHistoryWindowTicks;
+                Assert.That(receiverVerified.Capacity, Is.EqualTo(window));
+                // Local prediction can be far ahead of a delayed authoritative stream.
+                // It must neither age the server-clock baselines nor shrink replay/view history.
+                const ulong localOffset = 10000;
+                using var payload = BitPackerPool.Get();
+                for (ulong serverTick = 1; serverTick <= (ulong)(window * 3); serverTick++)
+                {
+                    SetLocalTick(senderWorld, serverTick);
+                    SetLocalTick(receiverWorld, serverTick + localOffset);
+                    sender.fullPredictedState = FullState((int)serverTick);
+                    payload.ResetPositionAndMode(false);
+                    if (serverTick == 1)
+                    {
+                        sender.WriteFirstState(serverTick, payload);
+                        payload.ResetPositionAndMode(true);
+                        receiver.ReadFirstState(localOffset + serverTick, payload, serverTick);
+                    }
+                    else
+                    {
+                        ulong baseline = serverTick > (ulong)window ? serverTick - (ulong)window : 1;
+                        sender.WriteCurrentState(default, payload, baseline);
+                        Assert.That(receiver.HasUnchangedStateBaseline(baseline), Is.True);
+                        payload.ResetPositionAndMode(true);
+                        receiver.ReadState(localOffset + serverTick, payload, baseline, serverTick);
+                    }
+                    receiver.lastVerifiedTick = localOffset + serverTick;
+                    Assert.That(receiver.verifiedState.Value.value, Is.EqualTo((int)serverTick));
+                }
+                var predicted = GetField<History<FULL_STATE<OmittedState>>>(
+                    typeof(PredictedIdentity<OmittedState>), receiver, "_stateHistory");
+                Assert.That(predicted.Capacity, Is.EqualTo(200), "the replay/view store remains separate");
+                Assert.That(receiverVerified.Count, Is.EqualTo(window + 1));
+            }
+            finally
+            {
+                Object.DestroyImmediate(senderObject);
+                Object.DestroyImmediate(receiverObject);
+                Object.DestroyImmediate(senderWorldObject);
+                Object.DestroyImmediate(receiverWorldObject);
+            }
+        }
+
+        [Test]
+        public void FailingStateWriterRestoresTheDeltaSectionBeforeRetry()
+        {
+            var managerObject = new GameObject("Failing section manager");
+            var firstObject = new GameObject("First section state");
+            var failingObject = new GameObject("Failing section state");
+            try
+            {
+                var manager = CreateManager(managerObject);
+                var first = firstObject.AddComponent<CachedOmittedStateIdentity>();
+                var failing = failingObject.AddComponent<FailingOmittedStateIdentity>();
+                InitializeIdentity(first, manager, new PredictedComponentID(new PredictedObjectID(801), 0), 100)
+                    .Write(10, FullState(100));
+                InitializeIdentity(failing, manager, new PredictedComponentID(new PredictedObjectID(802), 0), 100)
+                    .Write(10, FullState(100));
+                first.fullPredictedState = FullState(200);
+                failing.fullPredictedState = FullState(300);
+                SetLocalTick(manager, 12);
+                RegisterSystem(manager, first);
+                RegisterSystem(manager, failing);
+                using var frame = BitPackerPool.Get();
+                using var prefix = BitPackerPool.Get();
+                frame.WriteBits(0x5178BA32, 31);
+                prefix.WriteBits(0x5178BA32, 31);
+                var timeline = new PlayerVisibilityTimeline();
+                var error = Assert.Throws<TargetInvocationException>(() =>
+                    WriteAddressedStateSection(manager, timeline, frame, 12, 10, false));
+                Assert.That(error.InnerException, Is.TypeOf<InvalidOperationException>());
+                Assert.That(first.writes, Is.EqualTo(1), "a preceding record was already written");
+                Assert.That(frame.positionInBits, Is.EqualTo(31));
+                Assert.That(new BitData(frame, 0, 31).Equals(new BitData(prefix, 0, 31)), Is.True);
+
+                failing.shouldThrow = false;
+                WriteAddressedStateSection(manager, timeline, frame, 12, 10, false);
+                frame.ResetPositionAndMode(true);
+                frame.SetBitPosition(31);
+                Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(2));
+            }
+            finally
+            {
+                Object.DestroyImmediate(firstObject);
+                Object.DestroyImmediate(failingObject);
+                Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void StateDeltaReusePreservesWireBitsAndDetectsMutationWithinTheSameTick()
+        {
+            var managerObject = new GameObject("Delta reuse manager");
+            var identityObject = new GameObject("Delta reuse identity");
+            CachedOmittedStateIdentity identity = null;
+            try
+            {
+                var manager = CreateManager(managerObject);
+                identity = identityObject.AddComponent<CachedOmittedStateIdentity>();
+                var history = InitializeIdentity(identity, manager, new PredictedComponentID(new PredictedObjectID(400), 0), 200);
+                history.Write(10, FullState(100));
+                SetLocalTick(manager, 20);
+                var recipients = GetField<List<PlayerPacker>>(typeof(PredictionManager), manager, "_clientFrames");
+                using var first = BitPackerPool.Get();
+                using var second = BitPackerPool.Get();
+                identity.WriteCurrentState(default, first, 10);
+                Assert.That(GetField<StateDeltaCache<FULL_STATE<OmittedState>>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache"), Is.Null,
+                    "a single receiver must bypass the cache");
+                recipients.Add(default); recipients.Add(default);
+                first.ResetPositionAndMode(false);
+                identity.WriteCurrentState(default, first, 10);
+                identity.WriteCurrentState(new PlayerID(2, false), second, 10);
+                Assert.That(identity.writes, Is.EqualTo(2), "the second receiver must reuse the first receiver's delta");
+                Assert.That(new BitData(first, 0, first.positionInBits).Equals(new BitData(second, 0, second.positionInBits)), Is.True);
+                identity.currentState.value = 201;
+                second.ResetPositionAndMode(false);
+                identity.WriteCurrentState(default, second, 10);
+                Assert.That(identity.writes, Is.EqualTo(3), "tick identity alone must not hide a live-state mutation");
+                Assert.That(new BitData(first, 0, first.positionInBits).Equals(new BitData(second, 0, second.positionInBits)), Is.False);
+            }
+            finally
+            {
+                if (identity)
+                    GetField<StateDeltaCache<FULL_STATE<OmittedState>>>(typeof(PredictedIdentity<OmittedState>), identity, "_stateDeltaCache")?.Dispose();
+                Object.DestroyImmediate(identityObject);
+                Object.DestroyImmediate(managerObject);
+            }
+        }
+
+        [Test]
+        public void CachedStateBodyMatchesUncachedMetadataAcrossOriginsAndSameTickChanges()
+        {
+            var managerObject = new GameObject("Metadata delta reuse manager");
+            var identityObject = new GameObject("Metadata delta reuse identity");
+            try
+            {
+                var manager = CreateManager(managerObject);
+                var identity = identityObject.AddComponent<CachedOmittedStateIdentity>();
+                var history = InitializeIdentity(identity, manager,
+                    new PredictedComponentID(new PredictedObjectID(402), 0), 200);
+                SetLocalTick(manager, 20);
+                var recipients = GetField<List<PlayerPacker>>(typeof(PredictionManager), manager, "_clientFrames");
+                recipients.Add(default); recipients.Add(default);
+                var owners = new PlayerID?[] { null, PlayerID.Server, new PlayerID(57, false),
+                    new PlayerID(57, true), new PlayerID(ulong.MaxValue, true) };
+                using var expected = BitPackerPool.Get();
+                using var first = BitPackerPool.Get();
+                using var reused = BitPackerPool.Get();
+                for (int origin = 0; origin < 8; origin++)
+                foreach (var owner in owners)
+                for (int phase = 0; phase < 3; phase++)
+                {
+                    var baseline = FullState(100);
+                    baseline.prediction.owner = phase == 2 ? owner : PlayerID.Server;
+                    baseline.prediction.wasOnSimulationStartCalled = phase == 2;
+                    history.Write(10, baseline);
+                    identity.fullPredictedState.prediction.owner = owner;
+                    identity.fullPredictedState.prediction.wasOnSimulationStartCalled = phase != 0;
+                    foreach (var packer in new[] { expected, first, reused })
+                    {
+                        packer.ResetPositionAndMode(false);
+                        for (int bit = 0; bit < origin; bit++) Packer<bool>.Write(packer, (bit & 1) != 0);
+                    }
+                    identity.allowCaching = false;
+                    identity.WriteCurrentState(default, expected, 10);
+                    identity.allowCaching = true;
+                    identity.WriteCurrentState(default, first, 10);
+                    int writes = identity.writes;
+                    identity.WriteCurrentState(new PlayerID(2, false), reused, 10);
+                    Assert.That(identity.writes, Is.EqualTo(writes), "identical metadata and states must reuse the whole body");
+                    var expectedBits = new BitData(expected, 0, expected.positionInBits);
+                    Assert.That(new BitData(first, 0, first.positionInBits).Equals(expectedBits), Is.True,
+                        $"origin {origin}, phase {phase}, owner {owner}: stale metadata was reused");
+                    Assert.That(new BitData(reused, 0, reused.positionInBits).Equals(expectedBits), Is.True);
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(identityObject);
+                Object.DestroyImmediate(managerObject);
+            }
+        }
+
         [Test]
         public void AddressedSectionOmitsStableRecordAndReceiverCarriesItForward()
         {
@@ -701,7 +904,7 @@ namespace PurrNet.Prediction.Tests.Editor
                     manager,
                     new PredictedComponentID(new PredictedObjectID(206), 0));
 
-                var systems = GetField<List<PredictedIdentity>>(
+                var systems = GetField<PredictedSystemList>(
                     typeof(PredictionManager),
                     manager,
                     "_systems");
@@ -756,8 +959,10 @@ namespace PurrNet.Prediction.Tests.Editor
                 var id = new PredictedComponentID(piece, 0);
                 InitializeIdentity(identity, manager, id, 100);
                 SetLocalTick(manager, 12);
-                var baselineRoots = new HashSet<PredictedObjectID> { root };
-                var baselinePieces = new HashSet<PredictedObjectID> { root };
+                var baselineRoots = new PredictionObjectSet();
+                baselineRoots.Add(root);
+                var baselinePieces = new PredictionObjectSet();
+                baselinePieces.Add(root);
 
                 var requiresFull = typeof(PredictionManager).GetMethod(
                     "RequiresFullEntryState",
@@ -1253,7 +1458,7 @@ namespace PurrNet.Prediction.Tests.Editor
             PredictionManager manager,
             PredictedIdentity identity)
         {
-            var systems = GetField<List<PredictedIdentity>>(
+            var systems = GetField<PredictedSystemList>(
                 typeof(PredictionManager),
                 manager,
                 "_systems");
@@ -1530,6 +1735,28 @@ namespace PurrNet.Prediction.Tests.Editor
             predictionManager = manager;
             id = componentId;
             myType = GetType();
+        }
+    }
+
+    public sealed class CachedOmittedStateIdentity : OmittedStateIdentity
+    {
+        public int writes;
+        public bool allowCaching = true;
+        protected override bool SupportsStateDeltaCaching() => allowCaching;
+        protected override void WriteDeltaState(BitPacker packer, in OmittedState baseline, in OmittedState current)
+        {
+            writes++;
+            Packer<int>.Write(packer, current.value - baseline.value);
+        }
+    }
+
+    public sealed class FailingOmittedStateIdentity : OmittedStateIdentity
+    {
+        public bool shouldThrow = true;
+        protected override void WriteDeltaState(BitPacker packer, in OmittedState baseline, in OmittedState current)
+        {
+            Packer<int>.Write(packer, current.value - baseline.value);
+            if (shouldThrow) throw new InvalidOperationException("Test state writer failure");
         }
     }
 

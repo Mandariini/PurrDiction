@@ -43,7 +43,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var networkManager = networkObject.AddComponent<NetworkManager>();
                 var manager =
                     CreateSpawnedPredictionManager(managerObject, networkManager);
-                var systems = GetField<List<PredictedIdentity>>(
+                var systems = GetField<PredictedSystemList>(
                     typeof(PredictionManager), manager, "_systems");
 
                 var identities = new List<PredictedIdentity>();
@@ -174,6 +174,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 var writtenBits = frame.positionInBits;
                 frame.ResetPositionAndMode(true);
                 Assert.That(Packer<PackedUInt>.Read(frame).value, Is.EqualTo(5));
+                Assert.That(Packer<bool>.Read(frame), Is.False, "no carried input roster");
                 var previous = new List<(PredictedComponentID id, int value)>();
                 for (ulong tick = 16; tick <= 20; tick++)
                 {
@@ -189,6 +190,7 @@ namespace PurrNet.Prediction.Tests.Editor
                         for (var record = 0; record < 2; record++)
                         {
                             Assert.That(Packer<bool>.Read(frame), Is.False, "changing inputs are never encoded as repeats");
+                            Assert.That(Packer<bool>.Read(frame), Is.False, "distinct inputs never share an earlier entry");
                             deltas[record] = Packer<bool>.Read(frame);
                             if (!deltas[record])
                                 Assert.That(Packer<bool>.Read(frame), Is.False, "no receiver-owned input to restore");

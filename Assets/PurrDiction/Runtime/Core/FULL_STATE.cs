@@ -1,4 +1,5 @@
-﻿using PurrNet.Packing;
+﻿using System.Runtime.CompilerServices;
+using PurrNet.Packing;
 using Unity.Profiling;
 
 namespace PurrNet.Prediction
@@ -7,12 +8,16 @@ namespace PurrNet.Prediction
         where T : struct, IPredictedData<T>
     {
         public T state;
-        public PredictedIdentityState prediction;
+        public CompactIdentityState prediction;
 
         static readonly ProfilerMarker SimulateMarker = new("DeepCopy." + typeof(T).FullName);
 
         public FULL_STATE<T> DeepCopy()
         {
+            // Reference-free states copy in a few instructions; the marker would cost more than the copy.
+            if (!RuntimeHelpers.IsReferenceOrContainsReferences<T>())
+                return new FULL_STATE<T> { state = PurrCopy<T>.Copy(state), prediction = prediction };
+
             using (SimulateMarker.Auto())
             {
                 return new FULL_STATE<T>
@@ -25,7 +30,7 @@ namespace PurrNet.Prediction
 
         public bool HasSameContents(ref FULL_STATE<T> other)
         {
-            return Packer.AreEqualRef(ref prediction, ref other.prediction) &&
+            return prediction.HasSameContents(other.prediction) &&
                    Packer.AreEqualRef(ref state, ref other.state);
         }
 

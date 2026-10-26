@@ -65,6 +65,38 @@ namespace PurrNet.Prediction.Tests.Editor
         }
 
         [Test]
+        public void LiveReceiverRetiresOnlyStatesBeforeItsAcceptedBaseline()
+        {
+            using var f = new Fixture();
+            f.Queue(11, 8, 110);
+            f.Render();
+            Assert.That(f.Floor, Is.EqualTo(8));
+            Assert.That(f.verified.Read(2, out _), Is.True, "the floor advances only after the first frame succeeds");
+            f.Queue(12, 8, 120);
+            f.Render();
+            Assert.That(f.verified.Read(2, out _), Is.False);
+            Assert.That(f.verified.Read(8, out var anchor), Is.True);
+            Assert.That(anchor.state.value, Is.EqualTo(80));
+            Assert.That(f.verified.Read(11, out _), Is.True);
+            Assert.That(f.verified.Read(12, out var current), Is.True);
+            Assert.That(current.state.value, Is.EqualTo(120));
+            Assert.That(f.probe.verifiedValues, Is.EqualTo(new[] { 110, 120 }));
+        }
+
+        [Test]
+        public void ReceiverRetentionFloorCannotPassAQuarantinedComponentsVerifiedTick()
+        {
+            using var f = new Fixture();
+            f.Floor = 9;
+            f.probe.lastVerifiedTick = 5;
+            Assert.That(f.probe.GetAcceptedVerifiedHistoryRetentionFloor(12), Is.EqualTo(5));
+            f.verified.PruneBeforeBaseline(f.probe.GetAcceptedVerifiedHistoryRetentionFloor(12));
+            Assert.That(f.verified.Read(2, out var anchor), Is.True);
+            Assert.That(anchor.state.value, Is.EqualTo(20));
+            Assert.That(f.verified.Read(8, out _), Is.True);
+        }
+
+        [Test]
         public void LaterSuccessfulBaselineCanAdvanceFloorAcrossGapCatchup()
         {
             using var f = new Fixture();
@@ -302,7 +334,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
             public void DetachProbe()
             {
-                Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems").Clear();
+                Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems").Clear();
                 Get<Dictionary<PredictedComponentID, PredictedIdentity>>(
                     typeof(PredictionManager), manager, "_instanceMap").Clear();
                 Set(typeof(PredictionManager), manager, "_systemsCount", 0);
@@ -338,6 +370,8 @@ namespace PurrNet.Prediction.Tests.Editor
                     if (!fullFrame)
                     {
                         Packer<PackedUInt>.Write(frame, inputTicks);
+                        if (inputTicks > 0)
+                            Packer<bool>.Write(frame, false); // no carried input roster
                         for (uint inputTick = 0; inputTick < inputTicks; inputTick++)
                             Packer<PackedUInt>.Write(frame, 0u); // complete empty transcript
                         Packer<bool>.Write(frame, false); // no historical lifecycle hierarchy
@@ -354,9 +388,14 @@ namespace PurrNet.Prediction.Tests.Editor
                         if (omitUnchanged)
                             Assert.That(changed, Is.False, "the omitted payload must actually be unchanged");
                     }
-                    AddressedPredictionRecords.WriteSectionCount(omitUnchanged ? 0 : 1, frame);
+                    using var state = BitPackerPool.Get();
+                    AddressedPredictionRecords.WriteSectionCount(omitUnchanged ? 0 : 1, state);
                     if (!omitUnchanged)
-                        AddressedPredictionRecords.WriteRecord(frame, probe.id, fullFrame || fullEntry, payload);
+                        AddressedPredictionRecords.WriteRecord(state, probe.id, fullFrame || fullEntry, payload);
+                    // Delta frames prefix their state section with its length.
+                    if (fullFrame)
+                        frame.WriteBitsWithoutConsumingIt(state, state.positionInBits);
+                    else AddressedPredictionRecords.WriteLengthPrefixed(state.positionInBits, state, frame);
                     if (fullFrame)
                         AddressedPredictionRecords.WriteSectionCount(0, frame); // first inputs
                     Packer<PackedUInt>.Write(frame, 0u); // historical physics event batches
@@ -418,7 +457,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
         private static void Register(BaselineFloorProbeIdentity identity, PredictionManager manager)
         {
-            var systems = Get<List<PredictedIdentity>>(typeof(PredictionManager), manager, "_systems");
+            var systems = Get<PredictedSystemList>(typeof(PredictionManager), manager, "_systems");
             systems.Add(identity);
             Set(typeof(PredictionManager), manager, "_systemsCount", systems.Count);
             Get<Dictionary<PredictedComponentID, PredictedIdentity>>(

@@ -10,14 +10,10 @@ namespace PurrNet.Prediction
 {
     public abstract partial class PredictedIdentity : MonoBehaviour
     {
-        public ulong? lastVerifiedTick { get; internal set; }
-
         public virtual string GetExtraString()
         {
             return string.Empty;
         }
-
-        protected readonly ProfilerMarker simulateMarker;
 
         private static readonly Dictionary<Type, ProfilerMarker> _simulateMarkers = new ();
 
@@ -31,8 +27,6 @@ namespace PurrNet.Prediction
             }
         }
 
-        public PredictionManager predictionManager { get; protected set; }
-
         /// <summary>
         /// Represents the identifier of the owner associated with this object.
         /// Used to track ownership, enabling control over inputs.
@@ -45,18 +39,9 @@ namespace PurrNet.Prediction
                 if (predictionManager)
                     SetOwner(value);
                 else
-                    _owner = value;
+                    AssignOwner(value);
             }
         }
-
-        PlayerID? _owner;
-
-        /// <summary>
-        /// The unique identifier for this object.
-        /// Can be used to identify the object across the network.
-        /// </summary>
-        [NonSerialized]
-        public PredictedComponentID id;
 
         /// <summary>
         /// Id of the root piece of the spawn instance this component belongs to.
@@ -69,11 +54,30 @@ namespace PurrNet.Prediction
             get
             {
                 var manager = predictionManager;
-                if (manager && manager.hierarchy && manager.hierarchy.TryGetRootId(id.objectId, out var rootId))
-                    return rootId;
-                return id.objectId;
+                var hierarchy = manager ? manager.hierarchy : null;
+                return hierarchy ? ResolveRootIn(hierarchy) : id.objectId;
             }
         }
+
+        // Roots only move when a hierarchy record changes, so reuse the last lookup until then.
+        internal PredictedObjectID ResolveRootIn(PredictedHierarchy hierarchy)
+        {
+            var objectId = id.objectId;
+            if (ReferenceEquals(_rootCacheHierarchy, hierarchy) &&
+                _rootCacheRevision == hierarchy.recordsRevision &&
+                _rootCacheObjectId.Equals(objectId))
+            {
+                return _rootCacheId;
+            }
+
+            var root = hierarchy.TryGetRootId(objectId, out var rootId) ? rootId : objectId;
+            _rootCacheHierarchy = hierarchy;
+            _rootCacheRevision = hierarchy.recordsRevision;
+            _rootCacheObjectId = objectId;
+            _rootCacheId = root;
+            return root;
+        }
+
 
         internal bool isFreshSpawn = true;
         internal bool preservesStateOnSetup { get; private set; }
@@ -101,16 +105,8 @@ namespace PurrNet.Prediction
         [SerializeField, Tooltip("Local prediction policy used when this identity overrides its scope, or when no PredictionPolicyScope is found.")]
         private PredictionPolicy _predictionPolicy = PredictionPolicy.FullPrediction;
 
-        /// <summary>
-        /// How this identity participates in client-side prediction and reconciliation.
-        /// See <see cref="PredictionPolicy"/> for the semantics of each mode.
-        /// </summary>
-        public PredictionPolicy predictionPolicy { get; private set; }
-
         private PredictionPolicy _lastRegisteredEffectivePredictionPolicy;
         private bool _hasLastRegisteredPredictionPolicy;
-        private PredictionPolicy _lastEffectivePredictionPolicy;
-        private bool _hasLastEffectivePredictionPolicy;
         private bool _hasPendingSetupPolicyChange;
         private PredictionPolicy _pendingSetupOldPolicy;
         private PredictionPolicy _pendingSetupNewPolicy;
@@ -395,9 +391,16 @@ namespace PurrNet.Prediction
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal PredictionPolicy EffectivePolicy()
         {
+            var policy = predictionPolicy;
+            if (policy is PredictionPolicy.FullPrediction or PredictionPolicy.ServerRelay)
+                return policy;
+
+            if (policy == PredictionPolicy.PredictedIfOwned)
+                return IsOwner() ? PredictionPolicy.FullPrediction : PredictionPolicy.ServerRelay;
+
             return ResolveEffectivePolicy(
-                predictionPolicy,
-                IsOwner(),
+                policy,
+                policy == PredictionPolicy.PredictedIfOwnedWithSoftFallback && IsOwner(),
                 !isDeterministic && supportsSoftCorrection);
         }
 
@@ -450,8 +453,13 @@ namespace PurrNet.Prediction
 
         public bool shouldSkipReplaySpawnInitialization => _skipReplaySpawnInitialization;
 
+        // Every phase asks this of every identity; full prediction never skips, so only the
+        // policy load stays inline.
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         internal bool SkipsCurrentSimulationPhase()
+            => predictionPolicy != PredictionPolicy.FullPrediction && SkipsCurrentSimulationPhaseForPolicy();
+
+        private bool SkipsCurrentSimulationPhaseForPolicy()
         {
             var manager = predictionManager;
             if (manager.cachedIsServer)
@@ -526,7 +534,7 @@ namespace PurrNet.Prediction
             _hasLastEffectivePredictionPolicy = false;
             _lastEffectivePredictionPolicy = default;
             lastVerifiedTick = null;
-            _owner = null;
+            AssignOwner(null);
             id = default;
             ResetModulesForPool();
             OnRemovedFromPool();
@@ -557,7 +565,7 @@ namespace PurrNet.Prediction
         internal void SetOwner(PlayerID? player, bool syncPolicySideEffects = true)
         {
             var previousOwner = _owner;
-            _owner = player;
+            AssignOwner(player);
             OnOwnerAssigned(player);
 
             if (syncPolicySideEffects)
@@ -579,6 +587,17 @@ namespace PurrNet.Prediction
 
         protected virtual void OnOwnerAssigned(PlayerID? player) { }
 
+        private void AssignOwner(PlayerID? player)
+        {
+            _owner = player;
+            ulong idValue = CompactIdentityState.OwnerId(player);
+            byte flags = CompactIdentityState.OwnerFlags(player);
+            if (idValue != ownerIdValue || flags != ownerFlags)
+                SimulationSkipEpoch.value++;
+            ownerIdValue = idValue;
+            ownerFlags = flags;
+        }
+
         private History<PredictedIdentityState> _metadataVerified;
 
         private History<PredictedIdentityState> metadataVerified
@@ -598,10 +617,8 @@ namespace PurrNet.Prediction
             var store = metadataVerified;
             store.PruneByTickWindow(serverTick);
 
-            int lastIndex = store.Count - 1;
-            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            if (store.TryReadLatest(serverTick, out var latest))
             {
-                var latest = store[lastIndex];
                 var current = metadata;
                 if (Packer.AreEqualRef(ref latest, ref current))
                     return;
@@ -644,7 +661,7 @@ namespace PurrNet.Prediction
         }
 
         internal bool HasPredictionMetadataBaseline(ulong baselineTick)
-            => metadataVerified.ReadOrPrevious(baselineTick, out _);
+            => metadataVerified.HasAtOrBefore(baselineTick);
 
         internal void ReadPredictionMetadata(BitPacker packer, ulong baselineTick, ulong serverTick, ref PredictedIdentityState metadata)
         {
@@ -696,6 +713,7 @@ namespace PurrNet.Prediction
             _destroyedFired = false;
             _poolPrewarmed = true;
             predictionManager = world;
+            SimulationSkipEpoch.value++;
             sceneId = world.sceneId;
             _metadataVerified = null;
             _moduleSetVerified = null;
@@ -775,6 +793,10 @@ namespace PurrNet.Prediction
         {
             get
             {
+                var manager = predictionManager;
+                if (manager is not null && manager.hasStableLocalPlayer)
+                    return IsOwnerById(manager.stableLocalPlayerId, manager.cachedIsServer);
+
                 if (!predictionManager)
                     return false;
 
@@ -783,32 +805,56 @@ namespace PurrNet.Prediction
             }
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner()
         {
-            if (predictionManager && predictionManager.isSpawned && owner == predictionManager.localPlayer)
-                return true;
-            return false;
+            var manager = predictionManager;
+            if (manager is not null && manager.hasStableLocalPlayer)
+                return ownerFlags != 0 && ownerIdValue == manager.stableLocalPlayerId;
+            return IsOwnerUncached(manager);
         }
 
+        private bool IsOwnerUncached(PredictionManager manager)
+        {
+            if (!manager || !manager.isSpawned)
+                return false;
+            // Lifted equality on two nullable ids, without copying through the nullable wrappers.
+            var local = manager.localPlayer;
+            if (local.HasValue)
+                manager.KeepStableLocalPlayer(local.GetValueOrDefault());
+            if (_owner.HasValue != local.HasValue)
+                return false;
+            return !_owner.HasValue || _owner.GetValueOrDefault().id.value == local.GetValueOrDefault().id.value;
+        }
+
+        // PlayerID equality compares ids only, so these compare the mirrored owner id.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID player)
         {
-            return owner == player;
+            return ownerFlags != 0 && ownerIdValue == player.id.value;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID? player)
         {
-            return owner == player;
+            return player.HasValue ? IsOwner(player.GetValueOrDefault()) : ownerFlags == 0;
         }
 
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         public bool IsOwner(PlayerID player, bool asServer)
         {
-            if (owner.HasValue)
-            {
-                if (owner.Value.isBot)
-                    return asServer;
-                return owner == player;
-            }
-            return asServer;
+            return IsOwnerById(player.id.value, asServer);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private bool IsOwnerById(ulong playerId, bool asServer)
+        {
+            if (ownerFlags == 0)
+                return asServer;
+            // Bots are driven by the server.
+            if ((ownerFlags & 2) != 0)
+                return asServer;
+            return ownerIdValue == playerId;
         }
 
         internal abstract void SimulateTick(ulong tick, float delta);
@@ -820,6 +866,19 @@ namespace PurrNet.Prediction
         internal abstract void PrepareInput(bool isServer, bool isLocal, ulong tick, bool extrapolate);
 
         internal abstract void SaveStateInHistory(ulong tick);
+
+        internal ulong GetAcceptedHistoryRetentionFloor(ulong tick)
+        {
+            ulong floor = predictionManager?.acceptedHistoryBaselineFloor ?? 0;
+            // A quarantined component can retain an older verified view than its peers.
+            var verified = lastVerifiedTick;
+            return floor > 0 && verified.HasValue
+                ? Math.Min(Math.Min(floor, verified.GetValueOrDefault()), tick) : 0;
+        }
+
+        internal ulong GetAcceptedVerifiedHistoryRetentionFloor(ulong tick)
+            => predictionManager && predictionManager.isClient && !predictionManager.isServer
+                ? GetAcceptedHistoryRetentionFloor(tick) : 0;
 
         internal abstract void Rollback(ulong tick);
 
@@ -882,26 +941,30 @@ namespace PurrNet.Prediction
 
         internal abstract void QueueInput(BitPacker packer, PlayerID sender);
 
-        // Bits of the owner's upload that the server consumed for a tick, kept so the
-        // transcript can tell that owner to restore them instead of echoing them.
-        private BitPacker _uploadedInputBits;
-        private ulong _uploadedInputTick;
-        private bool _uploadedInputPending;
-        private bool _hasUploadedInputBits;
-
         internal void RecordUploadedInputBits(BitPacker packer, int origin)
         {
-            _uploadedInputBits ??= BitPackerPool.Get();
+            // This identity retains one input, not a whole packet. Keep its storage out
+            // of the shared scratch pool, whose buffers can be much larger than the input.
+            _uploadedInputBits ??= new BitPacker(((packer.positionInBits - origin + 7) >> 3) + 8);
             _uploadedInputBits.ResetPositionAndMode(false);
             _uploadedInputBits.WriteBitDataWithoutConsumingIt(new BitData(packer, origin, packer.positionInBits - origin));
             _uploadedInputPending = true;
         }
 
-        internal void ConsumeUploadedInputBits(ulong tick, bool used)
+        internal void ConsumeUploadedInputBits(ulong tick, bool used, bool verbatim = false)
         {
             _hasUploadedInputBits = used && _uploadedInputPending;
+            _uploadedInputVerbatim = verbatim && _hasUploadedInputBits;
             _uploadedInputTick = tick;
             _uploadedInputPending = false;
+        }
+
+        internal bool TryWriteVerbatimUploadedInput(ulong tick, BitPacker packer)
+        {
+            if (!_uploadedInputVerbatim || _uploadedInputTick != tick)
+                return false;
+            packer.WriteBitDataWithoutConsumingIt(new BitData(_uploadedInputBits, 0, _uploadedInputBits.positionInBits));
+            return true;
         }
 
         internal bool TryGetUploadedInputBits(ulong tick, out BitData bits)
@@ -915,10 +978,10 @@ namespace PurrNet.Prediction
 
         private void DisposeUploadedInputBits()
         {
-            _uploadedInputBits?.Dispose();
             _uploadedInputBits = null;
             _uploadedInputPending = false;
             _hasUploadedInputBits = false;
+            _uploadedInputVerbatim = false;
         }
 
         public GameObject GetRoot()

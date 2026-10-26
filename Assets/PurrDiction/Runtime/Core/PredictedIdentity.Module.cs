@@ -19,10 +19,19 @@ namespace PurrNet.Prediction
         public PredictedModuleRosterMismatchException(string message) : base(message) { }
     }
 
+    internal static class PredictedModulePackers
+    {
+        [RegisterPackers]
+        private static void Register()
+        {
+            // The roster is written directly, not discovered from a predicted-state field.
+            // Do not depend on a game/sample field generating its collection codec.
+            PackCollections.RegisterDisposableList<uint>();
+        }
+    }
+
     public abstract partial class PredictedIdentity
     {
-        private readonly List<PredictedModule> _modules = new();
-
         private History<DisposableList<uint>> _moduleSetVerified;
 
         private History<DisposableList<uint>> moduleSetVerified
@@ -33,10 +42,8 @@ namespace PurrNet.Prediction
             var store = moduleSetVerified;
             store.PruneByTickWindow(serverTick);
 
-            int lastIndex = store.Count - 1;
-            if (lastIndex >= 0 && store.GetEntryTick(lastIndex) <= serverTick)
+            if (store.TryReadLatest(serverTick, out var latest))
             {
-                var latest = store[lastIndex];
                 if (latest.Equals(snapshot))
                     return;
             }
@@ -143,6 +150,7 @@ namespace PurrNet.Prediction
             module.registeredAtTick = isDynamic ? predictionManager.localTickInContext : 0;
             module.moduleIndex = _modules.Count;
             _modules.Add(module);
+            OnModulesChanged();
 
             if (predictionManager)
                 module.SetupInternal(this, predictionManager);
@@ -167,6 +175,7 @@ namespace PurrNet.Prediction
 
             module.OnRemovedInternal();
             _modules.RemoveAt(index);
+            OnModulesChanged();
             ReindexModulesFrom(index);
         }
 
@@ -239,9 +248,12 @@ namespace PurrNet.Prediction
             bool senderHasDynamics = Packer<bool>.Read(packer);
             if (!senderHasDynamics)
             {
-                if (_moduleSetVerified != null || HasDynamicModulesOrHistory())
+                // Most identities never had dynamic modules: skip resolving the policy for them.
+                bool hasDynamics = HasDynamicModulesOrHistory();
+                if (_moduleSetVerified != null || hasDynamics)
                     StoreEmptyVerifiedModuleSet(serverTick);
-                ApplyEmptyDynamicModuleSnapshot(tick, UsesSoftCorrectionTimeline());
+                if (hasDynamics)
+                    ApplyEmptyDynamicModuleSnapshot(tick, UsesSoftCorrectionTimeline());
                 return;
             }
 
@@ -503,6 +515,7 @@ namespace PurrNet.Prediction
             {
                 if (_modules.Count > staticCount)
                     _modules.RemoveRange(staticCount, _modules.Count - staticCount);
+                OnModulesChanged();
 
                 bool wasApplyingModuleDiff = _isApplyingModuleDiff;
                 _isApplyingModuleDiff = true;
@@ -534,6 +547,7 @@ namespace PurrNet.Prediction
 
                             module = candidate;
                             _modules.Add(module);
+                            OnModulesChanged();
                             module.moduleIndex = _modules.Count - 1;
                             break;
                         }
@@ -598,7 +612,9 @@ namespace PurrNet.Prediction
                 try
                 {
                     _modules.Clear();
+                    OnModulesChanged();
                     _modules.AddRange(liveModules);
+                    OnModulesChanged();
                     ReindexModulesFrom(0);
                 }
                 finally
@@ -645,6 +661,7 @@ namespace PurrNet.Prediction
             for (int i = _modules.Count - 1; i >= 0; i--)
                 _modules[i].OnRemovedInternal();
             _modules.Clear();
+            OnModulesChanged();
             _moduleHistory?.Clear();
         }
 
@@ -665,6 +682,7 @@ namespace PurrNet.Prediction
                 {
                     _modules[i].OnRemovedInternal();
                     _modules.RemoveAt(i);
+                    OnModulesChanged();
                 }
             }
             finally
@@ -736,6 +754,7 @@ namespace PurrNet.Prediction
                                 var module = _modules[start];
                                 module.OnRemovedInternal();
                                 _modules.RemoveAt(start);
+                                OnModulesChanged();
                             }
                             offset -= op.length;
                             break;
@@ -827,6 +846,7 @@ namespace PurrNet.Prediction
             }
 
             _modules.Insert(absoluteIndex, module);
+            OnModulesChanged();
             module.moduleIndex = absoluteIndex;
 
             try
@@ -883,7 +903,7 @@ namespace PurrNet.Prediction
         private bool HasUnchangedStateBaselineModules(ulong baselineTick)
         {
             if (HasDynamicModulesOrHistory() &&
-                !moduleSetVerified.ReadOrPrevious(baselineTick, out _))
+                !moduleSetVerified.HasAtOrBefore(baselineTick))
             {
                 return false;
             }

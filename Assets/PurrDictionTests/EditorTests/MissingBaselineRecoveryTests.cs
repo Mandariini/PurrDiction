@@ -632,7 +632,7 @@ namespace PurrNet.Prediction.Tests.Editor
 
             public void CleanupClient()
             {
-                Get<List<PredictedIdentity>>(client, "_systems").Clear();
+                Get<PredictedSystemList>(client, "_systems").Clear();
                 Get<Dictionary<PredictedComponentID, PredictedIdentity>>(client, "_instanceMap").Clear();
                 Set(client, "_systemsCount", 0);
                 Invoke(client, "CleanupAllSystems");
@@ -696,6 +696,9 @@ namespace PurrNet.Prediction.Tests.Editor
                     Invoke(_server, "ClearVerifiedInputTranscript");
                     Assert.That(Packer<bool>.Read(packer), Is.False,
                         "this fixture has no historical lifecycle hierarchy");
+                    uint stateBits = Packer<PackedUInt>.Read(packer);
+                    Assert.That(stateBits, Is.LessThanOrEqualTo((uint)(end - packer.positionInBits)),
+                        "a delta frame prefixes its state section with its length");
                 }
                 int count = 0;
                 LastRegularRecordFullFlags.Clear();
@@ -734,7 +737,7 @@ namespace PurrNet.Prediction.Tests.Editor
             verified.Write(10, State(100));
             Set(typeof(PredictedIdentity<RecoveryProbeState>), identity, "_verifiedHistory", verified);
             identity.lastVerifiedTick = 10;
-            Get<List<PredictedIdentity>>(manager, "_systems").Add(identity);
+            Get<PredictedSystemList>(manager, "_systems").Add(identity);
             Set(manager, "_systemsCount", 1);
             Get<Dictionary<PredictedComponentID, PredictedIdentity>>(manager, "_instanceMap").Add(id, identity);
             return verified;

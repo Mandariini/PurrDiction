@@ -14,6 +14,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         {
             var target = NamedBuildTarget.Standalone;
             var previousBackend = PlayerSettings.GetScriptingBackend(target);
+            var previousStripping = PlayerSettings.GetManagedStrippingLevel(target);
             int exitCode = 1;
 
             try
@@ -22,6 +23,11 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                     "test-results/full-prediction-player/PurrDictionTests.exe");
                 Directory.CreateDirectory(Path.GetDirectoryName(playerPath) ?? ".");
                 PlayerSettings.SetScriptingBackend(target, ScriptingImplementation.Mono2x);
+
+                // The managed linker also runs for Mono, so stripping regressions reproduce without IL2CPP.
+                var stripping = GetArgument("-fpStrippingLevel");
+                if (stripping != null)
+                    PlayerSettings.SetManagedStrippingLevel(target, (ManagedStrippingLevel)Enum.Parse(typeof(ManagedStrippingLevel), stripping, true));
 
                 var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
                 {
@@ -41,6 +47,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
                 {
                     unityVersion = Application.unityVersion,
                     scriptingBackend = "Mono",
+                    managedStrippingLevel = PlayerSettings.GetManagedStrippingLevel(target).ToString(),
                     developmentBuild = true,
                     target = "StandaloneWindows64",
                     scene = "Assets/PredictionTests/Bootstrap.unity",
@@ -56,6 +63,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
             finally
             {
                 PlayerSettings.SetScriptingBackend(target, previousBackend);
+                PlayerSettings.SetManagedStrippingLevel(target, previousStripping);
             }
 
             EditorApplication.Exit(exitCode);
@@ -75,6 +83,7 @@ namespace PurrNet.Prediction.Benchmarks.Editor
         {
             public string unityVersion;
             public string scriptingBackend;
+            public string managedStrippingLevel;
             public bool developmentBuild;
             public string target;
             public string scene;

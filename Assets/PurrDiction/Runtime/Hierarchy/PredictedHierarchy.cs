@@ -9,8 +9,31 @@ namespace PurrNet.Prediction
     public class PredictedHierarchy : PredictedIdentity<PredictedHierarchyState>
     {
         readonly List<InstanceDetails> _spawnedPrefabs = new ();
-        readonly Dictionary<PredictedObjectID, InstanceDetails> _recordsById = new ();
-        readonly Dictionary<PredictedObjectID, GameObject> _instanceMap = new ();
+        readonly Dictionary<PredictedObjectID, InstanceDetails> _recordsById = new (PredictionIdComparers.Objects);
+
+        /// <summary>
+        /// Bumped on every record change, so identities can cache the root their piece resolves to.
+        /// </summary>
+        internal uint recordsRevision { get; private set; } = 1;
+
+        private void SetRecord(PredictedObjectID id, in InstanceDetails record)
+        {
+            _recordsById[id] = record;
+            recordsRevision++;
+        }
+
+        private bool RemoveRecordEntry(PredictedObjectID id)
+        {
+            recordsRevision++;
+            return _recordsById.Remove(id);
+        }
+
+        private void ClearRecords()
+        {
+            _recordsById.Clear();
+            recordsRevision++;
+        }
+        readonly Dictionary<PredictedObjectID, GameObject> _instanceMap = new (PredictionIdComparers.Objects);
         readonly Dictionary<GameObject, PredictedObjectID> _goToId = new ();
         readonly HashSet<PredictedObjectID> _isSceneObject = new ();
         readonly List<PredictedObjectID> _reservedSceneObjects = new ();
@@ -18,6 +41,29 @@ namespace PurrNet.Prediction
         readonly PredictedPiecePool _pool = new ();
 
         private PredictedNetworkMirror _networkMirror;
+
+        /// <summary>
+        /// Raised when a GameObject enters a prediction world, before its predicted identities run
+        /// setup: a prefab instance (freshly instantiated or taken from the prefab pool) or a scene
+        /// object being registered. The usual place to inject dependencies. Rollbacks that bring back
+        /// a GameObject the hierarchy is still holding do not raise it again.
+        /// </summary>
+        public static event System.Action<PredictedPreSpawn> onPreSpawn;
+
+        private void RaisePreSpawn(GameObject go, bool isSceneObject, bool fromPool)
+        {
+            if (onPreSpawn == null)
+                return;
+
+            try
+            {
+                onPreSpawn(new PredictedPreSpawn(go, predictionManager, isSceneObject, fromPool));
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogException(e, go);
+            }
+        }
 
         internal PredictedNetworkMirror networkMirror => _networkMirror ??= new PredictedNetworkMirror(predictionManager, this);
 
@@ -193,15 +239,8 @@ namespace PurrNet.Prediction
 
         protected override void GetUnityState(ref PredictedHierarchyState state)
         {
-            int count = _spawnedPrefabs.Count;
             state.spawnedPrefabs.Clear();
-
-            if (state.spawnedPrefabs.list.Capacity < count)
-                state.spawnedPrefabs.list.Capacity = count;
-
-            for (var i = 0; i < count; i++)
-                state.spawnedPrefabs.Add(_spawnedPrefabs[i]);
-
+            state.spawnedPrefabs.list.AddRange(_spawnedPrefabs);
             state.nextInstanceId = _nextInstanceId;
         }
 
@@ -248,6 +287,14 @@ namespace PurrNet.Prediction
             _replacedEntrantsScratch.Clear();
 
             var target = state.spawnedPrefabs;
+
+            if (MatchesLiveTopology(target))
+            {
+                _nextInstanceId = state.nextInstanceId;
+                try { RunDecorationRestores(); }
+                finally { _isRollingBack = false; }
+                return;
+            }
 
             _targetIdsScratch.Clear();
             for (var i = 0; i < target.Count; i++)
@@ -375,13 +422,13 @@ namespace PurrNet.Prediction
             }
 
             _spawnedPrefabs.Clear();
-            _recordsById.Clear();
+            ClearRecords();
 
             for (var i = 0; i < target.Count; i++)
             {
                 var record = target[i];
                 _spawnedPrefabs.Add(record);
-                _recordsById[record.instanceId] = record;
+                SetRecord(record.instanceId, record);
             }
 
             _nextInstanceId = state.nextInstanceId;
@@ -391,6 +438,31 @@ namespace PurrNet.Prediction
             _replacedEntrantsScratch.Clear();
             _isRollingBack = false;
             InvalidateVisibilityTopology();
+        }
+
+        // Registering the list comparer lets an unchanged topology match in one bitwise comparison.
+        static readonly bool s_topologyListEquality = RegisterTopologyListEquality();
+
+        static bool RegisterTopologyListEquality()
+        {
+            PackCollections.RegisterList<InstanceDetails>();
+            return true;
+        }
+
+        private bool MatchesLiveTopology(DisposableList<InstanceDetails> target)
+        {
+            int count = target.Count;
+            if (count != _spawnedPrefabs.Count || count != _recordsById.Count || count != _instanceMap.Count)
+                return false;
+            // Bitwise-equal records are equal; anything else is compared field by field.
+            if (s_topologyListEquality && Packer.AreEqual(_spawnedPrefabs, target.list))
+                return true;
+            for (int i = 0; i < count; i++)
+            {
+                if (!_spawnedPrefabs[i].Equals(target[i]))
+                    return false;
+            }
+            return true;
         }
 
         private sealed class CascadeGroupComparer : IComparer<PredictedObjectID>
@@ -725,7 +797,7 @@ namespace PurrNet.Prediction
             {
                 var record = _recordBuildScratch[k];
                 _spawnedPrefabs.Add(record);
-                _recordsById[record.instanceId] = record;
+                SetRecord(record.instanceId, record);
             }
 
             NotifyInstanceParentChanged(rootGo);
@@ -814,6 +886,7 @@ namespace PurrNet.Prediction
                     rootGo = predictionManager.InternalCreate(prefab, worldPosition, worldRotation, out var fromPool);
                     reset = fromPool;
                     removedFromPoolEvent = fromPool;
+                    RaisePreSpawn(rootGo, false, fromPool);
 
                     if (parentTrs)
                         ApplySpawnPose(rootGo.transform, parentTrs, rootRecord.spawnPosition, rootRecord.spawnRotation);
@@ -969,6 +1042,9 @@ namespace PurrNet.Prediction
                 return;
             }
 
+            // The needed pieces leave the donor below, so anything injected here reaches them too.
+            RaisePreSpawn(donor, false, false);
+
             var donorPieces = ListPool<GameObject>.Instantiate();
             donorPieces.AddRange(_collectScratch);
 
@@ -1123,6 +1199,20 @@ namespace PurrNet.Prediction
 
             if (resolved.HasValue)
                 ValidateRuntimeParenting(go);
+        }
+
+        private bool KeepsMirroredPiecesForHost(List<InstanceDetails> group)
+        {
+            if (_networkMirror == null)
+                return false;
+
+            for (var i = 0; i < group.Count; i++)
+            {
+                if (_networkMirror.ShouldKeepForHost(group[i].instanceId))
+                    return true;
+            }
+
+            return false;
         }
 
         private bool _isCleaningUp;
@@ -1326,6 +1416,8 @@ namespace PurrNet.Prediction
                 uint baseId = _nextInstanceId;
                 _nextInstanceId += (uint)proto.pieceCount;
 
+                RaisePreSpawn(root, true, false);
+
                 var rootId = new PredictedObjectID(baseId);
                 root.transform.GetPositionAndRotation(out var rootPos, out var rootRot);
 
@@ -1346,7 +1438,7 @@ namespace PurrNet.Prediction
                     _instanceMap.Add(pieceId, pieceGo);
                     _goToId.Add(pieceGo, pieceId);
                     _spawnedPrefabs.Add(record);
-                    _recordsById[pieceId] = record;
+                    SetRecord(pieceId, record);
 
                     predictionManager.RegisterInstance(pieceGo, pieceId, null, false, false);
                 }
@@ -1560,7 +1652,7 @@ namespace PurrNet.Prediction
                 for (var g = 0; g < _cascadeGroupOrder.Count; g++)
                 {
                     var group = _cascadeGroups[_cascadeGroupOrder[g]];
-                    bool canPool = group[0].prefabId.value < 0 || !isVerified;
+                    bool canPool = group[0].prefabId.value < 0 || !isVerified || KeepsMirroredPiecesForHost(group);
 
                     _cascadeMemberScratch.Clear();
                     for (var i = 0; i < group.Count; i++)
@@ -1656,7 +1748,7 @@ namespace PurrNet.Prediction
                     position, rotation, record.owner, null, record.networkId);
 
                 _spawnedPrefabs[i] = rebased;
-                _recordsById[record.instanceId] = rebased;
+                SetRecord(record.instanceId, rebased);
                 changed = true;
             }
 
@@ -1725,7 +1817,7 @@ namespace PurrNet.Prediction
                 var promoted = new InstanceDetails(record.prefabId, record.pieceIndex.value, record.instanceId, pos, rot, rootRecord.owner, record.parent, record.networkId);
 
                 _spawnedPrefabs[i] = promoted;
-                _recordsById[record.instanceId] = promoted;
+                SetRecord(record.instanceId, promoted);
             }
         }
 
@@ -1751,7 +1843,7 @@ namespace PurrNet.Prediction
                         _instanceMap.Remove(record.instanceId);
                         if (removeRecords)
                         {
-                            _recordsById.Remove(record.instanceId);
+                            RemoveRecordEntry(record.instanceId);
                             _removedRecordScratch.Add(record.instanceId);
                         }
                         memberSet.Remove(record.instanceId);
@@ -1808,7 +1900,7 @@ namespace PurrNet.Prediction
                 var piece = _memberPiecesScratch[i];
 
                 CaptureDecoration(piece.id, piece.gameObject);
-                _networkMirror?.OnPieceUnmaterialized(piece.id);
+                _networkMirror?.OnPieceUnmaterialized(piece.id, canPool);
                 predictionManager.UnregisterInstance(piece.gameObject, false, triggerDestroyEvent);
 
                 _instanceMap.Remove(piece.id);
@@ -1818,7 +1910,7 @@ namespace PurrNet.Prediction
 
                 if (removeRecords)
                 {
-                    _recordsById.Remove(piece.id);
+                    RemoveRecordEntry(piece.id);
                     _removedRecordScratch.Add(piece.id);
                 }
             }
@@ -1871,7 +1963,7 @@ namespace PurrNet.Prediction
 
         private void RemoveRecord(PredictedObjectID id)
         {
-            if (!_recordsById.Remove(id))
+            if (!RemoveRecordEntry(id))
                 return;
 
             for (var i = 0; i < _spawnedPrefabs.Count; i++)
@@ -2184,7 +2276,7 @@ namespace PurrNet.Prediction
             _instanceMap.Clear();
             _goToId.Clear();
             _spawnedPrefabs.Clear();
-            _recordsById.Clear();
+            ClearRecords();
             _isSceneObject.Clear();
             _reservedSceneObjects.Clear();
             _pendingSceneReservations.Clear();

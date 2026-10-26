@@ -34,7 +34,7 @@ namespace PurrNet.Prediction.Tests.Editor
             readonly NetworkManager network;
             public readonly PredictionManager manager;
 
-            public Fixture(bool host = false)
+            public Fixture(bool host = false, int rate = 60)
             {
                 Hasher.PrepareType(typeof(Value));
                 network = networkObject.AddComponent<NetworkManager>();
@@ -44,7 +44,7 @@ namespace PurrNet.Prediction.Tests.Editor
                 Set(typeof(NetworkIdentity), manager, "<networkManager>k__BackingField", network);
                 Set(typeof(NetworkIdentity), manager, "_isSpawnedClient", true);
                 Set(typeof(NetworkIdentity), manager, "_isSpawnedServer", host);
-                Set(typeof(PredictionManager), manager, "<tickRate>k__BackingField", 60);
+                Set(typeof(PredictionManager), manager, "<tickRate>k__BackingField", rate);
             }
 
             public History<Value> Create(uint objectId, int entries, int subKey = 0)
@@ -52,8 +52,19 @@ namespace PurrNet.Prediction.Tests.Editor
                 var id = new PredictedComponentID(new PredictedObjectID(objectId), 0);
                 var history = manager.GetVerifiedHistory<Value>(id, subKey, out var created);
                 Assert.That(created, Is.True);
+                // Maintenance tests exercise already-warm, oversized storage. Cold
+                // receiver allocation is checked separately below.
+                for (int tick = 0; tick <= history.Capacity; tick++)
+                    history.Write((ulong)tick, new Value { number = tick });
+                history.Clear();
                 for (int tick = 0; tick < entries; tick++) history.Write((ulong)tick, new Value { number = tick });
                 return history;
+            }
+
+            public void BecomeHost()
+            {
+                Set(typeof(NetworkManager), network, "<isServer>k__BackingField", true);
+                Set(typeof(NetworkIdentity), manager, "_isSpawnedServer", true);
             }
 
             public void Register(uint objectId)
@@ -145,7 +156,7 @@ namespace PurrNet.Prediction.Tests.Editor
             fixture.Maintain();
             foreach (var history in new[] { live, module, pooled })
             {
-                Assert.That(Backing(history), Is.EqualTo(901));
+                Assert.That(Backing(history), Is.EqualTo(98));
                 Assert.That(history.Count, Is.EqualTo(50));
                 Assert.That(history.OldestTick, Is.Zero);
             }
@@ -161,10 +172,10 @@ namespace PurrNet.Prediction.Tests.Editor
             var second = fixture.Create(109, 40);
             fixture.Maintain();
             Assert.That(fixture.manager.verifiedHistoryMaintenanceInspectionsTotal, Is.EqualTo(8));
-            Assert.That(Backing(first), Is.EqualTo(901));
+            Assert.That(Backing(first), Is.EqualTo(98));
             fixture.Maintain();
             Assert.That(Backing(first), Is.EqualTo(40));
-            Assert.That(Backing(second), Is.EqualTo(901));
+            Assert.That(Backing(second), Is.EqualTo(98));
             Assert.That(fixture.manager.verifiedHistoryMaintainedStoresTotal, Is.EqualTo(1));
             fixture.Maintain();
             Assert.That(Backing(second), Is.EqualTo(40));
@@ -193,6 +204,44 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(Backing(history), Is.EqualTo(1));
         }
 
+        [TestCase(20, true)]
+        [TestCase(60, true)]
+        [TestCase(240, true)]
+        [TestCase(20, false)]
+        [TestCase(60, false)]
+        [TestCase(240, false)]
+        public void VerifiedHistoryRetainsTheEntireProtocolWindowWithoutGrowing(int tickRate, bool server)
+        {
+            using var fixture = new Fixture(server);
+            Set(typeof(PredictionManager), fixture.manager, "<tickRate>k__BackingField", tickRate);
+            var history = fixture.Create(302, 0);
+            int window = (int)fixture.manager.verifiedHistoryWindowTicks;
+            Assert.That(history.Capacity, Is.EqualTo(window));
+            ulong end = (ulong)(window * 3);
+            for (ulong tick = 0; tick <= end; tick++)
+            {
+                history.PruneByTickWindow(tick);
+                history.Write(tick, new Value { number = (int)tick });
+                Assert.That(Backing(history), Is.EqualTo(window + 2));
+            }
+            Assert.That(history.Read(end - (ulong)window, out var baseline), Is.True);
+            Assert.That(baseline.number, Is.EqualTo((int)end - window));
+            Assert.That(history.Count, Is.EqualTo(window + 1));
+        }
+
+        [Test]
+        public void SparseServerHistoryRetainsThePrecedingAnchorAtTheProtocolCutoff()
+        {
+            using var fixture = new Fixture(true);
+            var history = fixture.Create(303, 0);
+            history.Write(10, new Value { number = 10 });
+            history.Write(48, new Value { number = 48 });
+            history.PruneByTickWindow(200);
+            history.Write(200, new Value { number = 200 });
+            Assert.That(history.ReadOrPrevious(104, out var baseline), Is.True);
+            Assert.That(baseline.number, Is.EqualTo(48));
+        }
+
         [Test]
         public void HostCompactsButNeverPrunesEntriesAtTheClientFloor()
         {
@@ -206,21 +255,63 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(fixture.manager.verifiedHistoryPrunedEntriesTotal, Is.Zero);
         }
 
-        [Test]
-        public void LogicalStoreRebindRestoresEagerCapacityAndRetainsTheSameHistory()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void LogicalStoreRebindRestoresEagerCapacityAndRetainsTheSameHistory(bool host)
         {
-            using var fixture = new Fixture();
+            using var fixture = new Fixture(host);
             var history = fixture.Create(401, 40, 8);
             fixture.Maintain();
             Assert.That(Backing(history), Is.EqualTo(40));
             var rebound = fixture.manager.GetVerifiedHistory<Value>(new PredictedComponentID(new PredictedObjectID(401), 0), 8, out var created);
             Assert.That(created, Is.False);
             Assert.That(rebound, Is.SameAs(history));
-            Assert.That(Backing(rebound), Is.EqualTo(901));
-            Assert.That(fixture.manager.verifiedHistoryRestoredArrayPayloadBytesTotal, Is.EqualTo(901 * 12));
+            Assert.That(Backing(rebound), Is.EqualTo(host ? 98 : 40));
+            Assert.That(fixture.manager.verifiedHistoryRestoredArrayPayloadBytesTotal, Is.EqualTo(host ? 98 * 12 : 0));
             for (ulong tick = 0; tick < 40; tick++)
             {
                 Assert.That(rebound.Read(tick, out var value), Is.True);
+                Assert.That(value.number, Is.EqualTo((int)tick));
+            }
+        }
+
+        [TestCase(20)]
+        [TestCase(60)]
+        [TestCase(240)]
+        public void ColdReceiverBuffersGrowThroughTheCompleteProtocolWindow(int rate)
+        {
+            using var fixture = new Fixture(rate: rate);
+            var id = new PredictedComponentID(new PredictedObjectID(901), 0);
+            var history = fixture.manager.GetVerifiedHistory<Value>(id, out bool created);
+            Assert.That(created, Is.True);
+            Assert.That(Backing(history), Is.LessThan(history.Capacity + 2));
+            int window = (int)fixture.manager.verifiedHistoryWindowTicks;
+            Assert.That(history.Capacity, Is.EqualTo(window));
+            for (int tick = 0; tick <= window; tick++)
+                history.Write((ulong)tick, new Value { number = tick });
+            for (int tick = 0; tick <= window; tick++)
+            {
+                Assert.That(history.Read((ulong)tick, out var value), Is.True);
+                Assert.That(value.number, Is.EqualTo(tick));
+            }
+            Assert.That(Backing(history), Is.EqualTo(window + 2));
+        }
+
+        [Test]
+        public void ServerRebindPrewarmsAFormerClientStoreWithoutLosingValues()
+        {
+            using var fixture = new Fixture();
+            var id = new PredictedComponentID(new PredictedObjectID(902), 0);
+            var history = fixture.manager.GetVerifiedHistory<Value>(id, out _);
+            for (ulong tick = 0; tick < 5; tick++) history.Write(tick, new Value { number = (int)tick });
+            fixture.BecomeHost();
+            var rebound = fixture.manager.GetVerifiedHistory<Value>(id, out bool created);
+            Assert.That(created, Is.False);
+            Assert.That(rebound, Is.SameAs(history));
+            Assert.That(Backing(history), Is.EqualTo((int)fixture.manager.verifiedHistoryWindowTicks + 2));
+            for (ulong tick = 0; tick < 5; tick++)
+            {
+                Assert.That(history.Read(tick, out var value), Is.True);
                 Assert.That(value.number, Is.EqualTo((int)tick));
             }
         }
@@ -244,7 +335,7 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(created, Is.True);
             Assert.That(reused, Is.SameAs(state).Or.SameAs(module));
             Assert.That(reused.Count, Is.Zero);
-            Assert.That(Backing(reused), Is.EqualTo(901), "recycled stores keep their eager capacity");
+            Assert.That(Backing(reused), Is.EqualTo(98), "recycled server stores keep their protocol-sized capacity");
             Assert.That(fixture.manager.verifiedHistoryRecycledStoresTotal, Is.EqualTo(1));
         }
 
@@ -319,7 +410,7 @@ namespace PurrNet.Prediction.Tests.Editor
             var history = fixture.Create(501, 40);
             Set(typeof(PredictionManager), fixture.manager, field, true);
             fixture.Maintain();
-            Assert.That(Backing(history), Is.EqualTo(901));
+            Assert.That(Backing(history), Is.EqualTo(98));
             Assert.That(fixture.manager.verifiedHistoryMaintenanceInspectionsTotal, Is.Zero);
             Set(typeof(PredictionManager), fixture.manager, field, false);
         }

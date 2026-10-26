@@ -114,7 +114,7 @@ namespace PurrNet.Prediction.Tests.Editor
             PredictionManager manager,
             params PredictedIdentity[] expected)
         {
-            Assert.That(GetField<List<PredictedIdentity>>(manager, "_systems"), Is.EqualTo(expected));
+            Assert.That(GetField<PredictedSystemList>(manager, "_systems"), Is.EqualTo(expected));
             Assert.That(GetField<int>(manager, "_systemsCount"), Is.EqualTo(expected.Length));
         }
 
@@ -122,7 +122,7 @@ namespace PurrNet.Prediction.Tests.Editor
             PredictionManager manager,
             PredictedIdentity identity)
         {
-            var systems = GetField<List<PredictedIdentity>>(manager, "_systems");
+            var systems = GetField<PredictedSystemList>(manager, "_systems");
             systems.Add(identity);
             SetField(manager, "_systemsCount", systems.Count);
 

@@ -18,7 +18,7 @@ namespace PurrNet.Prediction.Tests.Editor
         public void SparseChangesRoundTripAcrossBitAndGroupBoundaries(int alignment)
         {
             int[] lengths = { 1, 7, 8, 9, 15, 16, 17, 31, 32, 33, 55, 56, 57, 63,
-                64, 65, 71, 72, 73, 127, 128, 129, 255, 256, 257 };
+                64, 65, 71, 72, 73, 127, 128, 129, 255, 256, 257, 511, 512, 513 };
             foreach (int length in lengths)
             {
                 var before = Pattern(length);
@@ -152,10 +152,12 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(encoded.positionInBits, Is.LessThanOrEqualTo(end));
         }
 
-        [Test]
-        public void AppendingManyDeltasPreservesEveryBaselineAcrossBufferGrowth()
+        [TestCase(97)]
+        [TestCase(512)]
+        [TestCase(513)]
+        [TestCase(4097)]
+        public void AppendingManyDeltasPreservesEveryBaselineAcrossBufferGrowth(int length)
         {
-            const int length = 4097;
             var expected = Pattern(length);
             using var initial = Input(expected, length, 3, out var first);
             using var payload = new BitPacker(1);
@@ -187,6 +189,68 @@ namespace PurrNet.Prediction.Tests.Editor
                 using var input = Input(saved.bytes, length, 0, out var expectedSpan);
                 Assert.That(saved.span.Equals(expectedSpan), Is.True);
             }
+        }
+
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(2)]
+        [TestCase(3)]
+        [TestCase(4)]
+        [TestCase(5)]
+        [TestCase(6)]
+        [TestCase(7)]
+        public void BufferedAndLargePatchesKeepTheExistingWireFormat(int alignment)
+        {
+            foreach (int length in new[] { 0, 1, 9, 55, 64, 65, 97, 127, 128, 129, 255, 256, 257, 511, 512, 513, 1025 })
+            foreach (int stride in new[] { 1, 3, 9, 10000 })
+            {
+                var before = Pattern(length);
+                var after = (byte[])before.Clone();
+                for (int i = 0; i < after.Length; i += stride)
+                    after[i] ^= 0xA5;
+                var reference = ReferencePatch(before, after, length);
+                using var baseline = Input(before, length, alignment, out var previous);
+                using var current = Input(after, length, (alignment + 3) & 7, out var next);
+                using var expected = new BitPacker(1);
+                using var actual = new BitPacker(1);
+                int origin = (alignment + 5) & 7;
+                expected.WriteBits(0x7F, (byte)origin);
+                actual.WriteBits(0x7F, (byte)origin);
+                var untouched = (byte[])actual.buffer.Clone();
+                bool written = InputHistoryDelta.TryWrite(actual, previous, next);
+                Assert.That(written, Is.EqualTo(reference != null), $"length={length}, stride={stride}");
+                if (reference == null)
+                    Assert.That(actual.buffer, Is.EqualTo(untouched));
+                else
+                    expected.WriteBytes(reference);
+                Assert.That(actual.positionInBits, Is.EqualTo(expected.positionInBits));
+                Assert.That(new BitData(actual, 0, actual.positionInBits).Equals(
+                    new BitData(expected, 0, expected.positionInBits)), Is.True);
+            }
+        }
+
+        // Protocol reference over logical byte arrays, independent of BitData origins and writer buffering.
+        private static byte[] ReferencePatch(byte[] before, byte[] after, int length)
+        {
+            if (length == 0) return null;
+            var encoded = new List<byte>();
+            for (int first = 0; first < before.Length; first += 8)
+            {
+                int maskPosition = encoded.Count;
+                encoded.Add(0);
+                for (int i = first; i < Math.Min(first + 8, before.Length); i++)
+                {
+                    int mask = (1 << Math.Min(8, length - i * 8)) - 1;
+                    byte value = (byte)(after[i] & mask);
+                    if ((before[i] & mask) == value) continue;
+                    encoded[maskPosition] |= (byte)(1 << (i - first));
+                    encoded.Add(value);
+                }
+            }
+            int prefixBits = 8;
+            for (int remaining = length >> 7; remaining != 0; remaining >>= 7)
+                prefixBits += 8;
+            return encoded.Count * 8 < length + prefixBits ? encoded.ToArray() : null;
         }
 
         private static byte[] Pattern(int length)

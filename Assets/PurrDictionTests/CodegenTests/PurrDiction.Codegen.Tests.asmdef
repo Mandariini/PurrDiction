@@ -1,0 +1,9 @@
+{
+    "name": "PurrDiction.Codegen.Tests",
+    "references": ["GUID:0eae00088ff8d4443b0d1664cc6523f1"],
+    "includePlatforms": ["Editor"],
+    "overrideReferences": true,
+    "precompiledReferences": ["Mono.Cecil.dll", "nunit.framework.dll"],
+    "autoReferenced": false,
+    "optionalUnityReferences": ["TestAssemblies"]
+}

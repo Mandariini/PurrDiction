@@ -19,6 +19,14 @@ namespace PurrNet.Prediction
         }
 
 #if UNITY_PHYSICS_3D
+        protected override void SetUnityState(PredictedPhysicsData state)
+        {
+            // History copies of an empty batch need no array. Restored live batches
+            // retain the original collision headroom before callbacks can append.
+            if (!state.events.isDisposed && state.events.list.Capacity < 16)
+                state.events.list.Capacity = 16;
+        }
+
         public override void PostSimulate()
         {
             ref var state = ref currentState;
