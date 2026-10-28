@@ -1047,6 +1047,7 @@ namespace PurrNet.Prediction
             {
                 _instanceMap.Remove(predictedIdentity.id);
                 _instanceMapVersion++;
+                NoteInputControlEnded(predictedIdentity);
                 _recordDecodeQuarantine.Remove(predictedIdentity.id);
                 _recordFailureLogAt.Remove(predictedIdentity.id);
                 RetireVerifiedStores(predictedIdentity.id);
@@ -1576,7 +1577,7 @@ namespace PurrNet.Prediction
                 firstTick = localTick;
 
             using var payload = BitPackerPool.Get();
-            PrepareUploadTickBlocks(ownedIdentities);
+            PrepareUploadTickBlocks();
 
             uint tickCount = 0;
             UploadTickBlock previous = null;
@@ -1620,7 +1621,9 @@ namespace PurrNet.Prediction
         }
 
         // Upload windows overlap by all but one tick and a tick's inputs are final once it has
-        // run, so each tick is encoded once and reused while the owned roster is unchanged.
+        // run, so each tick is encoded once with the roster it ran with and resent unchanged.
+        // The server decodes an upload against the newest tick it already accepted, so a sent
+        // tick must never be rebuilt: an owned roster change only shapes the ticks after it.
         private sealed class UploadTickBlock
         {
             public ulong tick;
@@ -1636,50 +1639,20 @@ namespace PurrNet.Prediction
         }
 
         private UploadTickBlock[] _uploadTickBlocks;
-        private readonly List<PredictedIdentity> _uploadRoster = new ();
-        private readonly List<PredictedComponentID> _uploadRosterIds = new ();
         private uint _uploadTickBlockStamp;
 
-        private void PrepareUploadTickBlocks(DisposableList<PredictedIdentity> owned)
+        private void PrepareUploadTickBlocks()
         {
-            if (_uploadTickBlocks == null)
-            {
-                _uploadTickBlocks = new UploadTickBlock[MaxInputWindow + 1];
-                for (var i = 0; i < _uploadTickBlocks.Length; i++)
-                    _uploadTickBlocks[i] = new UploadTickBlock();
-            }
-
-            int matched = 0;
-            bool same = true;
-            for (var i = 0; i < owned.Count && same; i++)
-            {
-                var identity = owned[i];
-                if (!identity || !identity.hasInput)
-                    continue;
-                same = matched < _uploadRoster.Count &&
-                       ReferenceEquals(_uploadRoster[matched], identity) &&
-                       _uploadRosterIds[matched].Equals(identity.id);
-                matched++;
-            }
-
-            if (same && matched == _uploadRoster.Count)
+            if (_uploadTickBlocks != null)
                 return;
 
-            InvalidateUploadTickBlocks();
-            for (var i = 0; i < owned.Count; i++)
-            {
-                var identity = owned[i];
-                if (!identity || !identity.hasInput)
-                    continue;
-                _uploadRoster.Add(identity);
-                _uploadRosterIds.Add(identity.id);
-            }
+            _uploadTickBlocks = new UploadTickBlock[MaxInputWindow + 1];
+            for (var i = 0; i < _uploadTickBlocks.Length; i++)
+                _uploadTickBlocks[i] = new UploadTickBlock();
         }
 
         private void InvalidateUploadTickBlocks()
         {
-            _uploadRoster.Clear();
-            _uploadRosterIds.Clear();
             if (_uploadTickBlocks == null)
                 return;
             for (var i = 0; i < _uploadTickBlocks.Length; i++)
@@ -3528,6 +3501,10 @@ namespace PurrNet.Prediction
             internal ulong expandedTailTick;
             internal bool hasExpandedTail;
 
+            // The object of the last rejected input, so a stale object is reported once, not every tick.
+            internal PredictedObjectID lastRejectedObject;
+            internal bool hasRejectedObject;
+
             public void Clear()
             {
                 foreach (var entry in byTick.Values)
@@ -3539,6 +3516,7 @@ namespace PurrNet.Prediction
                 hasPendingInputSlack = false;
                 hasExpandedTail = false;
                 expandedTailSpans.Clear();
+                hasRejectedObject = false;
             }
         }
 
@@ -3898,18 +3876,68 @@ namespace PurrNet.Prediction
                         inputPacket.SetBitPosition(span.bitOrigin);
                         system.QueueInput(inputPacket, sender);
                     }
-                    else
-                    {
-                        PurrLogger.LogWarning(
-                            $"Input entry {i}/{count} rejected from {sender}: id={pid} known={_instanceMap.ContainsKey(pid)} " +
-                            $"owner={(system ? system.owner?.ToString() ?? "none" : "n/a")}; skipping remainder of the block.");
-                        break;
-                    }
+                    // Every input has its own span, so a rejected one does not cost the sender the rest.
+                    else ReportRejectedInput(sender, queue, pid, known ? system : null);
                 }
             }
             catch
             {
                 /* ignored */
+            }
+        }
+
+        // Tick at which the server deleted an input identity or took it from its owner. The client keeps
+        // sending that input until the frame reaches it, so rejections right after are expected.
+        private readonly Dictionary<PredictedComponentID, ulong> _inputControlEndedAt = new(PredictionIdComparers.Components);
+        private readonly List<PredictedComponentID> _inputControlPruneScratch = new();
+        private int _inputControlPruneAt = 64;
+
+        internal void NoteInputControlEnded(PredictedIdentity system)
+        {
+            if (!cachedIsServer || !system.hasInput)
+                return;
+
+            if (_inputControlEndedAt.Count >= _inputControlPruneAt)
+            {
+                ulong window = verifiedHistoryWindowTicks;
+                foreach (var pair in _inputControlEndedAt)
+                {
+                    if (localTick - pair.Value > window)
+                        _inputControlPruneScratch.Add(pair.Key);
+                }
+
+                for (var i = 0; i < _inputControlPruneScratch.Count; i++)
+                    _inputControlEndedAt.Remove(_inputControlPruneScratch[i]);
+                _inputControlPruneScratch.Clear();
+                _inputControlPruneAt = Math.Max(64, _inputControlEndedAt.Count * 2);
+            }
+
+            _inputControlEndedAt[system.id] = localTick;
+        }
+
+        private void ReportRejectedInput(PlayerID sender, InputQueue queue, PredictedComponentID pid, PredictedIdentity system)
+        {
+            if (_inputControlEndedAt.TryGetValue(pid, out var endedAt) && localTick - endedAt <= verifiedHistoryWindowTicks)
+                return;
+
+            if (queue.hasRejectedObject && queue.lastRejectedObject.Equals(pid.objectId))
+                return;
+
+            queue.hasRejectedObject = true;
+            queue.lastRejectedObject = pid.objectId;
+
+            if (system)
+            {
+                PurrLogger.LogWarning(
+                    $"Ignoring input from {sender} for '{system.name}' ({pid}): it is controlled by " +
+                    $"{system.owner?.ToString() ?? "the server"}, not by {sender}.", system);
+            }
+            else
+            {
+                PurrLogger.LogWarning(
+                    $"Ignoring input from {sender} for {pid}: the server has no such object. The client most likely " +
+                    "created it on its own, for example with hierarchy.Create outside Simulate, and the next server " +
+                    "state removes it there.");
             }
         }
 

@@ -518,6 +518,85 @@ namespace PurrNet.Prediction.Tests.Editor
             }
         }
 
+        public enum RosterChange { Added, Replaced, Removed }
+
+        // The server keeps the expansion of the newest tick it accepted and decodes the next upload
+        // against it, so a tick the client already sent must go out again with the same bits after the
+        // client's owned roster changed (a spawn, a despawn, a rolled-back client-only create).
+        [TestCase(RosterChange.Added)]
+        [TestCase(RosterChange.Replaced)]
+        [TestCase(RosterChange.Removed)]
+        public void RosterChangeLeavesSentTicksAsTheServerAcceptedThem(RosterChange change)
+        {
+            var clientObject = new GameObject("Roster change upload client");
+            var serverObject = new GameObject("Roster change upload server");
+            var keptObject = new GameObject("Roster change kept probe");
+            var otherObject = new GameObject("Roster change other probe");
+            try
+            {
+                var client = CreateManager(clientObject);
+                SetLocalTick(client, 40);
+                SetInputAckTick(client, 30);
+                var inputType = typeof(PredictedIdentity<TrackedInput, EmptyState>);
+
+                var kept = keptObject.AddComponent<StatefulInputProbe>();
+                var keptId = new PredictedComponentID(new PredictedObjectID(760), 0);
+                AttachIdentity(kept, client, keptId);
+                var other = otherObject.AddComponent<StatefulInputProbe>();
+                var otherId = new PredictedComponentID(new PredictedObjectID(761), 0);
+                AttachIdentity(other, client, otherId);
+
+                // Before: kept (plus other when it is the one going away). After, at tick 41: kept
+                // gains other, other replaces kept, or other is gone.
+                SeedInputs(kept, inputType, 30, change == RosterChange.Replaced ? 40UL : 41UL, tick => 300 + (int)tick);
+                if (change == RosterChange.Removed)
+                    SeedInputs(other, inputType, 30, 40, tick => 500 + (int)tick);
+                else
+                    SeedInputs(other, inputType, 41, 41, tick => 500 + (int)tick);
+
+                var before = change == RosterChange.Removed ? new PredictedIdentity[] { kept, other } : new PredictedIdentity[] { kept };
+                var after = change switch
+                {
+                    RosterChange.Added => new PredictedIdentity[] { kept, other },
+                    RosterChange.Replaced => new PredictedIdentity[] { other },
+                    _ => new PredictedIdentity[] { kept }
+                };
+
+                var server = CreateManager(serverObject);
+                SetLocalTick(server, 2);
+                var sender = new PlayerID(9, false);
+
+                FinalizeInput(client, before);
+                var first = GetCachedPayload(client, out var firstTick, out var tickCount);
+                Deliver(server, firstTick, tickCount, CopyForRead(first), sender);
+                var queue = GetQueue(server, sender);
+                Assert.That(queue.byTick.ContainsKey(40), Is.True);
+
+                SetLocalTick(client, 41);
+                FinalizeInput(client, after);
+                var second = GetCachedPayload(client, out firstTick, out tickCount);
+                Deliver(server, firstTick, tickCount, CopyForRead(second), sender);
+
+                Assert.That(queue.byTick.ContainsKey(41), Is.True,
+                    "the server dropped the first upload after the roster change");
+                var decoded = DecodeSlice(queue.byTick[41]);
+                Assert.That(decoded.Count, Is.EqualTo(after.Length));
+                for (var i = 0; i < after.Length; i++)
+                {
+                    Assert.That(decoded[i].id, Is.EqualTo(after[i].id));
+                    Assert.That(decoded[i].hasInput, Is.True);
+                    Assert.That(decoded[i].value, Is.EqualTo(after[i] == kept ? 341 : 541));
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(otherObject);
+                Object.DestroyImmediate(keptObject);
+                Object.DestroyImmediate(serverObject);
+                Object.DestroyImmediate(clientObject);
+            }
+        }
+
         [Test]
         public void RedeliveredUploadLeavesTheServerQueueUntouched()
         {

@@ -578,6 +578,8 @@ namespace PurrNet.Prediction
 
             if (previousOwner != player && predictionManager)
             {
+                if (previousOwner.HasValue)
+                    predictionManager.NoteInputControlEnded(this);
                 predictionManager.HandleVisibilityOwnershipChanged(
                     this,
                     previousOwner,

@@ -763,8 +763,28 @@ namespace PurrNet.Prediction
             return Create(prefabId, localPosition, localRotation, new PredictedComponentID(parentId, 0), owner);
         }
 
+        private readonly HashSet<int> _warnedClientCreates = new();
+        private readonly HashSet<int> _warnedClientDeletes = new();
+
+        // A client's Create or Delete outside Simulate never reaches the server; the next server state undoes it.
+        private bool IsClientOnlyChange()
+        {
+            var manager = predictionManager;
+            return !_isRollingBack && manager && manager.isSpawned && !manager.isServer && !manager.isSimulating;
+        }
+
         private PredictedObjectID? CreateInstance(int prefabId, Vector3 position, Quaternion rotation, PlayerID? owner, PredictedComponentID? parent)
         {
+            if (IsClientOnlyChange() && _warnedClientCreates.Add(prefabId))
+            {
+                predictionManager.TryGetPrefab(prefabId, out var prefab);
+                PurrLogger.LogWarning(
+                    $"'{(prefab ? prefab.name : prefabId.ToString())}' was created on a client outside Simulate. Prediction is " +
+                    "server authoritative and the server never sees this call: unless the server creates the same object, the " +
+                    "next server state removes it again. To spawn from a client action, put it in the input of an identity the " +
+                    "player owns and call Create inside Simulate, or ask the server with a ServerRpc. Logged once per prefab.", prefab);
+            }
+
             var proto = GetPrototype(prefabId);
 
             if (proto == null)
@@ -1981,6 +2001,20 @@ namespace PurrNet.Prediction
         {
             if (!go)
                 return;
+
+            if (IsClientOnlyChange())
+            {
+                int prefabId = _goToId.TryGetValue(go, out var pieceId) && _recordsById.TryGetValue(pieceId, out var record)
+                    ? (int)record.prefabId
+                    : int.MinValue;
+                if (_warnedClientDeletes.Add(prefabId))
+                {
+                    PurrLogger.LogWarning(
+                        $"'{go.name}' was deleted on a client outside Simulate. Prediction is server authoritative and the server " +
+                        "never sees this call: unless the server deletes it too, the next server state brings it back. Delete it " +
+                        "inside Simulate, or ask the server with a ServerRpc. Logged once per prefab.", go);
+                }
+            }
 
             EnqueueTopmostPieces(go.transform);
         }
