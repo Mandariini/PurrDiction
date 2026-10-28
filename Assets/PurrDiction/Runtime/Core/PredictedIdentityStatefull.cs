@@ -87,7 +87,9 @@ namespace PurrNet.Prediction
             _verifiedHistory = null;
             _liveVerifiedThroughTick = 0;
 
-            fullPredictedState.Dispose();
+            if (!StateLifetime.IsUnset(ref fullPredictedState.state))
+                fullPredictedState.state.Dispose();
+            fullPredictedState.prediction.Dispose();
             fullPredictedState = default;
             viewState = default;
         }
@@ -113,7 +115,8 @@ namespace PurrNet.Prediction
         private void ResetStateToInitialState()
         {
             fullPredictedState.prediction.wasOnSimulationStartCalled = false;
-            fullPredictedState.state.Dispose();
+            if (!StateLifetime.IsUnset(ref fullPredictedState.state))
+                fullPredictedState.state.Dispose();
             fullPredictedState.state = GetInitialState();
         }
 

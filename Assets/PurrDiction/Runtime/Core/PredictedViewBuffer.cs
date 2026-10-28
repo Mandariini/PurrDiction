@@ -87,7 +87,7 @@ namespace PurrNet.Prediction
         {
             if (tick == _anchorTick)
             {
-                _anchor.Dispose();
+                DisposeHeld(_anchor);
                 _anchor = value;
                 return;
             }
@@ -105,7 +105,7 @@ namespace PurrNet.Prediction
             if (index > 0 && At(index - 1).tick == tick)
             {
                 ref var existing = ref At(index - 1);
-                existing.value.Dispose();
+                DisposeHeld(existing.value);
                 existing.value = value;
                 return;
             }
@@ -119,7 +119,7 @@ namespace PurrNet.Prediction
 
             while (_count > _capacity)
             {
-                At(0).value.Dispose();
+                DisposeHeld(At(0).value);
                 DropOldest();
             }
         }
@@ -134,6 +134,13 @@ namespace PurrNet.Prediction
             _head = 0;
         }
 
+        // A slot still holding default(T) (never filled, or teleported to default on release) owns nothing.
+        static void DisposeHeld(T value)
+        {
+            if (!StateLifetime.IsUnset(ref value))
+                value.Dispose();
+        }
+
         /// <summary>
         /// Drops every pending sample and restarts the view from <paramref name="value"/> at
         /// <paramref name="tick"/>. Ownership of the value transfers to the buffer.
@@ -142,12 +149,12 @@ namespace PurrNet.Prediction
         {
             while (_count > 0)
             {
-                At(0).value.Dispose();
+                DisposeHeld(At(0).value);
                 DropOldest();
             }
             _head = 0;
 
-            _anchor.Dispose();
+            DisposeHeld(_anchor);
             _anchor = value;
             _anchorTick = tick;
         }
@@ -162,7 +169,7 @@ namespace PurrNet.Prediction
             while (_count > 0 && At(0).tick <= presentTick)
             {
                 ref var reached = ref At(0);
-                _anchor.Dispose();
+                DisposeHeld(_anchor);
                 _anchor = reached.value;
                 _anchorTick = reached.tick;
                 DropOldest();
