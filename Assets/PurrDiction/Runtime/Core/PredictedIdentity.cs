@@ -86,6 +86,13 @@ namespace PurrNet.Prediction
 
         public virtual bool hasInput => false;
 
+        /// <summary>
+        /// Hands this identity's current state, and its current input if it has one, to <paramref name="visitor"/>
+        /// as their concrete types. On the server inside <see cref="PredictionManager.onServerTickReady"/> these are the
+        /// state the tick starts from and the input it applies.
+        /// </summary>
+        public virtual void VisitData(IPredictedDataVisitor visitor) { }
+
         internal virtual bool isEventHandler => false;
 
         public virtual bool controlsTransformPolicy => false;

@@ -22,6 +22,12 @@ namespace PurrNet.Prediction
         private History<INPUT> _inputHistory;
 
         public ref INPUT currentInput => ref _currentInput;
+
+        public override void VisitData(IPredictedDataVisitor visitor)
+        {
+            base.VisitData(visitor);
+            visitor.VisitInput(this, ref _currentInput);
+        }
         private INPUT _currentInput;
 
         public override string ToString()

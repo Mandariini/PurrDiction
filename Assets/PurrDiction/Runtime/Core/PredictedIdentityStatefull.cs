@@ -109,6 +109,11 @@ namespace PurrNet.Prediction
             get => ref fullPredictedState.state;
         }
 
+        public override void VisitData(IPredictedDataVisitor visitor)
+        {
+            visitor.VisitState(this, ref fullPredictedState.state);
+        }
+
 
         private void ResetStateToInitialState()
         {

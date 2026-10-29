@@ -1286,6 +1286,18 @@ namespace PurrNet.Prediction
                     _lastWrittenFrameTick = localTick;
                     WriteInitialFrameToOthers();
                 }
+
+                if (onServerTickReady != null)
+                {
+                    try
+                    {
+                        onServerTickReady(localTick);
+                    }
+                    catch (Exception e)
+                    {
+                        Debug.LogException(e);
+                    }
+                }
             }
 
             float delta = this.tickDelta;
@@ -2231,6 +2243,41 @@ namespace PurrNet.Prediction
         /// Also fires during rollback resimulation, after identity simulation and before late simulation.
         /// </summary>
         public event Action onAfterPhysicsPass;
+
+        /// <summary>
+        /// Server only. Invoked once per authoritative tick, after every identity saved its state for the tick
+        /// and every input for the tick was resolved, and before the tick is simulated. Reading identities here
+        /// (see <see cref="identityCount"/> and <see cref="PredictedIdentity.VisitData"/>) yields the
+        /// state the tick starts from and the input it applies. Never fires during rollback.
+        /// </summary>
+        public event Action<ulong> onServerTickReady;
+
+        /// <summary>
+        /// Number of registered predicted identities. Index them with <see cref="GetIdentityAt"/>.
+        /// </summary>
+        public int identityCount => _systemsCount;
+
+        /// <summary>
+        /// The registered identity at <paramref name="index"/>, ordered by object id then component id.
+        /// </summary>
+        public PredictedIdentity GetIdentityAt(int index) => _systems[index];
+
+        /// <summary>
+        /// How many ticks behind <paramref name="tick"/> the given player's screen was when they produced
+        /// their input for that tick. Known on the server for players whose input arrived for the tick,
+        /// and for the local player.
+        /// </summary>
+        public bool TryGetPlayerViewOffset(PlayerID player, ulong tick, out double viewOffsetTicks)
+        {
+            if (TryGetViewOffset(player, tick, out var quantized))
+            {
+                viewOffsetTicks = DequantizeViewOffset(quantized);
+                return true;
+            }
+
+            viewOffsetTicks = 0;
+            return false;
+        }
 
         private void DoPhysicsPass(PredictionPerformanceTelemetry.PassScope performance)
         {
