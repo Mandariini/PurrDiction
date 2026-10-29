@@ -1,0 +1,17 @@
+{
+    "name": "PurrNet.Prediction.Recording",
+    "rootNamespace": "PurrNet.Prediction.Recording",
+    "references": [
+        "PurrNet.Runtime",
+        "PurrNet.Prediction"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

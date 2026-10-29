@@ -1,0 +1,451 @@
+using System;
+using System.Collections.Generic;
+
+namespace PurrNet.Prediction.Recording
+{
+    /// <summary>
+    /// One stream of the recording: what it is, and where its rows go in the current chunk. Per-tick streams (state,
+    /// input, transform, player) get one raw row per tick while their owner exists; the encoder drops the ones that
+    /// did not change.
+    /// </summary>
+    public sealed class StreamRows
+    {
+        public int id;
+        public RowLayout layout;
+        /// <summary>Per-tick stream: a tick without a stored row repeats the previous row.</summary>
+        public bool forwardFill;
+        /// <summary>Optional stream whose columns some of ours are XOR-ed with at the same tick (a duplicate pose).</summary>
+        public StreamRows baseStream;
+        /// <summary>Pairs of (our offset, base offset) of 4-byte columns XOR-ed with <see cref="baseStream"/>.</summary>
+        public int[] baseColumns;
+        /// <summary>Index in the current chunk's stream table, or -1 before its first row in the chunk.</summary>
+        internal int slot = -1;
+        /// <summary>Rows written to the current chunk.</summary>
+        internal int rowCount;
+        /// <summary>Per managed field: log offset and length of the last value written this chunk.</summary>
+        internal int[] lastValueOffset = Array.Empty<int>();
+        internal int[] lastValueLength = Array.Empty<int>();
+        /// <summary>Reused box for the generic path of managed fields (fallbacks and self-checks).</summary>
+        internal object box;
+        /// <summary>Its owner is gone; reused for a new stream once its last rows are flushed.</summary>
+        internal bool retired;
+
+        public bool hasRows => rowCount > 0;
+    }
+
+    /// <summary>What the writer needs to know about one stream of a chunk.</summary>
+    public struct ChunkStream
+    {
+        public int id;
+        public RowLayout layout;
+        public bool forwardFill;
+        public int[] baseColumns;
+        /// <summary>Slot of the base stream in the same chunk, or -1.</summary>
+        public int baseSlot;
+    }
+
+    /// <summary>
+    /// A chunk's rows as the recorder wrote them: one append-only log for every stream, so there are no per-stream
+    /// buffers to size (or grow). Each entry: <c>[slot i32][tick u64][fixed row][per managed field: i32 length (-1:
+    /// same as the stream's previous value) and bytes]</c>. Logs are reused; after warming up nothing grows.
+    /// </summary>
+    public sealed class ChunkLog
+    {
+        public readonly RecordingBuffer bytes = new RecordingBuffer(1 << 16);
+        public readonly List<ChunkStream> streams = new List<ChunkStream>();
+        public ulong firstTick;
+        public ulong tickCount;
+
+        public void Clear()
+        {
+            bytes.Clear();
+            streams.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Encodes one CHUNK payload (FORMAT.md, version 1). Lossless: every block of a per-tick stream carries a CRC-32 of
+    /// its raw rows so readers can prove the decode is exact. One instance per writer thread: it reuses its buffers.
+    /// </summary>
+    public sealed class ChunkEncoder
+    {
+        static readonly uint[] CrcTable = BuildCrcTable();
+
+        static uint[] BuildCrcTable()
+        {
+            var table = new uint[256];
+            for (uint i = 0; i < 256; i++)
+            {
+                uint c = i;
+                for (int k = 0; k < 8; k++)
+                    c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                table[i] = c;
+            }
+            return table;
+        }
+
+        readonly RecordingBuffer _buffer = new RecordingBuffer(4096);
+        readonly RecordingBuffer _work = new RecordingBuffer(1024);
+        readonly RecordingBuffer _coded = new RecordingBuffer(1024);
+        readonly List<int> _keep = new List<int>();
+        readonly Dictionary<RowLayout, bool[]> _numericMasks = new Dictionary<RowLayout, bool[]>();
+        byte[] _plane = Array.Empty<byte>();
+
+        // The log split back into streams: a slot's rows are contiguous from its first row.
+        int[] _slotFirst = Array.Empty<int>();
+        int[] _slotCount = Array.Empty<int>();
+        int[] _slotFill = Array.Empty<int>();
+        int[] _slotManagedFirst = Array.Empty<int>();
+        byte[] _rows = Array.Empty<byte>();
+        int[] _rowOffset = Array.Empty<int>();
+        ulong[] _ticks = Array.Empty<ulong>();
+        int[] _valueStart = Array.Empty<int>();
+        int[] _valueLength = Array.Empty<int>();
+
+        static void Grow<T>(ref T[] array, int size)
+        {
+            if (array.Length < size)
+                array = new T[Math.Max(size, array.Length * 2)];
+        }
+
+        /// <summary>Returns the encoder's own buffer, valid until the next call.</summary>
+        public RecordingBuffer Encode(ChunkLog log)
+        {
+            Split(log);
+
+            var streams = log.streams;
+            var buffer = _buffer;
+            buffer.Clear();
+            buffer.WriteVarUInt(log.firstTick);
+            buffer.WriteVarUInt(log.tickCount);
+            int blocks = 0;
+            for (int i = 0; i < streams.Count; i++)
+                if (_slotCount[i] > 0)
+                    blocks++;
+            buffer.WriteVarUInt((ulong)blocks);
+
+            var work = _work;
+            var coded = _coded;
+            var keep = _keep;
+            byte[] plane = _plane;
+            byte[] logBytes = log.bytes.data;
+
+            for (int slot = 0; slot < streams.Count; slot++)
+            {
+                int n = _slotCount[slot];
+                if (n == 0)
+                    continue;
+
+                var s = streams[slot];
+                int size = s.layout.rowSize;
+                int first = _slotFirst[slot];
+                int managedFields = s.layout.managed.Count;
+
+                // 1. Duplicate columns become XOR against the base stream's row at the same tick.
+                work.Clear();
+                work.Ensure(n * size);
+                Buffer.BlockCopy(_rows, _rowOffset[first], work.data, 0, n * size);
+                work.length = n * size;
+                if (s.baseSlot >= 0 && _slotCount[s.baseSlot] > 0)
+                    XorWithBase(s, first, n, _slotFirst[s.baseSlot], _slotCount[s.baseSlot], work.data);
+
+                // 2. Per-tick streams keep only rows that differ from the previous kept one.
+                keep.Clear();
+                int managedBase = _slotManagedFirst[slot];
+                for (int r = 0; r < n; r++)
+                {
+                    if (r == 0 || !s.forwardFill ||
+                        !SameRow(work.data, r, keep[keep.Count - 1], size, managedBase, managedFields, logBytes))
+                        keep.Add(r);
+                }
+                int k = keep.Count;
+
+                buffer.WriteVarUInt((ulong)s.id);
+                buffer.WriteVarUInt((ulong)k);
+                ulong previous = log.firstTick;
+                foreach (int r in keep)
+                {
+                    buffer.WriteVarUInt(_ticks[first + r] - previous);
+                    previous = _ticks[first + r];
+                }
+                if (s.forwardFill)
+                    buffer.WriteVarUInt(_ticks[first + n - 1] - _ticks[first + keep[0]]);
+
+                // 3. Column coding of the kept rows, then byte planes.
+                int total = k * size;
+                if (total > 0)
+                {
+                    coded.Clear();
+                    coded.Ensure(total);
+                    for (int i = 0; i < k; i++)
+                        Buffer.BlockCopy(work.data, keep[i] * size, coded.data, i * size, size);
+                    coded.length = total;
+                    CodeColumns(s.layout, coded.data, k);
+
+                    if (plane.Length < total)
+                        plane = new byte[Math.Max(total, plane.Length * 2)];
+                    for (int r = 0; r < k; r++)
+                        for (int b = 0; b < size; b++)
+                            plane[b * k + r] = coded.data[r * size + b];
+                    buffer.WriteBytes(plane, 0, total);
+                }
+
+                for (int f = 0; f < managedFields; f++)
+                {
+                    int last = -1;
+                    foreach (int r in keep)
+                    {
+                        int v = managedBase + r * managedFields + f;
+                        if (last >= 0 && SameValue(logBytes, last, v))
+                        {
+                            buffer.WriteVarUInt(0);
+                            continue;
+                        }
+                        buffer.WriteVarUInt((ulong)_valueLength[v] + 1);
+                        buffer.WriteBytes(logBytes, _valueStart[v], _valueLength[v]);
+                        last = v;
+                    }
+                }
+
+                if (s.forwardFill)
+                {
+                    uint crc = Crc32(_rows, _rowOffset[first], n * size);
+                    for (int i = 0; i < 4; i++)
+                        buffer.WriteByte((byte)(crc >> (8 * i)));
+                }
+            }
+
+            _plane = plane;
+            return buffer;
+        }
+
+        /// <summary>
+        /// Splits the log into per-slot runs: fixed rows copied contiguously per slot, ticks, and the positions of the
+        /// managed values (which stay in the log).
+        /// </summary>
+        void Split(ChunkLog log)
+        {
+            var streams = log.streams;
+            int slots = streams.Count;
+            Grow(ref _slotFirst, slots);
+            Grow(ref _slotCount, slots);
+            Grow(ref _slotFill, slots);
+            Grow(ref _slotManagedFirst, slots);
+            Array.Clear(_slotCount, 0, slots);
+
+            // Pass 1: rows per slot.
+            byte[] data = log.bytes.data;
+            int end = log.bytes.length;
+            int at = 0;
+            while (at < end)
+            {
+                int slot = ReadInt(data, at);
+                _slotCount[slot]++;
+                at = SkipEntry(data, at, streams[slot].layout);
+            }
+
+            int rowTotal = 0, rowBytes = 0, managedTotal = 0;
+            for (int i = 0; i < slots; i++)
+            {
+                _slotFirst[i] = rowTotal;
+                _slotManagedFirst[i] = managedTotal;
+                _slotFill[i] = 0;
+                rowTotal += _slotCount[i];
+                rowBytes += _slotCount[i] * streams[i].layout.rowSize;
+                managedTotal += _slotCount[i] * streams[i].layout.managed.Count;
+            }
+            Grow(ref _rows, rowBytes);
+            Grow(ref _rowOffset, rowTotal);
+            Grow(ref _ticks, rowTotal);
+            Grow(ref _valueStart, managedTotal);
+            Grow(ref _valueLength, managedTotal);
+
+            int offset = 0;
+            for (int i = 0; i < slots; i++)
+            {
+                int size = streams[i].layout.rowSize;
+                for (int r = 0; r < _slotCount[i]; r++)
+                    _rowOffset[_slotFirst[i] + r] = offset + r * size;
+                offset += _slotCount[i] * size;
+            }
+
+            // Pass 2: scatter.
+            at = 0;
+            while (at < end)
+            {
+                int slot = ReadInt(data, at);
+                var layout = streams[slot].layout;
+                int r = _slotFill[slot]++;
+                int row = _slotFirst[slot] + r;
+                _ticks[row] = ReadULong(data, at + 4);
+                at += 12;
+                Buffer.BlockCopy(data, at, _rows, _rowOffset[row], layout.rowSize);
+                at += layout.rowSize;
+
+                int fields = layout.managed.Count;
+                int managedRow = _slotManagedFirst[slot] + r * fields;
+                for (int f = 0; f < fields; f++)
+                {
+                    int length = ReadInt(data, at);
+                    at += 4;
+                    int v = managedRow + f;
+                    if (length < 0)
+                    {
+                        // Same as the stream's previous value in this chunk.
+                        _valueStart[v] = _valueStart[v - fields];
+                        _valueLength[v] = _valueLength[v - fields];
+                        continue;
+                    }
+                    _valueStart[v] = at;
+                    _valueLength[v] = length;
+                    at += length;
+                }
+            }
+        }
+
+        static int SkipEntry(byte[] data, int at, RowLayout layout)
+        {
+            at += 12 + layout.rowSize;
+            for (int f = 0; f < layout.managed.Count; f++)
+            {
+                int length = ReadInt(data, at);
+                at += 4 + Math.Max(0, length);
+            }
+            return at;
+        }
+
+        static int ReadInt(byte[] data, int at) =>
+            data[at] | data[at + 1] << 8 | data[at + 2] << 16 | data[at + 3] << 24;
+
+        static ulong ReadULong(byte[] data, int at) =>
+            (uint)ReadInt(data, at) | (ulong)(uint)ReadInt(data, at + 4) << 32;
+
+        bool SameValue(byte[] log, int a, int b)
+        {
+            int length = _valueLength[a];
+            if (length != _valueLength[b])
+                return false;
+            int sa = _valueStart[a], sb = _valueStart[b];
+            if (sa == sb)
+                return true;
+            for (int i = 0; i < length; i++)
+                if (log[sa + i] != log[sb + i])
+                    return false;
+            return true;
+        }
+
+        /// <summary>CRC-32 (IEEE, as zlib) over the raw fixed rows of a per-tick block, one row per tick.</summary>
+        public static uint Crc32(byte[] data, int offset, int length)
+        {
+            uint crc = 0xFFFFFFFFu;
+            for (int i = 0; i < length; i++)
+                crc = CrcTable[(crc ^ data[offset + i]) & 0xFF] ^ (crc >> 8);
+            return crc ^ 0xFFFFFFFFu;
+        }
+
+        void XorWithBase(in ChunkStream s, int first, int n, int baseFirst, int baseCount, byte[] rows)
+        {
+            int size = s.layout.rowSize;
+            int j = -1;
+            for (int r = 0; r < n; r++)
+            {
+                ulong tick = _ticks[first + r];
+                while (j + 1 < baseCount && _ticks[baseFirst + j + 1] <= tick)
+                    j++;
+                if (j < 0)
+                    continue;
+                int baseRow = _rowOffset[baseFirst + j];
+                for (int c = 0; c < s.baseColumns.Length; c += 2)
+                {
+                    int own = r * size + s.baseColumns[c], other = baseRow + s.baseColumns[c + 1];
+                    for (int i = 0; i < 4; i++)
+                        rows[own + i] ^= _rows[other + i];
+                }
+            }
+        }
+
+        bool SameRow(byte[] rows, int r, int previous, int size, int managedBase, int managedFields, byte[] log)
+        {
+            int a = r * size, b = previous * size;
+            for (int i = 0; i < size; i++)
+                if (rows[a + i] != rows[b + i])
+                    return false;
+            for (int f = 0; f < managedFields; f++)
+                if (!SameValue(log, managedBase + r * managedFields + f, managedBase + previous * managedFields + f))
+                    return false;
+            return true;
+        }
+
+        /// <summary>
+        /// 4- and 8-byte numeric columns: zig-zag second difference of their bit patterns (wrapping), so steady values
+        /// and steady motion become zeros. Other bytes: XOR with the previous row.
+        /// </summary>
+        void CodeColumns(RowLayout layout, byte[] rows, int count)
+        {
+            int size = layout.rowSize;
+            var isNumeric = NumericMask(layout);
+
+            for (int r = count - 1; r > 0; r--)
+            {
+                int at = r * size, prev = at - size;
+                for (int b = 0; b < size; b++)
+                    if (!isNumeric[b])
+                        rows[at + b] ^= rows[prev + b];
+            }
+
+            foreach (var c in layout.columns)
+            {
+                if (c.size == 4 && IsWideNumeric(c.type))
+                {
+                    uint prev = 0, prevDelta = 0;
+                    for (int r = 0; r < count; r++)
+                    {
+                        int at = r * size + c.offset;
+                        uint v = (uint)(rows[at] | rows[at + 1] << 8 | rows[at + 2] << 16 | rows[at + 3] << 24);
+                        uint delta = v - prev, dd = delta - prevDelta;
+                        prev = v;
+                        prevDelta = delta;
+                        uint z = (dd << 1) ^ (uint)((int)dd >> 31);
+                        rows[at] = (byte)z;
+                        rows[at + 1] = (byte)(z >> 8);
+                        rows[at + 2] = (byte)(z >> 16);
+                        rows[at + 3] = (byte)(z >> 24);
+                    }
+                }
+                else if (c.size == 8 && IsWideNumeric(c.type))
+                {
+                    ulong prev = 0, prevDelta = 0;
+                    for (int r = 0; r < count; r++)
+                    {
+                        int at = r * size + c.offset;
+                        ulong v = 0;
+                        for (int i = 0; i < 8; i++)
+                            v |= (ulong)rows[at + i] << (8 * i);
+                        ulong delta = v - prev, dd = delta - prevDelta;
+                        prev = v;
+                        prevDelta = delta;
+                        ulong z = (dd << 1) ^ (ulong)((long)dd >> 63);
+                        for (int i = 0; i < 8; i++)
+                            rows[at + i] = (byte)(z >> (8 * i));
+                    }
+                }
+            }
+        }
+
+        static bool IsWideNumeric(string type) =>
+            type == "f32" || type == "i32" || type == "u32" || type == "f64" || type == "i64" || type == "u64";
+
+        bool[] NumericMask(RowLayout layout)
+        {
+            if (_numericMasks.TryGetValue(layout, out var mask))
+                return mask;
+            mask = new bool[layout.rowSize];
+            foreach (var c in layout.columns)
+                if ((c.size == 4 || c.size == 8) && IsWideNumeric(c.type))
+                    for (int i = 0; i < c.size; i++)
+                        mask[c.offset + i] = true;
+            _numericMasks[layout] = mask;
+            return mask;
+        }
+    }
+}

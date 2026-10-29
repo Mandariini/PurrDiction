@@ -1571,6 +1571,15 @@ namespace PurrNet.Prediction
         }
 
         /// <summary>
+        /// The spawn record of a piece created through this hierarchy (prefab id, piece index, owner, parent).
+        /// False for scene objects.
+        /// </summary>
+        public bool TryGetInstanceDetails(PredictedObjectID pieceId, out InstanceDetails details)
+        {
+            return _recordsById.TryGetValue(pieceId, out details);
+        }
+
+        /// <summary>
         /// Resolves the root piece id of the spawn instance the given piece belongs to.
         /// </summary>
         public bool TryGetRootId(PredictedObjectID pieceId, out PredictedObjectID rootId)
