@@ -151,7 +151,9 @@ namespace PurrNet.Prediction
             _interpolatedState?.Teleport(viewTeleportTick, default);
             _stateHistory?.Clear();
 
-            fullPredictedState.Dispose();
+            if (!StateLifetime.IsUnset(ref fullPredictedState.state))
+                fullPredictedState.state.Dispose();
+            fullPredictedState.prediction.Dispose();
             fullPredictedState = default;
             viewState = default;
         }
@@ -180,7 +182,8 @@ namespace PurrNet.Prediction
         private void ResetStateToInitialState()
         {
             fullPredictedState.prediction.wasOnSimulationStartCalled = false;
-            fullPredictedState.state.Dispose();
+            if (!StateLifetime.IsUnset(ref fullPredictedState.state))
+                fullPredictedState.state.Dispose();
             fullPredictedState.state = GetInitialState();
         }
 
