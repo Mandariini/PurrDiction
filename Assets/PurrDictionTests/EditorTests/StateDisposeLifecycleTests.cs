@@ -107,6 +107,22 @@ namespace PurrNet.Prediction.Tests.Editor
             Assert.That(_errors, Is.Empty);
         }
 
+        [Test]
+        public void WritingTheFirstStateNeverDisposesTheDefaultBaseline()
+        {
+            // The baseline is default unless the identity overrides GetFirstStateBaseline. Disposing it threw from
+            // the host's tick for every state whose Dispose walks its lists, so no client could ever join.
+            var probe = Spawn(CreateWorld());
+            int disposes = ListOwningState.disposeCalls;
+
+            using var packer = BitPackerPool.Get();
+            probe.RunWriteFirstState(1, packer);
+
+            Assert.That(_errors, Is.Empty, "writing the first state must not hand the default baseline to Dispose()");
+            Assert.That(ListOwningState.disposeCalls, Is.EqualTo(disposes), "the default baseline owns nothing to dispose");
+            Assert.That(probe.currentState.items.isDisposed, Is.False, "the live state stays intact");
+        }
+
         ListStateProbe Spawn(PredictedHierarchy hierarchy)
         {
             var id = hierarchy.Create(0, Vector3.zero, Quaternion.identity);
