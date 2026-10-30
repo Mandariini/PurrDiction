@@ -432,7 +432,22 @@ document.getElementById("file").onchange = async ev => { const f = ev.target.fil
 view.addEventListener("dragover", ev => ev.preventDefault());
 view.addEventListener("drop", async ev => { ev.preventDefault(); const f = ev.dataTransfer.files[0]; if (f) load(await f.arrayBuffer(), f.name); });
 const param = new URLSearchParams(location.search).get("file");
-if (param) fetch(param).then(r => r.arrayBuffer()).then(b => load(b, param));
+if (param) {
+  // The name shown is the file's, not the whole (signed) URL.
+  const name = decodeURIComponent(new URL(param, location.href).pathname.split("/").pop() || "recording");
+  const info = document.getElementById("info");
+  document.getElementById("drop").classList.add("hidden");
+  info.textContent = `Downloading ${name}…`;
+  fetch(param)
+    .then(r => { if (!r.ok) throw new Error(`the server answered ${r.status} ${r.statusText}`); return r.arrayBuffer(); })
+    .then(b => load(b, name))
+    .catch(e => {
+      // A blocked cross-origin read (no CORS rule on the storage bucket) only shows up as a network error.
+      info.textContent = `Could not download ${name}: ${e.message}. If this keeps happening, the storage bucket may be missing its CORS rule for this site.`;
+      console.error(e);
+      document.getElementById("drop").classList.remove("hidden");
+    });
+}
 
 let last = performance.now();
 renderer.setAnimationLoop(now => {
