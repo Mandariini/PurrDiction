@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using PurrNet.Prediction.StateMachine;
 using PurrNet.Transports;
 using Unity.Collections.LowLevel.Unsafe;
 using UnityEngine;
@@ -55,6 +56,9 @@ namespace PurrNet.Prediction.Recording
             public GameObject gameObject;
             public PredictedObjectID objectId;
             public ulong lastSeenTick;
+            public ulong spawnTick;
+            public PlayerID? owner;
+            public bool isRoot;
             public StreamRows transform;
             public readonly List<Component> components = new List<Component>();
             /// <summary>Binary form of the last written collider set; the JSON is only built when this changes.</summary>
@@ -241,6 +245,7 @@ namespace PurrNet.Prediction.Recording
         float _nextSend;
 
         readonly RecorderStats _stats = new RecorderStats();
+        RecordingSummary _summary;
         RecorderStats.Section _statTick, _statPlayers, _statIdentities, _statSpawn, _statManaged, _statColliders, _statFlush;
 
         RecordingFile _file;
@@ -284,6 +289,7 @@ namespace PurrNet.Prediction.Recording
             if (_recordCamera && !GetComponent<RecordLocalCamera>())
                 gameObject.AddComponent<RecordLocalCamera>();
             ConfigureUploads();
+            _summary = new RecordingSummary(TypeName);
 
             _statTick = _stats.Add("tick");
             _statPlayers = _stats.Add("players");
@@ -396,6 +402,7 @@ namespace PurrNet.Prediction.Recording
             _chunks = 0;
             _stats.Reset();
             _stats.file = _file;
+            _summary.Begin(_predictionManager.tickRate);
             _job ??= TakeJob();
             _slots.Clear();
 
@@ -423,9 +430,11 @@ namespace PurrNet.Prediction.Recording
 
             FlushPendingTypes();
             FlushMeta();
-            _file.WriteJson(RecordKind.Footer, _json.Clear().BeginObject()
+            _json.Clear().BeginObject()
                 .Prop("lastTick", _lastTick).Prop("ticks", _ticksRecorded).Prop("entities", _nextEntityId - 1)
-                .Prop("streams", _nextStreamId - 1).Prop("chunks", _chunks).EndObject().ToString());
+                .Prop("streams", _nextStreamId - 1).Prop("chunks", _chunks);
+            _summary.Write(_json, _predictionManager ? _predictionManager.tickRate : 0);
+            _file.WriteJson(RecordKind.Footer, _json.EndObject().ToString(), true);
 
             var file = _file;
             _file = null;
@@ -702,6 +711,7 @@ namespace PurrNet.Prediction.Recording
                         row.hasViewOffset = true;
                     }
                     AppendRow(player.rows, tick, ref row);
+                    _summary.OnPlayerTick(id, _predictionManager.localPlayer == id, tick, row.hasViewOffset, row.viewOffsetTicks);
                 }
             }
 
@@ -724,6 +734,7 @@ namespace PurrNet.Prediction.Recording
             _stats.Begin(_statIdentities);
             int count = _predictionManager.identityCount;
             _visitTick = tick;
+            bool sample = _summary.IsSampleTick(tick);
 
             for (int i = 0; i < count; i++)
             {
@@ -751,6 +762,8 @@ namespace PurrNet.Prediction.Recording
                         position = t.position, rotation = t.rotation, scale = t.lossyScale, visible = Visibility(entity)
                     };
                     AppendRow(entity.transform, tick, ref pose);
+                    if (entity.owner.HasValue && entity.isRoot)
+                        _summary.OnOwnedEntity(entity.owner.Value, entity.spawnTick, pose.position, tick, sample);
                 }
 
                 var component = FindComponent(entity, identity);
@@ -771,6 +784,7 @@ namespace PurrNet.Prediction.Recording
                     _stats.End(_statSpawn);
                 }
             }
+            _summary.EndTick(tick, sample);
             _stats.End(_statIdentities);
 
             _stats.Begin(_statColliders);
@@ -858,6 +872,14 @@ namespace PurrNet.Prediction.Recording
             var parentIdentity = parentTransform ? parentTransform.GetComponentInParent<PredictedIdentity>() : null;
             if (parentIdentity)
                 _entitiesByGameObject.TryGetValue(parentIdentity.gameObject.GetInstanceID(), out parent);
+
+            entity.spawnTick = tick;
+            entity.owner = owner;
+            entity.isRoot = parent == null;
+            _summary.OnSpawn(prefabName, owner, parent == null, tick);
+            foreach (var c in entity.components)
+                if (c.identity is PredictedStateMachine machine)
+                    _summary.TrackMachine(machine);
 
             FlushPendingTypes();
             var json = _json.Clear().BeginObject()
