@@ -77,7 +77,7 @@ namespace PurrNet.Prediction.Recording
         sealed class TrackedCollider
         {
             public Collider collider;
-            public int id;
+            public long id;
             public bool streamable;
             /// <summary>Last checked pose, rounded like the poses in COLLIDERS records.</summary>
             public Vector3 position;
@@ -114,7 +114,7 @@ namespace PurrNet.Prediction.Recording
             public ulong player;
             public bool hasPlayer;
             public string sample;
-            public int collider;
+            public long collider;
         }
 
         readonly struct CustomKey : IEquatable<CustomKey>
@@ -205,12 +205,12 @@ namespace PurrNet.Prediction.Recording
 
         RecordingTypeRegistry _types = new RecordingTypeRegistry();
         readonly List<StreamRows> _streams = new List<StreamRows>();
-        readonly Dictionary<int, Entity> _entitiesByGameObject = new Dictionary<int, Entity>();
+        readonly Dictionary<long, Entity> _entitiesByGameObject = new Dictionary<long, Entity>();
         readonly List<Entity> _entities = new List<Entity>();
         readonly Dictionary<ulong, Player> _players = new Dictionary<ulong, Player>();
         readonly List<ulong> _playersLeft = new List<ulong>();
         readonly Dictionary<CustomKey, StreamRows> _customStreams = new Dictionary<CustomKey, StreamRows>();
-        readonly Dictionary<int, int> _meshIds = new Dictionary<int, int>();
+        readonly Dictionary<long, int> _meshIds = new Dictionary<long, int>();
         readonly HashSet<object> _visiting = new HashSet<object>(ReferenceComparer.instance);
         readonly List<string> _pendingTypes = new List<string>();
         readonly RecordingBuffer _scratch = new RecordingBuffer(256);
@@ -231,8 +231,8 @@ namespace PurrNet.Prediction.Recording
 
         // Unity allocates a new string each time a name is read, so names are read once and kept.
         const int MaxCachedNames = 4096;
-        readonly Dictionary<int, string> _names = new Dictionary<int, string>();
-        readonly Dictionary<int, string> _paths = new Dictionary<int, string>();
+        readonly Dictionary<long, string> _names = new Dictionary<long, string>();
+        readonly Dictionary<long, string> _paths = new Dictionary<long, string>();
         readonly Dictionary<int, string> _prefabNames = new Dictionary<int, string>();
         readonly Dictionary<Type, string> _typeNames = new Dictionary<Type, string>();
         readonly Dictionary<RowLayout, int[]> _poseColumns = new Dictionary<RowLayout, int[]>();
@@ -743,7 +743,7 @@ namespace PurrNet.Prediction.Recording
                     continue;
 
                 var go = identity.gameObject;
-                int key = go.GetInstanceID();
+                long key = RecordingObjectId.Of(go);
                 if (!_entitiesByGameObject.TryGetValue(key, out var entity) || entity.objectId != identity.id.objectId)
                 {
                     _stats.Begin(_statSpawn);
@@ -832,7 +832,7 @@ namespace PurrNet.Prediction.Recording
             entity.objectId = first.id.objectId;
             entity.lastSeenTick = 0;
             entity.hasColliderKey = false;
-            _entitiesByGameObject[go.GetInstanceID()] = entity;
+            _entitiesByGameObject[RecordingObjectId.Of(go)] = entity;
             _entities.Add(entity);
 
             // Declare every component stream up front so the ENTITY record can list them.
@@ -871,7 +871,7 @@ namespace PurrNet.Prediction.Recording
             var parentTransform = go.transform.parent;
             var parentIdentity = parentTransform ? parentTransform.GetComponentInParent<PredictedIdentity>() : null;
             if (parentIdentity)
-                _entitiesByGameObject.TryGetValue(parentIdentity.gameObject.GetInstanceID(), out parent);
+                _entitiesByGameObject.TryGetValue(RecordingObjectId.Of(parentIdentity.gameObject), out parent);
 
             entity.spawnTick = tick;
             entity.owner = owner;
@@ -908,12 +908,12 @@ namespace PurrNet.Prediction.Recording
         void Despawn(Entity entity, ulong tick)
         {
             _entities.Remove(entity);
-            if (_entitiesByGameObject.TryGetValue(entity.gameObject ? entity.gameObject.GetInstanceID() : 0, out var current) && current == entity)
-                _entitiesByGameObject.Remove(entity.gameObject.GetInstanceID());
+            if (_entitiesByGameObject.TryGetValue(entity.gameObject ? RecordingObjectId.Of(entity.gameObject) : 0, out var current) && current == entity)
+                _entitiesByGameObject.Remove(RecordingObjectId.Of(entity.gameObject));
             else
             {
                 // The GameObject was destroyed; drop whichever key still points at this entity.
-                int stale = 0;
+                long stale = 0;
                 bool found = false;
                 foreach (var pair in _entitiesByGameObject)
                     if (pair.Value == entity) { stale = pair.Key; found = true; break; }
@@ -1300,7 +1300,7 @@ namespace PurrNet.Prediction.Recording
 
         string Name(UnityEngine.Object o)
         {
-            int id = o.GetInstanceID();
+            long id = RecordingObjectId.Of(o);
             if (_names.TryGetValue(id, out var name))
                 return name;
             if (_names.Count >= MaxCachedNames)
@@ -1310,7 +1310,7 @@ namespace PurrNet.Prediction.Recording
 
         string PathOf(Transform t)
         {
-            int id = t.GetInstanceID();
+            long id = RecordingObjectId.Of(t);
             if (_paths.TryGetValue(id, out var path))
                 return path;
             path = Name(t.gameObject);
@@ -1421,7 +1421,7 @@ namespace PurrNet.Prediction.Recording
                     {
                         t = _trackedPool.Count > 0 ? _trackedPool.Pop() : new TrackedCollider();
                         t.collider = collider;
-                        t.id = collider.GetInstanceID();
+                        t.id = RecordingObjectId.Of(collider);
                         t.stream = null;
                         t.moving = false;
                         t.stillChecks = 0;
@@ -1541,7 +1541,7 @@ namespace PurrNet.Prediction.Recording
         /// <summary>Everything a COLLIDERS record holds about a collider except its pose (that is tracked apart).</summary>
         static void ShapeKey(RecordingBuffer key, Collider collider)
         {
-            key.WriteVarInt(collider.GetInstanceID());
+            key.WriteVarInt(RecordingObjectId.Of(collider));
             key.WriteByte(collider.isTrigger ? (byte)1 : (byte)0);
             key.WriteVarInt(collider.gameObject.layer);
             switch (collider)
@@ -1563,7 +1563,7 @@ namespace PurrNet.Prediction.Recording
                 case MeshCollider meshCollider:
                 {
                     var mesh = meshCollider.sharedMesh;
-                    key.WriteByte(5); key.WriteVarInt(mesh ? mesh.GetInstanceID() : 0);
+                    key.WriteByte(5); key.WriteVarInt(mesh ? RecordingObjectId.Of(mesh) : 0);
                     key.WriteByte(meshCollider.convex ? (byte)1 : (byte)0);
                     break;
                 }
@@ -1719,7 +1719,7 @@ namespace PurrNet.Prediction.Recording
             var s = pose.lossyScale;
             // Poses come out of a world-to-local multiply with ~1e-7 noise; rounding to 0.1 mm keeps an unchanged
             // set byte-identical so it is not re-written every check.
-            json.BeginObject().Prop("shape", shape).Prop("id", collider.GetInstanceID())
+            json.BeginObject().Prop("shape", shape).Prop("id", RecordingObjectId.Of(collider))
                 .Key("pose").BeginObject()
                 .Floats("p", Round(p.x), Round(p.y), Round(p.z)).Floats("r", Round(r.x), Round(r.y), Round(r.z), Round(r.w))
                 .Floats("s", Round(s.x), Round(s.y), Round(s.z))
@@ -1737,7 +1737,7 @@ namespace PurrNet.Prediction.Recording
 
         int WriteMesh(Mesh mesh)
         {
-            int key = mesh.GetInstanceID();
+            long key = RecordingObjectId.Of(mesh);
             if (_meshIds.TryGetValue(key, out int existing))
                 return existing;
 

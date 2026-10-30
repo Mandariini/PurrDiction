@@ -3,10 +3,24 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using PurrNet.Utils;
 using Unity.Collections.LowLevel.Unsafe;
 
 namespace PurrNet.Prediction.Recording
 {
+    internal static class RecordingObjectId
+    {
+        // Keep the full Unity ID in caches and recordings; newer EntityIds cannot be cast to int.
+        public static long Of(UnityEngine.Object obj)
+        {
+#if UNITY_6000_4_OR_NEWER
+            return unchecked((long)UnityEngine.EntityId.ToULong(PurrObjectId.Of(obj)));
+#else
+            return PurrObjectId.Of(obj);
+#endif
+        }
+    }
+
     /// <summary>
     /// Fixed-size row description of a struct: its unmanaged leaves packed without padding, plus the
     /// fields that need a tagged encoding. Built once per type by reflection.
@@ -290,7 +304,7 @@ namespace PurrNet.Prediction.Recording
 
         readonly Dictionary<Type, ObjectPlan> _valuePlans = new Dictionary<Type, ObjectPlan>();
         readonly Dictionary<Type, ObjectPlan> _objectPlans = new Dictionary<Type, ObjectPlan>();
-        readonly Dictionary<int, string> _objectNames = new Dictionary<int, string>();
+        readonly Dictionary<long, string> _objectNames = new Dictionary<long, string>();
 
         /// <summary>Plan for a struct stored inline (a row field, a list element), or null.</summary>
         internal ObjectPlan GetValuePlan(Type type)
@@ -436,7 +450,7 @@ namespace PurrNet.Prediction.Recording
                 {
                     // Reading a name allocates, so each object's name is read once per recording.
                     bool alive = unityObject;
-                    int id = alive ? unityObject.GetInstanceID() : 0;
+                    long id = alive ? RecordingObjectId.Of(unityObject) : 0;
                     if (!alive)
                     {
                         buffer.WriteByte(10);
