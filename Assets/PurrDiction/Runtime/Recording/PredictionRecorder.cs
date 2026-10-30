@@ -29,6 +29,14 @@ namespace PurrNet.Prediction.Recording
         [SerializeField] private float _chunkSeconds = 10f;
         [Tooltip("How often clients send their samples to the server.")]
         [SerializeField] private float _clientSendInterval = 0.1f;
+        [Tooltip("Send finished recordings to the PurrNet recordings service, then delete them. Needs a project key: " +
+                 "the one below, or the project linked through PurrServices.")]
+        [SerializeField] private bool _upload = true;
+        [SerializeField] private string _uploadEndpoint = "https://purrnet.dev/api/services/recordings";
+        [Tooltip("Project public key. Empty uses the project linked through PurrServices.")]
+        [SerializeField] private string _projectKey = "";
+        [Tooltip("Recordings that could not be sent yet are kept up to this size; the oldest are deleted first.")]
+        [SerializeField] private int _maxLocalMegabytes = 1024;
 
         public static PredictionRecorder instance { get; private set; }
 
@@ -259,7 +267,11 @@ namespace PurrNet.Prediction.Recording
         public PredictionManager predictionManager => _predictionManager;
 
         /// <summary>Folder for the next recording. Relative paths are under Application.persistentDataPath.</summary>
-        public void SetDirectory(string directory) => _directory = directory;
+        public void SetDirectory(string directory)
+        {
+            _directory = directory;
+            ConfigureUploads();
+        }
 
         void Awake()
         {
@@ -271,6 +283,7 @@ namespace PurrNet.Prediction.Recording
             _startTime = Time.realtimeSinceStartup;
             if (_recordCamera && !GetComponent<RecordLocalCamera>())
                 gameObject.AddComponent<RecordLocalCamera>();
+            ConfigureUploads();
 
             _statTick = _stats.Add("tick");
             _statPlayers = _stats.Add("players");
@@ -335,6 +348,29 @@ namespace PurrNet.Prediction.Recording
             _subscribedNetwork = false;
         }
 
+        string RecordingDirectory() => Path.IsPathRooted(_directory)
+            ? _directory
+            : Path.Combine(Application.persistentDataPath, _directory);
+
+        /// <summary>
+        /// Where finished recordings are sent and with which project key (empty uses the project linked through
+        /// PurrServices). An empty endpoint turns uploads off.
+        /// </summary>
+        public void SetUpload(string endpoint, string projectKey)
+        {
+            _upload = !string.IsNullOrEmpty(endpoint);
+            _uploadEndpoint = endpoint;
+            _projectKey = projectKey;
+            ConfigureUploads();
+        }
+
+        void ConfigureUploads()
+        {
+            string key = string.IsNullOrWhiteSpace(_projectKey) ? PurrNet.Transports.PurrServicesProjectLink.projectKey : _projectKey.Trim();
+            if (_upload && !string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(_uploadEndpoint))
+                RecordingUploader.Configure(_uploadEndpoint, key, RecordingDirectory(), (long)_maxLocalMegabytes * 1024 * 1024);
+        }
+
         /// <summary>
         /// Starts a new recording file. Called automatically on the server when <c>recordOnServer</c> is set.
         /// </summary>
@@ -343,9 +379,7 @@ namespace PurrNet.Prediction.Recording
             if (isRecording || !_predictionManager || !_predictionManager.isServer)
                 return;
 
-            string directory = Path.IsPathRooted(_directory)
-                ? _directory
-                : Path.Combine(Application.persistentDataPath, _directory);
+            string directory = RecordingDirectory();
             fileName ??= $"{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Application.productName}.purrrec";
             foreach (char c in Path.GetInvalidFileNameChars())
                 fileName = fileName.Replace(c, '_');
@@ -354,6 +388,7 @@ namespace PurrNet.Prediction.Recording
             _types = new RecordingTypeRegistry();
             _poseColumns.Clear();
             _file = new RecordingFile(Path.Combine(directory, fileName));
+            RecordingUploader.SetActiveRecording(_file.path);
             _chunkTicks = Mathf.Max(1, Mathf.RoundToInt(_chunkSeconds * _predictionManager.tickRate));
             _chunkFirstTick = _predictionManager.localTick;
             _lastTick = 0;
@@ -416,6 +451,8 @@ namespace PurrNet.Prediction.Recording
             _nextEntityId = 1;
             _nextStreamId = 1;
             _nextMeshId = 1;
+            RecordingUploader.SetActiveRecording(null);
+            RecordingUploader.NotifyFinished();
             onRecordingFinished?.Invoke(file.path);
         }
 
