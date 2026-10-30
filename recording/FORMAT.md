@@ -207,8 +207,31 @@ indices     indexCount x u32        (triangle list)
 ### FOOTER
 
 ```json
-{ "lastTick": 9001, "entities": 812, "streams": 2411, "chunks": 31 }
+{ "lastTick": 9001, "entities": 812, "streams": 2411, "chunks": 31, "summary": { } }
 ```
+
+Usually compressed. `summary` (from PurrDiction 1.5.0-beta.3) is what the recorder collected while recording, so a
+dashboard can describe the match without reading the file. Everything in it can also be derived from the records:
+
+```json
+{ "version": 1,
+  "players": [ { "id": 1, "isBot": false, "connected": true, "isLocal": true, "firstTick": 8, "lastTick": 2658,
+                 "spawns": 3, "viewOffsetAvgTicks": 0.17, "viewOffsetMaxTicks": 4 } ],
+  "spawns": { "Bullet": 506, "Magician": 24 },
+  "stateMachines": [ { "name": "GameStateManager",
+                       "states": [ { "index": 1, "name": "Purrguelike.WarmupState", "ticks": 543, "entered": 3 } ] } ],
+  "heatmap": { "axes": "xz", "min": [-40.06, -22.08], "cell": 1.5, "width": 48, "height": 28, "sampleSeconds": 1,
+               "humans": [ 130, 2, 131, 5 ], "bots": [ ] } }
+```
+
+- `players`: every player that was connected or owned an entity (bots included). `firstTick`/`lastTick` span the
+  ticks they were seen; `spawns` counts root entities they owned (respawns, rounds); view offsets are over their
+  `player` stream rows that had one.
+- `spawns`: entities spawned per prefab name.
+- `stateMachines`: per `PredictedStateMachine`, ticks spent in each state and how often it was entered.
+- `heatmap`: once a second, each player's avatar (their oldest live owned root entity) position, binned in square
+  cells on the two axes with the most spread. Cells are flat `[index, count, ...]` pairs with
+  `index = row * width + column`; humans and bots are counted apart.
 
 ## CHUNK
 
