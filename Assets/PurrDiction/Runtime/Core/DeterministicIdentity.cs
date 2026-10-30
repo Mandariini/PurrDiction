@@ -347,7 +347,8 @@ namespace PurrNet.Prediction
             var baseline = GetFirstStateBaseline();
             DeltaPacker<PredictedIdentityState>.Write(packer, default, state.prediction);
             DeltaPacker<STATE>.Write(packer, baseline, state.state);
-            baseline.Dispose();
+            if (!StateLifetime.IsUnset(ref baseline))
+                baseline.Dispose();
         }
 
         internal override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)

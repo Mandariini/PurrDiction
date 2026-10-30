@@ -503,7 +503,8 @@ namespace PurrNet.Prediction
             var baseline = GetFirstStateBaseline();
             DeltaPacker<PredictedIdentityState>.Write(packer, default, fullPredictedState.prediction);
             DeltaPacker<STATE>.Write(packer, baseline, fullPredictedState.state);
-            baseline.Dispose();
+            if (!StateLifetime.IsUnset(ref baseline))
+                baseline.Dispose();
         }
 
 
@@ -571,7 +572,8 @@ namespace PurrNet.Prediction
             var baseline = GetFirstStateBaseline();
             DeltaPacker<PredictedIdentityState>.Write(packer, default, fullPredictedState.prediction);
             DeltaPacker<STATE>.Write(packer, baseline, projectedState);
-            baseline.Dispose();
+            if (!StateLifetime.IsUnset(ref baseline))
+                baseline.Dispose();
         }
 
         internal bool WriteProjectedState(

@@ -390,7 +390,8 @@ namespace PurrNet.Prediction
             var baseline = GetFirstStateBaseline();
             DeltaPacker<ModulePredictedState>.Write(packer, default, savedState.prediction);
             DeltaPacker<TState>.Write(packer, baseline, savedState.state);
-            baseline.Dispose();
+            if (!StateLifetime.IsUnset(ref baseline))
+                baseline.Dispose();
         }
 
         protected override void ReadFirstState(ulong tick, BitPacker packer, ulong serverTick)
@@ -400,7 +401,10 @@ namespace PurrNet.Prediction
             DeltaPacker<ModulePredictedState>.Read(packer, default, ref newState.prediction);
             DeltaPacker<TState>.Read(packer, baseline, ref newState.state);
             StoreReceivedVerified(serverTick, ref newState);
-            fullPredictedState.Dispose();
+            // Before its first state arrives, a client's module state is still default and owns nothing.
+            if (!StateLifetime.IsUnset(ref fullPredictedState.state))
+                fullPredictedState.state.Dispose();
+            fullPredictedState.prediction.Dispose();
             fullPredictedState = newState;
             _history.PruneByTickWindow(tick);
             _history.Write(tick, fullPredictedState.DeepCopy());
