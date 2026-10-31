@@ -1112,7 +1112,11 @@ namespace PurrNet.Prediction
 
         internal PredictedComponentID? spawnCreator => _hasSpawnCreator ? _spawnCreatorId : null;
 
-        internal uint spawnPass { get; private set; }
+        /// <summary>
+        /// Increments once per forward, verified, and speculative simulation pass.
+        /// Compare for equality only; do not rely on ordering.
+        /// </summary>
+        public uint spawnPass { get; private set; }
 
         internal struct SpawnCreatorScope
         {
@@ -1659,7 +1663,10 @@ namespace PurrNet.Prediction
         internal static ulong VerifiedHistoryWindowTicks(int rate)
             => (ulong)Math.Max((long)MaxInputWindow, (Math.Max(1L, rate) * 8 + 4) / 5);
 
-        internal ulong verifiedHistoryWindowTicks => VerifiedHistoryWindowTicks(tickRate);
+        /// <summary>
+        /// The number of ticks for which verified input history is retained, based on the current tick rate.
+        /// </summary>
+        public ulong verifiedHistoryWindowTicks => VerifiedHistoryWindowTicks(tickRate);
 
         internal ulong acceptedHistoryBaselineFloor => _verifiedHistoryBaselineFloor;
 
