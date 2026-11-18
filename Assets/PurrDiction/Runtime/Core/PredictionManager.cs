@@ -117,7 +117,26 @@ namespace PurrNet.Prediction
         public static bool TryGetInstance(int sceneHandle, out PredictionManager world)
 #endif
         {
-            return _instances.TryGetValue(sceneHandle, out world);
+            if (_instances.TryGetValue(sceneHandle, out world))
+                return true;
+
+            // A scene without a manager of its own belongs to the manager that registered it
+            // (see _registerOtherScenes), so scene-local systems such as LocalPhysics find it too.
+            foreach (var instance in _instances.Values)
+            {
+                var scenes = instance._managedScenes;
+                for (var i = 0; i < scenes.Length; i++)
+                {
+                    if (scenes[i].handle != sceneHandle)
+                        continue;
+
+                    world = instance;
+                    return true;
+                }
+            }
+
+            world = null;
+            return false;
         }
 
         [ContextMenu("Debug/Print all systems")]
