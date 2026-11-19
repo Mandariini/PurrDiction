@@ -135,6 +135,22 @@ namespace PurrNet.Prediction
                 }
             }
 
+            // _managedScenes is only filled when the manager spawns, but scene objects look the
+            // manager up in Awake/Start, usually before that. Resolve the manager that will claim
+            // the scene the same way RegisterScenes does, so the lookup works like the own-scene
+            // case (registered in Awake) instead of depending on spawn timing.
+            if (TryGetLoadedScene(sceneHandle, out var scene) && !HasPredictionManager(scene))
+            {
+                foreach (var instance in _instances.Values)
+                {
+                    if (!instance || !instance._registerOtherScenes || !instance.IsPrimarySceneRegistrar())
+                        continue;
+
+                    world = instance;
+                    return true;
+                }
+            }
+
             world = null;
             return false;
         }
