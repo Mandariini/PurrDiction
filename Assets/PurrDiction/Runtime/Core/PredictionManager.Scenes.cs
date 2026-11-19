@@ -129,6 +129,23 @@ namespace PurrNet.Prediction
             return 0;
         }
 
+#if UNITY_6000_3_OR_NEWER
+        private static bool TryGetLoadedScene(SceneHandle handle, out Scene scene)
+#else
+        private static bool TryGetLoadedScene(int handle, out Scene scene)
+#endif
+        {
+            for (var i = 0; i < SceneManager.sceneCount; i++)
+            {
+                scene = SceneManager.GetSceneAt(i);
+                if (scene.handle == handle && scene.IsValid() && scene.isLoaded)
+                    return true;
+            }
+
+            scene = default;
+            return false;
+        }
+
         private static bool HasPredictionManager(Scene scene)
         {
             var roots = scene.GetRootGameObjects();
