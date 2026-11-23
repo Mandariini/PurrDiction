@@ -200,7 +200,9 @@ namespace PurrNet.Prediction
                 _poolParent = new GameObject("PooledPrefabs");
                 SceneManager.MoveGameObjectToScene(_poolParent, gameObject.scene);
 #if !PURRNET_DEBUG_POOLING
-                _poolParent.hideFlags = HideFlags.HideAndDontSave;
+                // Not DontSave: Unity keeps DontSave objects when their scene unloads or Play Mode exits,
+                // so every session would leave a pool root behind. OnDestroy destroys it with the manager.
+                _poolParent.hideFlags = HideFlags.HideInHierarchy | HideFlags.NotEditable;
 #endif
                 _poolParent.SetActive(false);
             }
@@ -940,6 +942,12 @@ namespace PurrNet.Prediction
             {
                 _pools.Dispose();
                 _pools = null;
+            }
+
+            if (_poolParent)
+            {
+                Destroy(_poolParent);
+                _poolParent = null;
             }
 
             DisposeCachedInputPayload();
